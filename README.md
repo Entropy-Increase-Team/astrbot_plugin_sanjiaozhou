@@ -1,26 +1,168 @@
 # sanjiaozhou
 
-三角洲行动 AstrBot 插件。命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层按 Go 版 Delta Force API 文档实现，并使用 AstrBot 插件内 Playwright 截图渲染。
+<img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-## 配置
+- 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
+- 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
+- 支持 QQ/微信扫码登录、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
+- 使用插件内 Playwright 渲染 HTML 模板，帮助菜单和数据面板以图片形式返回。
 
-在 AstrBot 插件配置中填写：
+> [!TIP]
+> 三角洲行动是一款由腾讯琳琅天上工作室开发的 FPS 游戏。本插件用于在 AstrBot 中查询游戏数据、生成战报图片和使用常用工具。
+
+> [!IMPORTANT]
+> 以下命令示例均不写触发符。实际发送时请使用 AstrBot WebUI 中配置的指令触发符，例如 WebUI 配置为 `/` 时发送 `/帮助`。
+
+## 安装插件
+
+进入 AstrBot 的插件目录后克隆仓库：
+
+```bash
+git clone https://github.com/Entropy-Increase-Team/astrbot_plugin_sanjiaozhou.git
+```
+
+如 AstrBot 未自动安装依赖，可在 AstrBot Python 环境中执行：
+
+```bash
+pip install -r data/plugins/astrbot_plugin_sanjiaozhou/requirements.txt
+playwright install chromium
+```
+
+安装完成后在 AstrBot WebUI 中重载插件，或重启 AstrBot。
+
+## 插件配置
+
+在 AstrBot WebUI 的插件配置中填写：
 
 - `api_key`: 三角洲 API Key。
-- `client_id`: 机器人 QQ 或在后端登记的客户端 ID。
+- `client_id`: 客户端 ID，建议填机器人 QQ 或在后端登记的 clientID。
 - `api_mode`: 默认 `auto`，内置模式当前统一请求 `https://delta-test-api.shallow.ink`。
-- `enable_image_render`: 开启后使用 Playwright 渲染云崽模板；关闭则输出文本摘要。
+- `api_base_url`: 自定义 API 地址，仅 `api_mode=custom` 时生效。
+- `enable_image_render`: 开启后使用 Playwright 渲染 HTML 模板；关闭后使用文本摘要兜底。
+- `request_timeout`: API 请求超时时间，单位秒。
+- `render_timeout`: Playwright 渲染超时时间，单位毫秒。
+- `login_poll_timeout`: 扫码登录轮询超时时间，单位秒。
+- `login_poll_interval`: 扫码登录轮询间隔，单位秒。
+- `tts_max_length`: TTS 文本最大长度。
 
-## 常用命令
+## 功能列表
 
-- `帮助`
-- `娱乐帮助`
-- `计算帮助`
-- `登录`、`绑定 <token>`、`账号`、`账号切换 <序号>`
-- `信息`、`数据`、`战绩 [模式] [页码]`、`日报 [模式]`、`周报 [模式]`
-- `藏品`、`出红记录 [物品名]`、`大红收藏 [赛季数字]`、`健康状态`
-- `每日密码`、`文章列表`、`物品搜索 <名称/ID>`、`当前价格 <名称/ID>`
-- `伤害 <模式> <武器> <子弹> <护甲/头盔:护甲> <距离> <次数> <部位分配>`、`修甲 <装备> <剩余>/<当前> <局内|局外>`
-- `语音`、`鼠鼠音乐`、`tts状态`、`tts <角色> <情感> <文本>`
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。
 
-资源模板来自 Yunzai 版 `delta-force-plugin-main/resources`，但 API client 和 AstrBot 命令入口没有复用云崽基建。房间、WebSocket、定时推送类命令保留入口提示，后续需要按 AstrBot 任务/适配器单独接入。计算器当前支持快捷伤害、快捷修甲和映射表，云崽交互式会话入口会返回 AstrBot 版用法。
+### 个人类功能
+
+- [x] QQ/微信扫码登录
+- [x] QQ/微信授权登录
+- [x] QQ/微信 Token 刷新
+- [x] WeGame 登录入口
+- [x] CK 登录入口
+- [x] Token 绑定、解绑、账号切换
+- [x] 角色绑定入口
+- [x] 个人信息查询
+- [x] UID 查询
+- [x] 地图统计
+- [x] 日报/周报数据
+- [x] 战绩查询
+- [x] 藏品/资产查询
+- [x] 货币信息查询
+- [x] 流水查询
+- [x] 出红记录/大红收藏海报
+- [x] 违规记录查询
+- [x] 特勤处状态
+- [x] 特勤处信息
+- [x] AI 锐评/AI 评价
+- [ ] 房间实时服务接入
+- [ ] WebSocket 实时广播接入
+
+### 工具类功能
+
+- [x] 每日密码查询
+- [x] 官方文章列表/详情
+- [x] 社区改枪码入口
+- [x] 干员列表和干员详情
+- [x] 健康状态
+- [x] 物品列表和物品搜索
+- [x] 当前价格/价格历史
+- [x] 材料价格
+- [x] 利润历史和利润排行
+- [x] 特勤处利润
+- [x] 伤害计算
+- [x] 维修/修甲计算
+- [x] 计算映射表
+- [ ] 定时推送任务完整接入
+- [ ] 云崽交互式战备会话完整接入
+
+### 娱乐类功能
+
+- [x] 随机语音
+- [x] 角色/场景/动作语音
+- [x] 语音列表、标签列表、语音统计
+- [x] 鼠鼠音乐
+- [x] 鼠鼠音乐列表
+- [x] 鼠鼠歌单
+- [x] 点歌
+- [x] 歌词
+- [x] TTS 语音合成
+- [x] TTS 角色列表、预设列表、角色详情
+
+## 命令示例
+
+<details>
+<summary>点击展开</summary>
+
+| 命令 | 功能 | 示例 |
+| --- | --- | --- |
+| `帮助` | 查看基础帮助菜单 | `帮助` |
+| `娱乐帮助` | 查看娱乐功能菜单 | `娱乐帮助` |
+| `计算帮助` | 查看计算器菜单 | `计算帮助` |
+| `登录` | QQ/微信扫码登录 | `登录` |
+| `绑定 <token>` | 手动绑定 frameworkToken | `绑定 eyJ...` |
+| `账号` | 查看已绑定账号 | `账号` |
+| `账号切换 <序号>` | 切换当前账号 | `账号切换 2` |
+| `解绑 <序号>` | 删除本地绑定 | `解绑 1` |
+| `信息` | 查询账号信息 | `信息` |
+| `UID` | 查询当前账号 UID | `UID` |
+| `数据 [模式] [赛季]` | 查询个人统计数据 | `数据 烽火` |
+| `战绩 [模式] [页码]` | 查询近期战绩 | `战绩 烽火 2` |
+| `日报 [模式]` | 查询日报 | `日报 全面` |
+| `周报 [模式] [日期] [展示]` | 查询周报 | `周报 烽火` |
+| `藏品 [类型]` | 查询藏品/资产 | `藏品 枪皮` |
+| `出红记录 [物品名]` | 查询藏品解锁记录 | `出红记录` |
+| `大红收藏 [赛季数字]` | 生成大红收藏海报 | `大红收藏 4` |
+| `每日密码` | 查询今日密码 | `每日密码` |
+| `文章列表` | 查询文章列表 | `文章列表` |
+| `文章详情 <ID>` | 查看文章详情 | `文章详情 123` |
+| `物品搜索 <名称/ID>` | 搜索游戏物品 | `物品搜索 金条` |
+| `当前价格 <名称/ID>` | 查询当前价格 | `当前价格 金条` |
+| `价格历史 <名称/ID>` | 查询价格历史 | `价格历史 金条` |
+| `利润排行 [类型] [场所] [数量]` | 查询制造利润 | `利润排行 props 工作台 10` |
+| `伤害 <模式> <武器> <子弹> <护甲> <距离> <次数> <部位>` | 快捷伤害计算 | `伤害 烽火 腾龙 dvc12 41:37 50 6 1:2,2:4` |
+| `修甲 <装备> <剩余>/<当前> <局内/局外>` | 快捷维修计算 | `修甲 fs 0/100 局内` |
+| `语音 [角色/标签]` | 播放语音 | `语音 麦晓雯` |
+| `鼠鼠音乐 [关键词]` | 播放或搜索音乐 | `鼠鼠音乐` |
+| `点歌 <序号>` | 播放列表中的歌曲 | `点歌 1` |
+| `tts <角色> <情感> <文本>` | 合成语音 | `tts 麦晓雯 开心 你好呀` |
+
+</details>
+
+## 与 Yunzai 版的关系
+
+- 命令设计、帮助菜单、HTML/CSS 渲染模板和 `resources/data` 静态数据参考 Yunzai 版 `delta-force-plugin`。
+- API client、AstrBot 命令注册、用户绑定存储、Playwright 渲染封装按 AstrBot 重新实现。
+- 不复用云崽插件的运行基建，也不提供 `#三角洲` 这类云崽命名空间入口。
+
+## 鸣谢
+
+- **API 支持**：感谢 [浅巷墨黎](https://github.com/dnyo666) 整理并提供三角洲行动 API 接口文档及后端。
+- **原始插件参考**：[delta-force-plugin](https://github.com/Dnyo666/delta-force-plugin)
+- **登录功能参考**：[deltaforce-酷曦科技](https://github.com/coolxitech/deltaforce)
+- **计算器数据与算法参考**：繁星攻略组
+- **AstrBot 框架**：[AstrBot](https://github.com/AstrBotDevs/AstrBot)
+- **三角洲行动官方**：[df.qq.com](https://df.qq.com)
+
+## 其他框架
+
+- **Yunzai**：[delta-force-plugin](https://github.com/Dnyo666/delta-force-plugin)
+- **NoneBot2**：[nonebot-plugin-delta-force](https://github.com/Entropy-Increase-Team/nonebot-plugin-delta-force)
+- **Koishi**：[koishi-plugin-delta-force](https://github.com/Entropy-Increase-Team/koishi-plugin-delta-force)
+- **Karin**：[karin-plugin-delta-force](https://github.com/Entropy-Increase-Team/karin-plugin-delta-force)
