@@ -1,0 +1,80 @@
+{{extend commonLayout}}
+{{block 'css'}}
+<link rel="stylesheet" type="text/css" href="{{_res_path}}Template/musicList/musicList.css"/>
+{{/block}}
+{{block 'main'}}
+<div class="music-list-container">
+    <!-- 背景图片 -->
+    <img class="bg-overlay" src="{{_res_path}}imgs/others/loading13.png" alt="" />
+    
+    <!-- 头部区域 -->
+    <div class="header-section">
+        <!-- 游戏Logo和名称 -->
+        <div class="game-meta">
+            <img class="game-logo" src="{{_res_path}}imgs/others/logo.png" alt="三角洲行动" />
+        </div>
+        
+        <!-- 标题区域 -->
+        <div class="title-section">
+            <h1 class="main-title">{{listTitle}}</h1>
+        </div>
+        
+        <!-- 副标题和统计信息 -->
+        <div class="subtitle-row">
+            <span class="subtitle-text">{{subtitle}}</span>
+            <span class="count-info">共 {{totalCount}} 首歌曲</span>
+        </div>
+    </div>
+    
+    <!-- 使用提示 -->
+    <div class="usage-tip">
+        <div class="tip-text">
+            使用 <span class="command">点歌 [序号]</span> 进行播放 或 
+            <span class="command">鼠鼠音乐列表(排行榜) [页码]</span> 进行翻页
+        </div>
+    </div>
+    
+    <!-- 音乐列表 -->
+    <div class="music-list">
+        {{each musicList item index}}
+        <div class="music-item">
+            <!-- 序号 -->
+            <div class="music-index">
+                {{item.index}}
+            </div>
+            
+            <!-- 封面 -->
+            <div class="music-cover-wrapper">
+                {{if item.cover}}
+                <img class="music-cover" src="{{item.cover}}" alt="{{item.name}}" onerror="this.onerror=null; this.style.display='none';" />
+                {{/if}}
+                <div class="music-cover-placeholder"></div>
+            </div>
+            
+            <!-- 信息区域 -->
+            <div class="music-content">
+                <div class="music-title-row">
+                    <div class="music-name">{{item.name}}</div>
+                    <div class="music-command-badge">点歌 {{item.index}}</div>
+                </div>
+                <div class="music-artist">{{item.artist}}</div>
+                <div class="music-tags">
+                    {{if item.playlist}}
+                    <span class="music-tag playlist-tag">{{item.playlist}}</span>
+                    {{/if}}
+                    {{if item.hot}}
+                    <span class="music-tag hot-tag">🔥 {{item.hot}}</span>
+                    {{/if}}
+                </div>
+            </div>
+        </div>
+        {{/each}}
+    </div>
+    
+    <!-- 页脚 -->
+    <div class="template-footer">
+        <div class="copyright-text">由 AstrBot DeltaForce Plugin 强力驱动</div>
+    </div>
+</div>
+{{/block}}
+{{block 'footer'}}{{/block}}

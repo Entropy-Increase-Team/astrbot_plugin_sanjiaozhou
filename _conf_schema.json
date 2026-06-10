@@ -1,0 +1,56 @@
+{
+  "api_key": {
+    "description": "三角洲 API Key，用于访问 delta-test-api.shallow.ink 后端。",
+    "type": "string",
+    "hint": "sk-...",
+    "default": ""
+  },
+  "client_id": {
+    "description": "客户端 ID。建议填机器人 QQ 或在三角洲 API 平台登记的 clientID。",
+    "type": "string",
+    "hint": "机器人 QQ / clientID",
+    "default": ""
+  },
+  "api_mode": {
+    "description": "API 地址模式。内置模式当前统一指向 delta-test-api.shallow.ink。",
+    "type": "string",
+    "default": "auto",
+    "enum": ["auto", "default", "eo", "esa", "custom"]
+  },
+  "api_base_url": {
+    "description": "自定义 API 地址，仅 api_mode=custom 时生效。",
+    "type": "string",
+    "hint": "https://delta-test-api.shallow.ink",
+    "default": ""
+  },
+  "enable_image_render": {
+    "description": "启用 AstrBot 内 Playwright HTML 模板截图渲染。关闭后改用文本摘要。",
+    "type": "bool",
+    "default": true
+  },
+  "request_timeout": {
+    "description": "Go API 请求超时时间，单位秒。",
+    "type": "int",
+    "default": 30
+  },
+  "render_timeout": {
+    "description": "Playwright 渲染超时时间，单位毫秒。",
+    "type": "int",
+    "default": 30000
+  },
+  "login_poll_timeout": {
+    "description": "扫码登录轮询超时时间，单位秒。",
+    "type": "int",
+    "default": 180
+  },
+  "login_poll_interval": {
+    "description": "扫码登录轮询间隔，单位秒。",
+    "type": "int",
+    "default": 5
+  },
+  "tts_max_length": {
+    "description": "TTS 文本最大长度。",
+    "type": "int",
+    "default": 800
+  }
+}

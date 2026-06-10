@@ -1,0 +1,4 @@
+httpx
+jinja2
+playwright
+PyYAML
