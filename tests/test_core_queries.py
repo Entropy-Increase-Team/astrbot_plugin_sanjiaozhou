@@ -897,9 +897,23 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
         uri, origin = plugin._ws_uri()
 
-        self.assertIn("client_id=fixture-bot", uri)
-        self.assertTrue(uri.startswith("wss://delta-test-api.shallow.ink/ws?"))
+        self.assertEqual(uri, "wss://delta-test-api.shallow.ink/ws")
+        self.assertNotIn("fixture-key", uri)
         self.assertEqual(origin, "https://delta-test-api.shallow.ink")
+
+    def test_ws_header_argument_supports_old_and_new_websockets(self):
+        def old_connect(uri, *, extra_headers=None):
+            return uri, extra_headers
+
+        def new_connect(uri, *, additional_headers=None):
+            return uri, additional_headers
+
+        self.assertEqual(
+            DeltaForcePlugin._ws_header_argument(old_connect), "extra_headers"
+        )
+        self.assertEqual(
+            DeltaForcePlugin._ws_header_argument(new_connect), "additional_headers"
+        )
 
     async def test_ws_run_once_sends_protocol_envelope_and_dispatches_record_event(self):
         event_data = {"subscription_id": "fixture-sub", "record_id": "fixture-record"}
@@ -907,14 +921,30 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         class Connection:
             def __init__(self):
                 self.sent = []
+                self.received = [
+                    "非 JSON 消息",
+                    json.dumps({"type": "connection.ready", "kind": "event", "data": {}}),
+                ]
 
             async def send(self, value):
                 self.sent.append(value)
 
+            async def recv(self):
+                if self.received:
+                    return self.received.pop(0)
+                request_id = json.loads(self.sent[0])["id"]
+                return json.dumps(
+                    {
+                        "id": request_id,
+                        "type": "record.client.subscribe",
+                        "kind": "response",
+                        "code": 0,
+                        "data": {"subscribed": ["record:client:fixture:fixture-bot"]},
+                    }
+                )
+
             def __aiter__(self):
                 async def messages():
-                    yield "非 JSON 消息"
-                    yield json.dumps({"type": "connection.ready", "kind": "event", "data": {}})
                     yield json.dumps({"type": "record.new", "kind": "event", "data": event_data})
 
                 return messages()
@@ -945,6 +975,8 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope["kind"], "request")
         self.assertEqual(envelope["data"], {"client_id": "fixture-bot"})
         self.assertEqual(connect.call_args.kwargs["origin"], "https://delta-test-api.shallow.ink")
+        self.assertEqual(connect.call_args.kwargs["additional_headers"], {"X-API-Key": "fixture-key"})
+        self.assertNotIn("fixture-key", connect.call_args.args[0])
         plugin._push_record_event.assert_awaited_once_with(event_data)
         self.assertIsNone(plugin._ws_connection)
 
@@ -953,10 +985,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             async def send(self, _value):
                 return None
 
-            def __aiter__(self):
-                return self
-
-            async def __anext__(self):
+            async def recv(self):
                 raise RuntimeError("连接读取失败")
 
         class ConnectionContext:
@@ -979,6 +1008,49 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             SimpleNamespace(connect=Mock(return_value=ConnectionContext())),
         ):
             with self.assertRaisesRegex(RuntimeError, "连接读取失败"):
+                await plugin._ws_run_once()
+
+        self.assertIsNone(plugin._ws_connection)
+
+    async def test_ws_run_once_rejects_failed_subscription_response(self):
+        class RejectedConnection:
+            def __init__(self):
+                self.request_id = ""
+
+            async def send(self, value):
+                self.request_id = json.loads(value)["id"]
+
+            async def recv(self):
+                return json.dumps(
+                    {
+                        "id": self.request_id,
+                        "type": "record.client.subscribe",
+                        "kind": "response",
+                        "code": 403,
+                        "message": "拒绝",
+                    }
+                )
+
+        class ConnectionContext:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *_args):
+                return False
+
+        connection = RejectedConnection()
+        plugin = self._plugin()
+        plugin.client = SimpleNamespace(
+            api_key="fixture-key",
+            _base_urls=lambda: ["https://delta-test-api.shallow.ink"],
+        )
+        plugin.config = {"client_id": "fixture-bot"}
+
+        with patch(
+            "astrbot_plugin_sanjiaozhou.main.websockets",
+            SimpleNamespace(connect=Mock(return_value=ConnectionContext())),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "订阅请求被后端拒绝"):
                 await plugin._ws_run_once()
 
         self.assertIsNone(plugin._ws_connection)

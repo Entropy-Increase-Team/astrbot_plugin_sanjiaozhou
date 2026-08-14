@@ -3,13 +3,14 @@ import asyncio
 import base64
 import binascii
 import datetime as dt
+import inspect
 import json
 import os
 import re
 from html import unescape
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlparse, urlunparse
 
 import yaml
 
@@ -632,14 +633,19 @@ class DeltaForcePlugin(Star):
         base = self.client._base_urls()[0]
         parsed = urlparse(str(base))
         scheme = "wss" if parsed.scheme == "https" else "ws"
-        query = {
-            "api_key": self.client.api_key,
-            "client_type": "bot",
-            "client_id": self._ws_client_id(),
-        }
-        uri = urlunparse((scheme, parsed.netloc, "/ws", "", urlencode(query), ""))
+        uri = urlunparse((scheme, parsed.netloc, "/ws", "", "", ""))
         origin = f"{parsed.scheme or 'https'}://{parsed.netloc}" if parsed.netloc else "https://delta-test-api.shallow.ink"
         return uri, origin
+
+    @staticmethod
+    def _ws_header_argument(connect: Any) -> str:
+        try:
+            parameters = inspect.signature(connect).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "extra_headers" in parameters and "additional_headers" not in parameters:
+            return "extra_headers"
+        return "additional_headers"
 
     async def _ws_supervisor(self) -> None:
         if websockets is None:
@@ -669,17 +675,45 @@ class DeltaForcePlugin(Star):
 
     async def _ws_run_once(self) -> None:
         uri, origin = self._ws_uri()
+        header_argument = self._ws_header_argument(websockets.connect)
+        connect_options = {
+            "origin": origin,
+            "ping_interval": 20,
+            "ping_timeout": 60,
+            "close_timeout": 5,
+            header_argument: {"X-API-Key": self.client.api_key},
+        }
         try:
-            async with websockets.connect(uri, origin=origin, ping_interval=20, ping_timeout=60, close_timeout=5) as connection:
+            async with websockets.connect(uri, **connect_options) as connection:
                 self._ws_connection = connection
+                request_id = f"astrbot-{int(dt.datetime.now().timestamp() * 1000)}"
                 envelope = {
-                    "id": f"astrbot-{int(dt.datetime.now().timestamp() * 1000)}",
+                    "id": request_id,
                     "type": "record.client.subscribe",
                     "kind": "request",
                     "data": {"client_id": self._ws_client_id()},
                     "ts": int(dt.datetime.now().timestamp() * 1000),
                 }
                 await connection.send(json.dumps(envelope, ensure_ascii=False))
+                while True:
+                    raw = await asyncio.wait_for(connection.recv(), timeout=10)
+                    try:
+                        message = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if not isinstance(message, dict):
+                        continue
+                    if message.get("kind") == "event" and message.get("type") == "record.new":
+                        await self._push_record_event(message.get("data") or {})
+                        continue
+                    if message.get("kind") != "response" or message.get("id") != request_id:
+                        continue
+                    if message.get("code") != 0:
+                        raise RuntimeError("战绩订阅请求被后端拒绝")
+                    payload = message.get("data") if isinstance(message.get("data"), dict) else {}
+                    if not payload.get("subscribed"):
+                        raise RuntimeError("后端未确认战绩订阅频道")
+                    break
                 async for raw in connection:
                     if self._ws_stop.is_set():
                         break
