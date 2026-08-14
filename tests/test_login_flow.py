@@ -959,6 +959,35 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("音乐服务异常", error[0]["text"])
         self.assertIn("测试歌曲", listing[0]["text"])
 
+    async def test_music_selection_and_lyrics_handle_expired_or_missing_data(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+
+        expired_selection = await _collect(plugin._music_select(_Event(), 1))
+        missing_lyrics = await _collect(plugin._music_lyrics(_Event()))
+
+        plugin._music_lists["qq_mock-user"] = {
+            "created_at": __import__("time").time(),
+            "songs": client.songs,
+        }
+        out_of_range = await _collect(plugin._music_select(_Event(), 2))
+
+        plugin._music_last["qq_mock-user"] = {
+            "created_at": __import__("time").time(),
+            "song": {"title": "无歌词歌曲", "url": "https://media.example.invalid/song.mp3"},
+        }
+        empty_lyrics = await _collect(plugin._music_lyrics(_Event()))
+
+        plugin._music_last["qq_mock-user"]["song"]["lrc"] = "https://media.example.invalid/missing.lrc"
+        client.fetch_text = AsyncMock(return_value="")
+        download_error = await _collect(plugin._music_lyrics(_Event()))
+
+        self.assertIn("音乐列表已失效", expired_selection[0]["text"])
+        self.assertIn("暂无最近播放", missing_lyrics[0]["text"])
+        self.assertIn("序号超出范围", out_of_range[0]["text"])
+        self.assertIn("暂无歌词", empty_lyrics[0]["text"])
+        self.assertIn("歌词下载失败", download_error[0]["text"])
+
     async def test_tts_resolves_character_and_polls_until_audio_is_ready(self):
         client = _EntertainmentClient()
         plugin = self._plugin(client)
@@ -1081,6 +1110,19 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         cleared = await _collect(plugin._music_cache_clear(_Event()))
         self.assertIn("清理文件：2 个", cleared[0]["text"])
 
+    async def test_music_cache_clear_requires_admin(self):
+        class NonAdminEvent(_Event):
+            def is_admin(self):
+                return False
+
+        plugin = self._plugin(_EntertainmentClient())
+        plugin.music_cache.clear = Mock()
+
+        result = await _collect(plugin._music_cache_clear(NonAdminEvent()))
+
+        self.assertIn("只有管理员", result[0]["text"])
+        plugin.music_cache.clear.assert_not_called()
+
     async def test_music_cache_persists_stats_and_clears_files(self):
         song = {
             "title": "缓存测试",
@@ -1146,6 +1188,25 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("目标战备值", initial[0]["text"])
         self.assertIn("战备计算结果", sent[-1]["text"])
         calculator.calculate_readiness.assert_called_once_with(500, None, None, None)
+
+    async def test_readiness_session_reports_timeout(self):
+        def timeout_waiter(*_args, **_kwargs):
+            def decorator(_handler):
+                async def wrapper(_event):
+                    raise TimeoutError
+
+                return wrapper
+
+            return decorator
+
+        plugin = self._plugin(_EntertainmentClient())
+        util = sys.modules["astrbot.api.util"]
+
+        with patch.object(util, "session_waiter", timeout_waiter):
+            result = await _collect(plugin._readiness_session(_Event()))
+
+        self.assertIn("目标战备值", result[0]["text"])
+        self.assertIn("会话已超时", result[-1]["text"])
 
 
 if __name__ == "__main__":

@@ -259,6 +259,104 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         plugin._render_identity = identity
         return plugin
 
+    async def test_help_reports_configuration_read_error(self):
+        plugin = self._plugin()
+        plugin.plugin_path = str(PLUGIN_DIR)
+
+        with patch("builtins.open", side_effect=OSError("帮助配置不可读")):
+            result = await _collect(plugin._help(_Event(), "main"))
+
+        self.assertIn("读取帮助配置失败", result[0]["text"])
+        self.assertIn("帮助配置不可读", result[0]["text"])
+
+    async def test_quick_repair_formats_success_and_rejects_invalid_inputs(self):
+        calculator = SimpleNamespace(
+            find_equipment=Mock(return_value={"name": "测试护甲"}),
+            calculate_repair=Mock(
+                return_value={
+                    "success": True,
+                    "mode": "局外维修",
+                    "armor": "测试护甲",
+                    "repairLevel": 3,
+                    "initialMax": 100,
+                    "currentDurability": 80,
+                    "remainingDurability": 20,
+                    "finalUpper": 70,
+                    "repairLoss": 10,
+                    "repairCost": 1000,
+                    "wearPercentage": 30,
+                    "marketStatus": "可出售",
+                }
+            ),
+        )
+        plugin = self._plugin()
+        plugin.calculator = calculator
+
+        success = await _collect(plugin._quick_repair(_Event(), "测试护甲", "20", "80", "局外"))
+        invalid_number = await _collect(plugin._quick_repair(_Event(), "测试护甲", "错误", "80", "局外"))
+        invalid_max = await _collect(plugin._quick_repair(_Event(), "测试护甲", "20", "0", "局外"))
+        calculator.find_equipment.return_value = None
+        missing = await _collect(plugin._quick_repair(_Event(), "不存在", "20", "80", "局外"))
+
+        self.assertIn("维修计算结果", success[0]["text"])
+        self.assertIn("维修花费: 1000", success[0]["text"])
+        self.assertIn("耐久度参数无效", invalid_number[0]["text"])
+        self.assertIn("当前上限必须大于 0", invalid_max[0]["text"])
+        self.assertIn("未找到装备", missing[0]["text"])
+
+    async def test_quick_damage_formats_success_and_rejects_invalid_inputs(self):
+        result = {
+            "success": True,
+            "helmet": "测试头盔",
+            "armor": "测试护甲",
+            "weapon": "测试步枪",
+            "bullet": "测试子弹",
+            "penetrationLevel": 4,
+            "distance": 50,
+            "baseDamage": 40,
+            "weaponDecayMultiplier": 0.9,
+            "shotsToKill": 3,
+            "totalDamage": 120,
+            "totalArmorDamage": 50,
+            "finalPlayerHealth": 0,
+            "finalArmorDurability": 0,
+            "maxArmorDurability": 50,
+            "finalHelmetDurability": 10,
+            "maxHelmetDurability": 40,
+            "isKilled": True,
+            "shotResults": [],
+        }
+        calculator = SimpleNamespace(
+            mode=Mock(return_value="sol"),
+            find_weapon=Mock(return_value={"name": "测试步枪", "caliber": "5.56"}),
+            find_bullet=Mock(return_value={"name": "测试子弹"}),
+            parse_armor=Mock(return_value=({"name": "测试头盔"}, {"name": "测试护甲"}, "")),
+            parse_hit_parts=Mock(return_value=([{"part": "胸部", "count": 3}], "")),
+            calculate_damage=Mock(return_value=result),
+        )
+        plugin = self._plugin()
+        plugin.calculator = calculator
+
+        success = await _collect(plugin._quick_damage(_Event(), "烽火 测试步枪 测试子弹 41:37 50 3 2:3"))
+        bad_format = await _collect(plugin._quick_damage(_Event(), "参数不足"))
+        calculator.mode.return_value = None
+        bad_mode = await _collect(plugin._quick_damage(_Event(), "未知 测试步枪 测试子弹 41:37 50 3 2:3"))
+
+        self.assertIn("击杀模拟结果", success[0]["text"])
+        self.assertIn("击杀状态: 已击杀", success[0]["text"])
+        self.assertIn("指令格式错误", bad_format[0]["text"])
+        self.assertIn("游戏模式错误", bad_mode[0]["text"])
+
+    def test_readiness_result_handles_failure_and_empty_combinations(self):
+        self.assertIn(
+            "静态数据不足",
+            DeltaForcePlugin._readiness_result_text({"success": False, "error": "静态数据不足"}),
+        )
+        self.assertIn(
+            "未找到满足条件",
+            DeltaForcePlugin._readiness_result_text({"success": True, "topCombinations": []}),
+        )
+
     async def test_client_uses_authoritative_record_and_map_parameters(self):
         client = object.__new__(DeltaForceClient)
         client.get = AsyncMock(return_value={"code": 0, "data": {}})
