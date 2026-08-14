@@ -109,6 +109,76 @@ class LiveBackendTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(DeltaForceClient.data(maps, {}))
         self.assertTrue(DeltaForceClient.data(operators, {}))
 
+    async def test_live_public_and_tool_query_contracts(self):
+        cases = [
+            ("段位元数据", self.client.rank_score, dict, {"sol", "tdm"}),
+            ("健康元数据", self.client.object_health, list, set()),
+            (
+                "物品列表",
+                lambda: self.client.object_list(page="1", limit="1"),
+                dict,
+                {"list", "total"},
+            ),
+            (
+                "物品搜索",
+                lambda: self.client.object_search("金条", page="1", limit="1"),
+                dict,
+                {"list", "total"},
+            ),
+            (
+                "物品价值列表",
+                lambda: self.client.object_value_list({"page": 1, "limit": 1}),
+                dict,
+                {"list", "total"},
+            ),
+            (
+                "物品价值搜索",
+                lambda: self.client.object_value_search("金条"),
+                dict,
+                {"list", "total"},
+            ),
+            (
+                "材料价格",
+                lambda: self.client.material_price(page="1", page_size="1"),
+                dict,
+                {"materials", "pagination"},
+            ),
+            ("语音分类", self.client.audio_categories, dict, {"categories"}),
+            ("语音角色", self.client.audio_characters, dict, {"characters", "totalCount"}),
+            ("语音统计", self.client.audio_stats, dict, {"categories", "totalFiles"}),
+            ("语音标签", self.client.audio_tags, dict, {"tags"}),
+            ("TTS 健康", self.client.tts_health, dict, {"tts_service"}),
+            ("TTS 预设", self.client.tts_presets, dict, {"presets"}),
+            ("TTS 队列", self.client.tts_queue, dict, {"processing", "queueLength"}),
+            ("每日密码", self.client.daily_keyword, dict, {"list"}),
+            ("文章列表", self.client.article_list, dict, {"articles"}),
+            ("AI 预设", self.client.ai_presets, dict, {"presets"}),
+            (
+                "公开改枪方案",
+                lambda: self.client.community_solutions({"page": 1, "pageSize": 1}),
+                dict,
+                {"items", "total"},
+            ),
+            (
+                "旧版改枪方案",
+                lambda: self.client.solution_list({"page": 1, "limit": 1}),
+                dict,
+                {"list", "totalCount"},
+            ),
+        ]
+
+        for action, request, expected_type, required_fields in cases:
+            with self.subTest(action=action):
+                response = await request()
+                self._assert_success(response, action)
+                payload = DeltaForceClient.data(response, None)
+                self.assertIsInstance(payload, expected_type, f"{action}响应类型不符合契约。")
+                if isinstance(payload, dict):
+                    self.assertTrue(
+                        required_fields.issubset(payload),
+                        f"{action}缺少字段：{','.join(sorted(required_fields - payload.keys()))}",
+                    )
+
     async def test_live_qq_login_bootstrap_and_pending_status(self):
         response = await self.client.login_qr("qq")
         self._assert_success(response, "QQ 扫码初始化")
