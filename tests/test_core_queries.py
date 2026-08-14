@@ -244,6 +244,14 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.post.await_args.args[0], "/api/v1/df/tools/ai")
         self.assertEqual(client.post.await_args.kwargs["json_data"], {"type": "sol", "preset": "rp"})
 
+        client.put = AsyncMock(return_value={"code": 0, "data": {}})
+        await client.update_community_solution("fixture-uuid", {"description": "新描述"}, "qq_fixture")
+        self.assertEqual(
+            client.put.await_args.args[0],
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid",
+        )
+        self.assertEqual(client.put.await_args.kwargs["proxy_user_id"], "qq_fixture")
+
     async def test_client_uses_authoritative_record_subscription_endpoints(self):
         client = object.__new__(DeltaForceClient)
         client.get = AsyncMock(return_value={"code": 0, "data": {}})
@@ -360,6 +368,78 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有战绩订阅", empty[0]["text"])
         self.assertIn("fixture-error", error[0]["text"])
         self.assertEqual(plugin.subscriptions.saved[2]["subscription_id"], "fixture-sub")
+
+    async def test_solution_list_detail_and_upload_use_latest_fields(self):
+        client = SimpleNamespace(
+            community_solutions=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {
+                                "solutionId": "fixture-uuid",
+                                "solutionCode": "CODE123",
+                                "weaponName": "M4A1",
+                                "type": "sol",
+                                "totalPrice": 12345,
+                            }
+                        ],
+                        "total": 1,
+                    },
+                }
+            ),
+            community_solution_detail=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "solution": {
+                            "solutionId": "fixture-uuid",
+                            "weaponName": "M4A1",
+                            "attachments": [{"slotId": "scope", "objectId": 1001, "objectName": "瞄准镜"}],
+                        }
+                    },
+                }
+            ),
+            create_community_solution=AsyncMock(
+                return_value={"code": 0, "data": {"solution": {"solutionId": "new-uuid"}}}
+            ),
+        )
+        plugin = self._plugin(client)
+
+        listing = await _collect(plugin._solution_list(_Event(), "烽火 page2", favorites=False))
+        detail = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
+        uploaded = await _collect(
+            plugin._solution_upload(
+                _Event(),
+                'CODE456 180100001 mp 新方案 [{"slotId":"scope","objectId":1001}]',
+            )
+        )
+
+        self.assertIn("CODE123", listing[0]["text"])
+        self.assertIn("瞄准镜", detail[0]["text"])
+        self.assertIn("new-uuid", uploaded[0]["text"])
+        self.assertEqual(client.community_solutions.await_args.args[0], {"page": 2, "pageSize": 20, "type": "sol"})
+        self.assertEqual(
+            client.create_community_solution.await_args.args[0],
+            {
+                "solutionCode": "CODE456",
+                "description": "新方案",
+                "type": "mp",
+                "weaponId": 180100001,
+                "attachments": [{"slotId": "scope", "objectId": 1001, "objectName": ""}],
+            },
+        )
+
+    async def test_solution_upload_rejects_missing_or_invalid_attachments(self):
+        client = SimpleNamespace(create_community_solution=AsyncMock())
+        plugin = self._plugin(client)
+
+        missing = await _collect(plugin._solution_upload(_Event(), "CODE 180100001 sol"))
+        invalid = await _collect(plugin._solution_upload(_Event(), "CODE 180100001 sol []"))
+
+        self.assertIn("缺少配件 JSON", missing[0]["text"])
+        self.assertIn("非空数组", invalid[0]["text"])
+        client.create_community_solution.assert_not_awaited()
 
     async def test_record_event_push_is_deduplicated(self):
         plugin = self._plugin()

@@ -98,6 +98,14 @@ DELTA_COMMAND_SPECS = [
     ("价格历史", {"历史价格"}),
     ("材料价格", {"制造材料"}),
     ("利润历史", {"历史利润", "利润排行", "利润榜", "最高利润", "利润排行v2", "利润榜v2", "特勤处利润", "特勤利润"}),
+    ("上传改枪码", {"上传改枪方案"}),
+    ("改枪码列表", {"改枪方案列表"}),
+    ("改枪码详情", {"改枪方案详情"}),
+    ("改枪码点赞", {"改枪方案点赞", "改枪码点踩", "改枪方案点踩"}),
+    ("更新改枪码", {"更新改枪方案"}),
+    ("删除改枪码", {"删除改枪方案"}),
+    ("收藏改枪码", {"收藏改枪方案", "取消收藏改枪码", "取消收藏改枪方案"}),
+    ("改枪码收藏列表", {"改枪方案收藏列表"}),
     ("每日密码", {"今日密码"}),
     ("文章列表", set()),
     ("文章详情", {"文章"}),
@@ -1070,6 +1078,38 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(利润历史|历史利润|利润排行|利润榜|最高利润|利润排行v2|利润榜v2|特勤处利润|特勤利润)\s*(.*)", body):
             async for r in self._profit(event, m.group(1), m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"上传(改枪码|改枪方案)\s*(.*)", body, flags=re.S):
+            async for r in self._solution_upload(event, m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(改枪码|改枪方案)列表\s*(.*)", body):
+            async for r in self._solution_list(event, m.group(2).strip(), favorites=False):
+                yield r
+            return
+        if m := re.fullmatch(r"(改枪码|改枪方案)详情\s+(\S+)", body):
+            async for r in self._solution_detail(event, m.group(2)):
+                yield r
+            return
+        if m := re.fullmatch(r"(改枪码|改枪方案)(点赞|点踩)\s+(\S+)", body):
+            async for r in self._solution_vote(event, m.group(3), 1 if m.group(2) == "点赞" else -1):
+                yield r
+            return
+        if m := re.fullmatch(r"更新(改枪码|改枪方案)\s+(\S+)\s+(.+)", body, flags=re.S):
+            async for r in self._solution_update(event, m.group(2), m.group(3).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"删除(改枪码|改枪方案)\s+(\S+)", body):
+            async for r in self._solution_delete(event, m.group(2)):
+                yield r
+            return
+        if m := re.fullmatch(r"(收藏|取消收藏)(改枪码|改枪方案)\s+(\S+)", body):
+            async for r in self._solution_favorite(event, m.group(3), m.group(1) == "收藏"):
+                yield r
+            return
+        if re.fullmatch(r"(改枪码|改枪方案)收藏列表", body):
+            async for r in self._solution_list(event, "", favorites=True):
                 yield r
             return
 
@@ -3361,6 +3401,200 @@ class DeltaForcePlugin(Star):
                 params["limit"] = part
         params["type"] = "hour" if str(params.get("type") or "hour").lower() in {"hour", "hourprofit"} else "total"
         return params
+
+    def _solution_items(self, response: Any) -> List[Dict[str, Any]]:
+        data = self._data(response, {}) or {}
+        rows = self._first_list(data, ("items", "list", "solutions", "data"))
+        return [item for item in rows if isinstance(item, dict)]
+
+    @staticmethod
+    def _valid_solution_id(value: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9-]{1,80}", str(value or "")))
+
+    def _solution_list_text(self, title: str, rows: List[Dict[str, Any]], total: Any = None) -> str:
+        lines = [f"【{title}】" + (f" 共 {total} 条" if total not in (None, "") else "")]
+        for index, item in enumerate(rows, 1):
+            solution_id = item.get("solutionId") or item.get("id") or "未知"
+            lines.append(
+                f"{index}. {item.get('weaponName') or '未知武器'}｜{item.get('type') or 'sol'}｜"
+                f"{self.data_mgr.fmt_price(item.get('totalPrice') or 0)}\n"
+                f"ID: {solution_id}\n"
+                f"改枪码: {item.get('solutionCode') or '-'}\n"
+                f"作者: {item.get('authorNickname') or '匿名'}｜赞 {item.get('likes') or 0}｜收藏 {item.get('favoriteCount') or 0}"
+            )
+        return "\n\n".join(lines)
+
+    async def _solution_list(self, event: AstrMessageEvent, arg: str, favorites: bool) -> AsyncGenerator[Any, None]:
+        params: Dict[str, Any] = {"page": 1, "pageSize": 20}
+        keywords = []
+        for part in str(arg or "").split():
+            low = part.lower()
+            if low in SOL_ALIASES:
+                params["type"] = "sol"
+            elif low in MP_ALIASES:
+                params["type"] = "mp"
+            elif match := re.fullmatch(r"(?:page|页)(\d+)", low):
+                params["page"] = max(1, int(match.group(1)))
+            elif match := re.fullmatch(r"(?:weapon|武器)(?:id)?[=:]?(\d+)", low):
+                params["weaponId"] = int(match.group(1))
+            else:
+                keywords.append(part)
+        if keywords:
+            params["keyword"] = " ".join(keywords)
+        if favorites:
+            response = await self.client.my_community_favorites(
+                self._user_identifier(event), int(params["page"]), int(params["pageSize"])
+            )
+            title = "我的改枪码收藏"
+        else:
+            response = await self.client.community_solutions(params)
+            title = "改枪码社区"
+        if not self._ok(response):
+            yield event.plain_result(f"查询{title}失败：{self._message_of(response)}")
+            return
+        rows = self._solution_items(response)
+        if not rows:
+            yield event.plain_result("未找到符合条件的改枪方案。")
+            return
+        data = self._data(response, {}) or {}
+        yield event.plain_result(self._solution_list_text(title, rows, data.get("total") if isinstance(data, dict) else None))
+
+    async def _solution_detail(self, event: AstrMessageEvent, solution_id: str) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.community_solution_detail(solution_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询改枪方案失败：{self._message_of(response)}")
+            return
+        data = self._data(response, {}) or {}
+        item = data.get("solution") if isinstance(data, dict) and isinstance(data.get("solution"), dict) else data
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("改枪方案不存在或暂不可见。")
+            return
+        attachments = [part for part in item.get("attachments") or [] if isinstance(part, dict)]
+        lines = [
+            "【改枪方案详情】",
+            f"ID: {item.get('solutionId') or item.get('id') or solution_id}",
+            f"武器: {item.get('weaponName') or '未知'} ({item.get('weaponId') or '-'})",
+            f"模式: {item.get('type') or 'sol'}",
+            f"改枪码: {item.get('solutionCode') or '-'}",
+            f"总价: {self.data_mgr.fmt_price(item.get('totalPrice') or 0)}",
+            f"作者: {item.get('authorNickname') or '匿名'}",
+            f"状态: {item.get('reviewStatus') or item.get('status') or '未知'}",
+            f"互动: 赞 {item.get('likes') or 0} / 踩 {item.get('dislikes') or 0} / 收藏 {item.get('favoriteCount') or 0}",
+        ]
+        if item.get("description"):
+            lines.append(f"描述: {item['description']}")
+        if attachments:
+            lines.append("配件:")
+            lines.extend(
+                f"- {part.get('slotId') or '未知槽位'}: {part.get('objectName') or part.get('objectId') or '未知配件'}"
+                for part in attachments
+            )
+        yield event.plain_result("\n".join(lines))
+
+    async def _solution_upload(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
+        help_text = (
+            "格式：上传改枪码 <改枪码> <武器ID> [sol/mp] [描述] <配件JSON>\n"
+            "配件示例：[ {\"slotId\":\"scope\",\"objectId\":12345} ]"
+        )
+        if not arg:
+            yield event.plain_result(help_text)
+            return
+        match = re.search(r"(\[[\s\S]*\])\s*$", arg)
+        if not match:
+            yield event.plain_result("缺少配件 JSON。" + help_text)
+            return
+        try:
+            attachments = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            yield event.plain_result("配件 JSON 格式错误。")
+            return
+        if not isinstance(attachments, list) or not attachments:
+            yield event.plain_result("配件 JSON 必须是非空数组。")
+            return
+        normalized = []
+        for part in attachments:
+            if not isinstance(part, dict):
+                yield event.plain_result("每个配件必须是 JSON 对象。")
+                return
+            slot_id = str(part.get("slotId") or part.get("slot_id") or "").strip()
+            object_id = part.get("objectId") or part.get("object_id")
+            if not slot_id or not str(object_id or "").isdigit():
+                yield event.plain_result("每个配件都必须包含 slotId 和数字 objectId。")
+                return
+            normalized.append(
+                {"slotId": slot_id, "objectId": int(object_id), "objectName": str(part.get("objectName") or "")}
+            )
+        parts = arg[: match.start()].strip().split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            yield event.plain_result(help_text)
+            return
+        solution_code = parts[0]
+        weapon_id = int(parts[1])
+        mode = "sol"
+        description_parts = parts[2:]
+        if description_parts and description_parts[0].lower() in SOL_ALIASES | MP_ALIASES:
+            token = description_parts.pop(0).lower()
+            mode = "sol" if token in SOL_ALIASES else "mp"
+        payload = {
+            "solutionCode": solution_code,
+            "description": " ".join(description_parts),
+            "type": mode,
+            "weaponId": weapon_id,
+            "attachments": normalized,
+        }
+        response = await self.client.create_community_solution(payload, self._user_identifier(event))
+        if not self._ok(response):
+            yield event.plain_result(f"上传改枪方案失败：{self._message_of(response)}")
+            return
+        data = self._data(response, {}) or {}
+        item = data.get("solution") if isinstance(data, dict) and isinstance(data.get("solution"), dict) else data
+        solution_id = item.get("solutionId") or item.get("id") if isinstance(item, dict) else ""
+        yield event.plain_result(f"改枪方案已提交，ID：{solution_id or '后端未返回'}。方案需通过审核后才会公开显示。")
+
+    async def _solution_update(self, event: AstrMessageEvent, solution_id: str, arg: str) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        parts = arg.split()
+        payload: Dict[str, Any] = {}
+        visibility = next((part for part in reversed(parts) if part.lower() in {"公开", "私有", "public", "private"}), "")
+        if visibility:
+            payload["isPublic"] = visibility.lower() in {"公开", "public"}
+            parts.remove(visibility)
+        description = " ".join(parts).strip()
+        if description:
+            payload["description"] = description
+        if not payload:
+            yield event.plain_result("请提供新描述和/或公开、私有设置。")
+            return
+        response = await self.client.update_community_solution(solution_id, payload, self._user_identifier(event))
+        yield event.plain_result("改枪方案已更新。" if self._ok(response) else f"更新失败：{self._message_of(response)}")
+
+    async def _solution_delete(self, event: AstrMessageEvent, solution_id: str) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.delete_community_solution(solution_id, self._user_identifier(event))
+        yield event.plain_result("改枪方案已删除。" if self._ok(response) else f"删除失败：{self._message_of(response)}")
+
+    async def _solution_vote(self, event: AstrMessageEvent, solution_id: str, vote: int) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.vote_community_solution(solution_id, vote, self._user_identifier(event))
+        action = "点赞" if vote > 0 else "点踩"
+        yield event.plain_result(f"已{action}该方案。" if self._ok(response) else f"{action}失败：{self._message_of(response)}")
+
+    async def _solution_favorite(self, event: AstrMessageEvent, solution_id: str, enabled: bool) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.favorite_community_solution(solution_id, enabled, self._user_identifier(event))
+        action = "收藏" if enabled else "取消收藏"
+        yield event.plain_result(f"已{action}该方案。" if self._ok(response) else f"{action}失败：{self._message_of(response)}")
 
     async def _daily_keyword(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.daily_keyword()

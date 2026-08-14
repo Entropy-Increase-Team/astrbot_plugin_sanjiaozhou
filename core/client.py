@@ -82,6 +82,7 @@ class DeltaForceClient:
         framework_token: str = "",
         user_identifier: str = "",
         client_id: str = "",
+        proxy_user_id: str = "",
         json_body: bool = False,
     ) -> Dict[str, str]:
         headers: Dict[str, str] = {
@@ -96,6 +97,9 @@ class DeltaForceClient:
             headers["X-User-Identifier"] = user_identifier
         if client_id:
             headers["X-Client-ID"] = client_id
+        if proxy_user_id:
+            headers["X-Client-User-ID"] = proxy_user_id
+            headers["X-Client-User-Type"] = "bot"
         if json_body:
             headers["Content-Type"] = "application/json"
         return headers
@@ -122,6 +126,7 @@ class DeltaForceClient:
         framework_token: str = "",
         user_identifier: str = "",
         client_id: str = "",
+        proxy_user_id: str = "",
         require_key: bool = True,
     ) -> Dict[str, Any]:
         if require_key and (not self.api_key or self.api_key == "sk-xxxxxxx"):
@@ -138,6 +143,7 @@ class DeltaForceClient:
                 framework_token=framework_token,
                 user_identifier=user_identifier,
                 client_id=client_id,
+                proxy_user_id=proxy_user_id,
                 json_body=json_data is not None,
             )
             try:
@@ -182,6 +188,9 @@ class DeltaForceClient:
 
     async def delete(self, path: str, **kwargs) -> Dict[str, Any]:
         return await self.request("DELETE", path, **kwargs)
+
+    async def put(self, path: str, **kwargs) -> Dict[str, Any]:
+        return await self.request("PUT", path, **kwargs)
 
     async def list_bindings(self, user_identifier: str, client_id: str, client_type: str = "bot"):
         return await self.get(
@@ -493,6 +502,52 @@ class DeltaForceClient:
             params={"record_type": record_type},
             user_identifier=user_identifier,
             client_id=client_id,
+        )
+
+    async def community_solutions(self, params: Optional[Dict[str, Any]] = None):
+        return await self.get("/api/v1/df/gunmod/community/solutions", params=params or {})
+
+    async def community_solution_detail(self, solution_id: str):
+        return await self.get(f"/api/v1/df/gunmod/community/solutions/{solution_id}")
+
+    async def create_community_solution(self, payload: Dict[str, Any], proxy_user_id: str):
+        return await self.post(
+            "/api/v1/df/gunmod/community/solutions",
+            json_data=payload,
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def update_community_solution(self, solution_id: str, payload: Dict[str, Any], proxy_user_id: str):
+        return await self.put(
+            f"/api/v1/df/gunmod/community/solutions/{solution_id}",
+            json_data=payload,
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def delete_community_solution(self, solution_id: str, proxy_user_id: str):
+        return await self.delete(
+            f"/api/v1/df/gunmod/community/solutions/{solution_id}",
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def vote_community_solution(self, solution_id: str, vote: int, proxy_user_id: str):
+        return await self.post(
+            f"/api/v1/df/gunmod/community/solutions/{solution_id}/vote",
+            json_data={"vote": vote},
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def favorite_community_solution(self, solution_id: str, enabled: bool, proxy_user_id: str):
+        path = f"/api/v1/df/gunmod/community/solutions/{solution_id}/favorite"
+        if enabled:
+            return await self.post(path, proxy_user_id=proxy_user_id)
+        return await self.delete(path, proxy_user_id=proxy_user_id)
+
+    async def my_community_favorites(self, proxy_user_id: str, page: int = 1, page_size: int = 20):
+        return await self.get(
+            "/api/v1/df/gunmod/community/my/favorites",
+            params={"page": page, "pageSize": page_size},
+            proxy_user_id=proxy_user_id,
         )
 
     async def ai_presets(self):
