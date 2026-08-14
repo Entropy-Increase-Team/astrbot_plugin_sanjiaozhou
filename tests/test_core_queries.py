@@ -2598,7 +2598,65 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ],
             },
+            "Template/redCollection/redCollection.html": {
+                "userName": "测试玩家",
+                "userAvatar": "",
+                "qqAvatarUrl": "",
+                "userRank": "烽火地带",
+                "seasonDisplay": "所有赛季",
+                "title": "血色会计",
+                "subtitle": "测试描述",
+                "unlockDesc": "测试解锁条件",
+                "statistics": {
+                    "redGodCount": "0",
+                    "redTotalCount": "0",
+                    "redTotalValue": "0",
+                    "unlockedCount": "",
+                },
+                "topCollections": [],
+                "unlockedCollections": [],
+            },
+            "Template/redRecordList/redRecordList.html": {
+                "userName": "测试玩家",
+                "userAvatar": "",
+                "qqAvatarUrl": "",
+                "userRank": "烽火地带",
+                "statistics": {
+                    "redGodCount": "0",
+                    "redTotalCount": "0",
+                    "redTotalValue": "0",
+                    "unlockedCount": "",
+                },
+                "records": [],
+                "totalRecords": 0,
+            },
+            "Template/redRecord/redRecord.html": {
+                "userName": "测试玩家",
+                "userAvatar": "",
+                "qqAvatarUrl": "",
+                "userRank": "烽火地带",
+                "itemName": "测试物品",
+                "itemType": "藏品",
+                "itemImageUrl": "",
+                "firstUnlockTime": "-",
+                "firstUnlockMap": "-",
+                "firstUnlockMapBg": "",
+                "records": [],
+                "recordCount": 0,
+            },
+            "Template/healthInfo/healthInfo.html": {
+                "deBuffList": [],
+                "buffList": [],
+            },
         }
+        for asset in (
+            "imgs/redCollection/bg.webp",
+            "imgs/redCollection/dw_bg.png",
+            "imgs/redCollection/red_bg2.png",
+            "imgs/redCollection/red_tit.webp",
+            "imgs/others/logo.png",
+        ):
+            self.assertTrue((PLUGIN_DIR / "resources" / asset).is_file(), asset)
         try:
             for name, data in fixtures.items():
                 with self.subTest(template=name):

@@ -123,6 +123,7 @@
 - 战备计算使用 AstrBot 原生 `SessionWaiter`，支持目标战备、指定胸挂/背包、最高单件价格和会话内取消；组合计算在线程中运行，不阻塞事件循环。
 - 干员详细数据来自 `/api/v1/df/object/operator`，静态列表来自 `/api/v1/df/object/operator2`；干员模板已从 Yunzai 语法转换为 Jinja2。
 - 第三阶段当时累计 70 项脱敏单元测试通过。Playwright 已额外生成并人工检查流水、藏品、特勤处、音乐和干员 5 张截图；干员截图为 `2400×1400`，背景、技能卡、长描述和底部均完整。
+- 2026-08-14 使用插件内素材 fixture 通过 Playwright 实际渲染并人工检查 `redCollection`、`redRecordList`、`redRecord` 和 `healthInfo` 四张截图；出红收藏的统计卡、标题条、收藏卡背景路径已校正，周报头像失败回退改用已存在的插件 Logo，长昵称、长物品名、记录列表和健康状态双栏均无破图、重叠或裁切。
 
 ## 当前验证汇总
 
