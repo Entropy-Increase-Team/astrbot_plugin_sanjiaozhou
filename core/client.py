@@ -26,7 +26,7 @@ class DeltaForceClient:
         self.api_key = (api_key or "").strip()
         self.api_mode = (api_mode or "auto").strip().lower()
         self.api_base_url = (api_base_url or "").strip().rstrip("/")
-        self.client = httpx.AsyncClient(timeout=timeout)
+        self.client = httpx.AsyncClient(timeout=timeout, verify=True)
 
     async def close(self):
         await self.client.aclose()
@@ -65,22 +65,34 @@ class DeltaForceClient:
         return urljoin(base_url, raw)
 
     async def fetch_text(self, value: str, max_bytes: int = 256 * 1024) -> str:
-        """下载后端提供的文本资源，并限制响应大小。"""
+        """流式下载后端提供的文本资源，并限制响应大小。"""
+        if max_bytes <= 0:
+            return ""
         url = self.resolve_url(value)
         if not url.startswith(("http://", "https://")):
             return ""
         try:
-            response = await self.client.get(url, follow_redirects=True)
-            response.raise_for_status()
-            content = response.content
-            if len(content) > max_bytes:
-                return ""
-            return response.text
-        except (httpx.HTTPError, UnicodeError):
+            chunks = []
+            size = 0
+            async with self.client.stream("GET", url, follow_redirects=True) as response:
+                response.raise_for_status()
+                declared = int(response.headers.get("content-length") or 0)
+                if declared > max_bytes:
+                    return ""
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return ""
+                    chunks.append(chunk)
+                encoding = response.charset_encoding or "utf-8"
+            return b"".join(chunks).decode(encoding)
+        except (httpx.HTTPError, LookupError, UnicodeError, ValueError):
             return ""
 
     async def fetch_binary(self, value: str, max_bytes: int = 64 * 1024 * 1024) -> bytes:
         """流式下载媒体资源，并在超过大小限制时立即中止。"""
+        if max_bytes <= 0:
+            return b""
         url = self.resolve_url(value)
         if not url.startswith(("http://", "https://")):
             return b""
@@ -182,18 +194,31 @@ class DeltaForceClient:
                 try:
                     body = resp.json()
                 except ValueError:
-                    body = {"code": resp.status_code, "message": resp.text, "data": None}
+                    body = None
 
                 if 200 <= resp.status_code < 300 or resp.status_code in (accepted_status_codes or set()):
-                    return body if isinstance(body, dict) else {"code": 0, "message": "成功", "data": body}
+                    if resp.status_code == 204:
+                        return {"code": 0, "message": "成功", "data": None}
+                    return body if isinstance(body, dict) else {"code": 0, "message": "成功", "data": resp.text}
 
-                message = body.get("message") or body.get("msg") or resp.reason_phrase if isinstance(body, dict) else resp.text
+                message = (
+                    body.get("message") or body.get("msg") or resp.reason_phrase
+                    if isinstance(body, dict)
+                    else f"HTTP {resp.status_code} {resp.reason_phrase}".strip()
+                )
                 last_error = {
                     "code": resp.status_code,
                     "message": message,
                     "data": body if isinstance(body, dict) else None,
                 }
                 if resp.status_code < 500 or not retryable:
+                    return last_error
+            except httpx.TimeoutException as exc:
+                last_error = {"code": -1, "message": "网络请求超时，请稍后重试。", "data": None}
+                logger.warning(
+                    f"[DeltaForce API] {method} {clean_path} 请求超时：{type(exc).__name__}"
+                )
+                if not retryable:
                     return last_error
             except httpx.RequestError as exc:
                 last_error = {"code": -1, "message": "网络请求失败，请稍后重试。", "data": None}

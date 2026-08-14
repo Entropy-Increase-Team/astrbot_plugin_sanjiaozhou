@@ -139,6 +139,15 @@ from astrbot_plugin_sanjiaozhou.core.version import PLUGIN_VERSION  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
 
 
+class _AsyncChunks(httpx.AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+
 class _Event:
     unified_msg_origin = "aiocqhttp:GroupMessage:123"
 
@@ -242,6 +251,135 @@ async def _collect(generator):
 
 
 class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def _transport_client(handler):
+        client = object.__new__(DeltaForceClient)
+        client.api_key = "fixture-key"
+        client.api_mode = "custom"
+        client.api_base_url = "https://api.example.invalid"
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        return client
+
+    def test_client_explicitly_enables_tls_verification(self):
+        with patch(
+            "astrbot_plugin_sanjiaozhou.core.client.httpx.AsyncClient"
+        ) as async_client:
+            DeltaForceClient(timeout=12.5)
+
+        async_client.assert_called_once_with(timeout=12.5, verify=True)
+
+    async def test_fetch_text_streams_utf8_and_rejects_oversized_content(self):
+        responses = [
+            httpx.Response(
+                200,
+                content="中文歌词".encode("utf-8"),
+                headers={"content-type": "text/plain; charset=utf-8"},
+            ),
+            httpx.Response(
+                200,
+                content=b"1234",
+                headers={"content-length": "1024"},
+            ),
+            httpx.Response(200, stream=_AsyncChunks([b"123", b"456"])),
+        ]
+        client = self._transport_client(lambda _request: responses.pop(0))
+        try:
+            self.assertEqual(
+                await client.fetch_text("/lyrics/mock.lrc", max_bytes=64),
+                "中文歌词",
+            )
+            self.assertEqual(
+                await client.fetch_text("/lyrics/declared-too-large.lrc", max_bytes=8),
+                "",
+            )
+            self.assertEqual(
+                await client.fetch_text("/lyrics/stream-too-large.lrc", max_bytes=5),
+                "",
+            )
+            self.assertEqual(await client.fetch_text("/lyrics/empty.lrc", max_bytes=0), "")
+        finally:
+            await client.close()
+
+    async def test_fetch_text_handles_http_and_encoding_errors(self):
+        responses = [
+            httpx.Response(404, text="不存在"),
+            httpx.Response(
+                200,
+                content=b"fixture",
+                headers={"content-type": "text/plain; charset=invalid-encoding"},
+            ),
+        ]
+        client = self._transport_client(lambda _request: responses.pop(0))
+        try:
+            self.assertEqual(await client.fetch_text("/missing.lrc"), "")
+            self.assertEqual(await client.fetch_text("/invalid-encoding.lrc"), "")
+        finally:
+            await client.close()
+
+    async def test_idempotent_get_switches_address_after_server_error(self):
+        hosts = []
+
+        def handler(request):
+            hosts.append(request.url.host)
+            if request.url.host == "first.invalid":
+                return httpx.Response(503, json={"code": 503, "message": "暂不可用"})
+            return httpx.Response(200, json={"code": 0, "data": {"status": "ok"}})
+
+        client = self._transport_client(handler)
+        client._base_urls = lambda: ["https://first.invalid", "https://second.invalid"]
+        try:
+            result = await client.get("/api/v1/fixture")
+        finally:
+            await client.close()
+
+        self.assertTrue(DeltaForceClient.ok(result))
+        self.assertEqual(hosts, ["first.invalid", "second.invalid"])
+
+    async def test_non_idempotent_timeout_returns_specific_error_without_retry(self):
+        calls = 0
+
+        def handler(request):
+            nonlocal calls
+            calls += 1
+            raise httpx.ReadTimeout("fixture timeout", request=request)
+
+        client = self._transport_client(handler)
+        client._base_urls = lambda: ["https://first.invalid", "https://second.invalid"]
+        try:
+            result = await client.post("/api/v1/fixture", json_data={"value": 1})
+        finally:
+            await client.close()
+
+        self.assertEqual(result["message"], "网络请求超时，请稍后重试。")
+        self.assertEqual(calls, 1)
+
+    async def test_no_content_is_success_and_non_json_error_is_sanitized(self):
+        responses = [
+            httpx.Response(204),
+            httpx.Response(502, text="<html>" + "敏感错误正文" * 100 + "</html>"),
+        ]
+        client = self._transport_client(lambda _request: responses.pop(0))
+        try:
+            no_content = await client.delete("/api/v1/fixture")
+            server_error = await client.post("/api/v1/fixture", json_data={})
+        finally:
+            await client.close()
+
+        self.assertTrue(DeltaForceClient.ok(no_content))
+        self.assertIsNone(DeltaForceClient.data(no_content))
+        self.assertEqual(server_error["code"], 502)
+        self.assertIn("HTTP 502", server_error["message"])
+        self.assertNotIn("敏感错误正文", server_error["message"])
+        self.assertIsNone(server_error["data"])
+
+    async def test_close_releases_underlying_http_client(self):
+        client = object.__new__(DeltaForceClient)
+        client.client = SimpleNamespace(aclose=AsyncMock())
+
+        await client.close()
+
+        client.client.aclose.assert_awaited_once_with()
+
     def _plugin(self, client=None):
         plugin = object.__new__(DeltaForcePlugin)
         plugin.client = client or SimpleNamespace()
@@ -339,9 +477,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.4", "0.4.3"],
+            ["0.4.5", "0.4.4"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "修复")
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()

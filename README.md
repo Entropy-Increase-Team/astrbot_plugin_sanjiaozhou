@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-- 当前版本：`0.4.4`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.5`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -39,6 +39,7 @@ playwright install chromium
 - `client_id`: 客户端 ID，建议填机器人 QQ 或在后端登记的 clientID。
 - `api_mode`: 默认 `auto`，内置模式当前统一请求 `https://delta-test-api.shallow.ink`。
 - `api_base_url`: 自定义 API 地址，仅 `api_mode=custom` 时生效。
+- 所有 HTTPS 请求默认校验证书；超时与普通网络错误会分别提示，非幂等写请求不会自动重放。
 - `enable_image_render`: 开启后使用 Playwright 渲染 HTML 模板；关闭后使用文本摘要兜底。
 - `request_timeout`: API 请求超时时间，单位秒。
 - `render_timeout`: Playwright 渲染超时时间，单位毫秒。
