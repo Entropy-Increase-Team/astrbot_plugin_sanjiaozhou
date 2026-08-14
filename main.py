@@ -1,7 +1,9 @@
+import ast
 import asyncio
 import base64
 import binascii
 import datetime as dt
+import json
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
@@ -246,6 +248,85 @@ class DeltaForcePlugin(Star):
         if isinstance(data, dict) and "data" in data and len(data) <= 3:
             return data.get("data")
         return data
+
+    @staticmethod
+    def _payload(res: Any, default: Any = None) -> Any:
+        """只移除 Go API 的统一响应信封，保留 AMS 业务层级。"""
+        return DeltaForceClient.data(res, default)
+
+    @staticmethod
+    def _ams_inner(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        first = value.get("data")
+        if not isinstance(first, dict):
+            return value
+        second = first.get("data")
+        return second if isinstance(second, dict) else first
+
+    @staticmethod
+    def _number(value: Any, default: float = 0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _parse_compound_list(value: Any) -> List[Dict[str, Any]]:
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        text = str(value or "").strip()
+        if not text or text.lower() == "null":
+            return []
+
+        parts = text.split("#") if "#" in text else [text]
+        result: List[Dict[str, Any]] = []
+        for part in parts:
+            item: Any = None
+            try:
+                item = json.loads(part)
+            except (json.JSONDecodeError, TypeError):
+                try:
+                    item = ast.literal_eval(part)
+                except (ValueError, SyntaxError):
+                    continue
+            if isinstance(item, dict):
+                result.append(item)
+        return result
+
+    @staticmethod
+    def _last_sunday(value: Optional[dt.datetime] = None) -> str:
+        now = value or dt.datetime.now()
+        sunday = now - dt.timedelta(days=now.isoweekday())
+        return sunday.strftime("%Y%m%d")
+
+    async def _render_identity(self, event: AstrMessageEvent, token: str) -> Dict[str, str]:
+        identity = {
+            "userName": self._sender_name(event),
+            "userAvatar": "",
+            "qqAvatarUrl": f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
+        }
+        try:
+            res = await self.client.personal_info(token)
+            if not self._ok(res):
+                return identity
+            raw = self._payload(res, {}) or {}
+            data = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else raw
+            user_data = data.get("userData") or data.get("user_data") or {}
+            role = raw.get("roleInfo") or data.get("roleInfo") or raw.get("role_info") or {}
+            name = self.data_mgr.decode_text(user_data.get("charac_name") or role.get("charac_name") or role.get("nickname") or "")
+            avatar = self.data_mgr.decode_text(user_data.get("picurl") or role.get("picurl") or "")
+            if avatar and avatar.isdigit():
+                avatar = f"https://wegame.gtimg.com/g.2001918-r.ea725/helper/df/skin/{avatar}.webp"
+            if name:
+                identity["userName"] = name
+            if avatar:
+                identity["userAvatar"] = avatar
+        except Exception as exc:
+            logger.debug(f"[三角洲] 获取渲染身份失败: {type(exc).__name__}")
+        return identity
 
     @staticmethod
     def _message_of(res: Any) -> str:
@@ -936,7 +1017,7 @@ class DeltaForcePlugin(Star):
         if not self._ok(res):
             yield event.plain_result(f"查询失败: {self._message_of(res)}")
             return
-        raw = self._data(res, {}) or {}
+        raw = self._payload(res, {}) or {}
         data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
         user_data = data.get("userData") or data.get("user_data") or {}
         career = data.get("careerData") or data.get("career_data") or {}
@@ -984,7 +1065,10 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("您尚未绑定账号。")
             return
         res = await self.client.personal_info(token)
-        raw = self._data(res, {}) or {}
+        if not self._ok(res):
+            yield event.plain_result(f"查询 UID 失败: {self._message_of(res)}")
+            return
+        raw = self._payload(res, {}) or {}
         data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
         role = raw.get("roleInfo") or data.get("roleInfo") or raw.get("role_info") or {}
         yield event.plain_result(f"昵称: {self.data_mgr.decode_text(role.get('charac_name') or '-')}\nUID: {role.get('uid') or '未获取到'}")
@@ -1003,13 +1087,14 @@ class DeltaForcePlugin(Star):
         if not self._ok(res):
             yield event.plain_result(f"查询数据失败: {self._message_of(res)}")
             return
-        raw = self._data(res, {}) or {}
+        raw = self._payload(res, {}) or {}
         details = self._extract_mode_details(raw, mode)
         if not details:
             yield event.plain_result("暂未查询到该账号的游戏数据。")
             return
+        identity = await self._render_identity(event, token)
         for mode_name, detail in details:
-            render_data = self._build_personal_data(event, mode_name, detail, season)
+            render_data = self._build_personal_data(event, mode_name, detail, season, identity)
             text = self._summary_dict(f"{'烽火' if mode_name == 'sol' else '全面'}个人数据", detail)
             async for r in self._render_or_text(event, "Template/personalData/personalData.html", render_data, text, {"viewport_width": 1200, "viewport_height": 1800}):
                 yield r
@@ -1017,26 +1102,34 @@ class DeltaForcePlugin(Star):
     def _extract_mode_details(self, raw: Any, mode: Optional[str]) -> List[Tuple[str, Dict[str, Any]]]:
         if not isinstance(raw, dict):
             return []
-        candidates = []
+        candidates: List[Tuple[str, Any]] = []
         if mode == "sol":
-            candidates.append(("sol", raw.get("data", {}).get("data", {}).get("solDetail") if isinstance(raw.get("data"), dict) else raw.get("solDetail")))
+            candidates.append(("sol", self._ams_inner(raw).get("solDetail")))
         elif mode == "mp":
-            candidates.append(("mp", raw.get("data", {}).get("data", {}).get("mpDetail") if isinstance(raw.get("data"), dict) else raw.get("mpDetail")))
+            candidates.append(("mp", self._ams_inner(raw).get("mpDetail")))
         else:
             candidates.extend(
                 [
-                    ("sol", (((raw.get("sol") or {}).get("data") or {}).get("data") or {}).get("solDetail") or raw.get("solDetail")),
-                    ("mp", (((raw.get("mp") or {}).get("data") or {}).get("data") or {}).get("mpDetail") or raw.get("mpDetail")),
+                    ("sol", self._ams_inner(raw.get("sol") or {}).get("solDetail") or raw.get("solDetail")),
+                    ("mp", self._ams_inner(raw.get("mp") or {}).get("mpDetail") or raw.get("mpDetail")),
                 ]
             )
         return [(m, d) for m, d in candidates if isinstance(d, dict) and d]
 
-    def _build_personal_data(self, event: AstrMessageEvent, mode: str, detail: Dict[str, Any], season: str) -> Dict[str, Any]:
+    def _build_personal_data(
+        self,
+        event: AstrMessageEvent,
+        mode: str,
+        detail: Dict[str, Any],
+        season: str,
+        identity: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        identity = identity or {}
         base = {
-            "nickname": self._sender_name(event),
-            "userName": self._sender_name(event),
-            "userAvatar": "",
-            "qqAvatarUrl": f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
+            "nickname": identity.get("userName") or self._sender_name(event),
+            "userName": identity.get("userName") or self._sender_name(event),
+            "userAvatar": identity.get("userAvatar") or "",
+            "qqAvatarUrl": identity.get("qqAvatarUrl") or f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
             "currentDate": dt.datetime.now().strftime("%Y-%m-%d"),
             "season": "全部" if season == "all" else season,
         }
@@ -1050,6 +1143,7 @@ class DeltaForcePlugin(Star):
                 **detail,
                 "totalGameTime": self.data_mgr.fmt_duration(detail.get("totalGameTime") or 0),
                 "totalGainedPriceFormatted": self.data_mgr.fmt_price(detail.get("totalGainedPrice")),
+                "redTotalMoneyFormatted": self.data_mgr.fmt_price(detail.get("redTotalMoney")),
                 "profitLossRatioFormatted": self.data_mgr.fmt_price(detail.get("profitLossRatio")),
                 "lowKD": self._ratio(detail.get("lowKillDeathRatio"), 100),
                 "medKD": self._ratio(detail.get("medKillDeathRatio"), 100),
@@ -1086,6 +1180,8 @@ class DeltaForcePlugin(Star):
             base["mpDetail"] = {
                 **detail,
                 "totalGameTime": self.data_mgr.fmt_duration(detail.get("totalGameTime") or 0, "minutes"),
+                "winRatioFormatted": f"{detail.get('winRatio')}%" if detail.get("winRatio") not in (None, "") else "-",
+                "totalScoreFormatted": self.data_mgr.fmt_num(detail.get("totalScore") or 0),
                 "avgKillPerMinuteFormatted": self._ratio(detail.get("avgKillPerMinute"), 100),
                 "avgScorePerMinuteFormatted": self._ratio(detail.get("avgScorePerMinute"), 100),
                 "mapList": maps[:10],
@@ -1108,7 +1204,7 @@ class DeltaForcePlugin(Star):
             if not self._ok(res):
                 yield event.plain_result(f"{'烽火' if item_mode == 'sol' else '全面'}战绩查询失败: {self._message_of(res)}")
                 continue
-            records = self._first_list(self._data(res, []), ("records", "list", "items", "data"))
+            records = self._first_list(self._payload(res, []), ("records", "list", "items", "data"))
             if not records:
                 yield event.plain_result(f"{'烽火' if item_mode == 'sol' else '全面'}第 {page} 页暂无战绩。")
                 continue
@@ -1139,8 +1235,9 @@ class DeltaForcePlugin(Star):
                     "statusClass": "success" if reason == "1" else "exit" if reason == "3" else "fail",
                     "value": self.data_mgr.fmt_num(r.get("FinalPrice") or 0),
                     "income": self.data_mgr.fmt_num(r.get("flowCalGainedPrice") or 0),
-                    "incomeClass": "income-positive" if float(r.get("flowCalGainedPrice") or 0) >= 0 else "income-negative",
-                    "killsHtml": f"<span class=\"kill-item kill-player\">玩家 {r.get('KillCount') or 0}</span><span class=\"kill-separator\">/</span><span class=\"kill-item kill-ai\">AI {r.get('KillAICount') or 0}</span>",
+                    "incomeClass": "income-positive" if self._number(r.get("flowCalGainedPrice")) >= 0 else "income-negative",
+                    "killsHtml": f"<span class=\"kill-item kill-player\">玩家 {r.get('KillCount') or 0}</span><span class=\"kill-separator\">/</span><span class=\"kill-item kill-ai-player\">AI玩家 {r.get('KillPlayerAICount') or 0}</span><span class=\"kill-separator\">/</span><span class=\"kill-item kill-ai\">AI {r.get('KillAICount') or 0}</span>",
+                    "teammates": [self._record_teammate(x) for x in (r.get("teammateArr") or []) if isinstance(x, dict)],
                 }
             )
         else:
@@ -1151,9 +1248,28 @@ class DeltaForcePlugin(Star):
                     "statusClass": "success" if result == "1" else "exit" if result == "3" else "fail",
                     "kda": f"{r.get('KillNum') or 0}/{r.get('Death') or 0}/{r.get('Assist') or 0}",
                     "score": self.data_mgr.fmt_num(r.get("TotalScore") or r.get("score") or 0),
+                    "rescue": r.get("RescueTeammateCount") or 0,
                 }
             )
         return item
+
+    def _record_teammate(self, teammate: Dict[str, Any]) -> Dict[str, Any]:
+        reason = str(teammate.get("EscapeFailReason") or "")
+        operator = self.data_mgr.get_operator_name(teammate.get("ArmedForceId"))
+        kills = sum(
+            int(self._number(teammate.get(key)))
+            for key in ("KillCount", "KillPlayerAICount", "KillAICount")
+        )
+        return {
+            "operator": operator,
+            "operatorImg": self.data_mgr.get_operator_image_path(operator),
+            "status": ESCAPE_REASONS.get(reason, "撤离失败"),
+            "statusClass": "success" if reason == "1" else "exit" if reason == "3" else "fail",
+            "value": self.data_mgr.fmt_num(teammate.get("FinalPrice") or 0),
+            "duration": self.data_mgr.fmt_duration(teammate.get("DurationS") or 0),
+            "kills": kills,
+            "rescue": teammate.get("Rescue") or 0,
+        }
 
     async def _daily(self, event: AstrMessageEvent, arg: str, yesterday: bool) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
@@ -1162,26 +1278,58 @@ class DeltaForcePlugin(Star):
             return
         mode, _, _ = self._parse_mode_page(arg)
         day = dt.datetime.now() - dt.timedelta(days=1 if yesterday else 0)
-        date_api = day.strftime("%Y%m%d")
-        res = await self.client.daily_record(token, mode or "")
+        request_mode = "sol" if yesterday else (mode or "")
+        res = await self.client.daily_record(token, request_mode)
         if not self._ok(res):
             yield event.plain_result(f"日报查询失败: {self._message_of(res)}")
             return
-        raw = self._data(res, {}) or {}
-        data = self._build_daily(event, raw, mode, day.strftime("%Y-%m-%d"), yesterday)
+        raw = self._payload(res, {}) or {}
+        sol, mp = self._daily_details(raw, request_mode or None)
+        if yesterday:
+            gain_date = str((sol or {}).get("recentGainDate") or "")
+            if not sol or re.sub(r"\D", "", gain_date)[:8] != day.strftime("%Y%m%d"):
+                yield event.plain_result("暂无昨日收益数据，快去摸金吧！")
+                return
+        elif not mode and not sol and not mp:
+            yield event.plain_result("暂无日报数据，不打两把吗？")
+            return
+        identity = await self._render_identity(event, token)
+        data = self._build_daily(event, sol, mp, mode, day.strftime("%Y-%m-%d"), yesterday, identity)
         text = self._summary_dict("昨日收益" if yesterday else "三角洲日报", raw)
         async for r in self._render_or_text(event, "Template/dailyReport/dailyReport.html", data, text, {"viewport_width": 1000, "viewport_height": 900}):
             yield r
 
-    def _build_daily(self, event: AstrMessageEvent, raw: Dict[str, Any], mode: Optional[str], date_str: str, yesterday: bool) -> Dict[str, Any]:
-        sol = (((raw.get("sol") or {}).get("data") or {}).get("data") or {}).get("solDetail") or (((raw.get("data") or {}).get("data") or {}).get("solDetail")) or raw.get("solDetail")
-        mp = (((raw.get("mp") or {}).get("data") or {}).get("data") or {}).get("mpDetail") or (((raw.get("data") or {}).get("data") or {}).get("mpDetail")) or raw.get("mpDetail")
+    def _daily_details(self, raw: Dict[str, Any], mode: Optional[str]) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+        if mode:
+            inner = self._ams_inner(raw)
+            return (
+                inner.get("solDetail") if mode == "sol" and isinstance(inner.get("solDetail"), dict) else None,
+                inner.get("mpDetail") if mode == "mp" and isinstance(inner.get("mpDetail"), dict) else None,
+            )
+        sol = self._ams_inner(raw.get("sol") or {}).get("solDetail")
+        mp = self._ams_inner(raw.get("mp") or {}).get("mpDetail")
+        return (
+            sol if isinstance(sol, dict) and sol else None,
+            mp if isinstance(mp, dict) and mp else None,
+        )
+
+    def _build_daily(
+        self,
+        event: AstrMessageEvent,
+        sol: Optional[Dict[str, Any]],
+        mp: Optional[Dict[str, Any]],
+        mode: Optional[str],
+        date_str: str,
+        yesterday: bool,
+        identity: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        identity = identity or {}
         data = {
             "type": "profit" if yesterday else "daily",
             "mode": mode or "",
-            "userName": self._sender_name(event),
-            "userAvatar": "",
-            "qqAvatarUrl": f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
+            "userName": identity.get("userName") or self._sender_name(event),
+            "userAvatar": identity.get("userAvatar") or "",
+            "qqAvatarUrl": identity.get("qqAvatarUrl") or f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
             "currentDate": date_str,
         }
         if yesterday and isinstance(sol, dict):
@@ -1247,63 +1395,412 @@ class DeltaForcePlugin(Star):
         if not self._ok(res):
             yield event.plain_result(f"周报查询失败: {self._message_of(res)}")
             return
-        raw = self._data(res, {}) or {}
-        data = self._build_weekly(event, raw, mode, date or dt.datetime.now().strftime("%Y%m%d"))
+        raw = self._payload(res, {}) or {}
+        sol, mp, report_dm = self._weekly_details(raw, mode)
+        has_sol = bool(sol and self._number(sol.get("total_sol_num")) > 0)
+        has_mp = bool(mp and self._number(mp.get("total_num")) > 0)
+        if mode == "sol" and not has_sol:
+            yield event.plain_result("暂无烽火地带周报数据，不打两把吗？")
+            return
+        if mode == "mp" and not has_mp:
+            yield event.plain_result("暂无全面战场周报数据，不打两把吗？")
+            return
+        if not mode and not has_sol and not has_mp:
+            yield event.plain_result("暂无周报数据，不打两把吗？")
+            return
+        identity = await self._render_identity(event, token)
+        display_date = date or self._last_sunday()
+        data = self._build_weekly(event, sol, mp, report_dm, mode, display_date, identity)
         text = self._summary_dict("三角洲周报", raw)
         async for r in self._render_or_text(event, "Template/weeklyReport/weeklyReport.html", data, text, {"viewport_width": 1100, "viewport_height": 1800}):
             yield r
 
-    def _build_weekly(self, event: AstrMessageEvent, raw: Dict[str, Any], mode: Optional[str], date: str) -> Dict[str, Any]:
-        sol = (((raw.get("sol") or {}).get("data") or {}).get("data") or {}) or (raw.get("data") or {}).get("data") or raw
-        mp = (((raw.get("mp") or {}).get("data") or {}).get("data") or {}) or (raw.get("data") or {}).get("data") or raw
+    def _weekly_details(
+        self,
+        raw: Dict[str, Any],
+        mode: Optional[str],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], Dict[str, Any]]:
+        if mode:
+            inner = self._ams_inner(raw)
+            report_dm = inner.get("reportDm") if isinstance(inner.get("reportDm"), dict) else {}
+            return (inner if mode == "sol" else None, inner if mode == "mp" else None, report_dm)
+        sol = self._ams_inner(raw.get("sol") or {})
+        mp = self._ams_inner(raw.get("mp") or {})
+        report_dm = raw.get("reportDm") if isinstance(raw.get("reportDm"), dict) else {}
+        return (sol or None, mp or None, report_dm)
+
+    def _build_weekly(
+        self,
+        event: AstrMessageEvent,
+        sol: Optional[Dict[str, Any]],
+        mp: Optional[Dict[str, Any]],
+        report_dm: Dict[str, Any],
+        mode: Optional[str],
+        date: str,
+        identity: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        identity = identity or {}
         data = {
-            "userName": self._sender_name(event),
-            "userAvatar": "",
-            "qqAvatarUrl": f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
+            "userName": identity.get("userName") or self._sender_name(event),
+            "userAvatar": identity.get("userAvatar") or "",
+            "qqAvatarUrl": identity.get("qqAvatarUrl") or f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
             "date": date,
+            "dateDisplay": f"{date[:4]}-{date[4:6]}-{date[6:8]}" if len(date) == 8 else date,
         }
-        if mode in (None, "", "sol") and isinstance(sol, dict):
-            rank = self.data_mgr.get_rank_by_score(sol.get("Rank_Score") or 0, "sol")
-            data["solData"] = {
-                **sol,
-                "rankName": rank,
-                "rankImagePath": self.data_mgr.get_rank_image_path(rank, "sol"),
-                "Gained_Price": self.data_mgr.fmt_num(sol.get("Gained_Price") or 0),
-                "consume_Price": self.data_mgr.fmt_num(sol.get("consume_Price") or 0),
-                "rise_Price": self.data_mgr.fmt_num(sol.get("rise_Price") or 0),
-                "gameTime": self.data_mgr.fmt_duration(sol.get("total_Online_Time") or 0),
-                "teammates": [],
-                "maps": [],
-                "operators": [],
-                "highPriceItems": [],
-            }
-        if mode in (None, "", "mp") and isinstance(mp, dict):
-            rank = self.data_mgr.get_rank_by_score(mp.get("Rank_Match_Score") or 0, "mp")
-            data["mpData"] = {
-                **mp,
-                "rankName": rank,
-                "rankImagePath": self.data_mgr.get_rank_image_path(rank, "mp"),
-                "winRate": self._percent(mp.get("win_num"), mp.get("total_num")),
-                "hitRate": self._percent(mp.get("Hit_Bullet_Num"), mp.get("Consume_Bullet_Num")),
-                "total_score": self.data_mgr.fmt_num(mp.get("total_score") or 0),
-                "teammates": [],
-                "maps": [],
-            }
+        if mode in (None, "", "sol"):
+            data["solData"] = self._build_weekly_sol(sol)
+        if mode in (None, "", "mp"):
+            data["mpData"] = self._build_weekly_mp(mp)
+        if isinstance(report_dm, dict):
+            for key in ("report1", "report2", "report3", "report4", "wbn", "fk", "bk"):
+                value = report_dm.get(key)
+                if isinstance(value, dict):
+                    data[key] = value
+            data["topFriends"] = self._weekly_top_friends(report_dm.get("wbn"))
         return data
+
+    def _build_weekly_sol(self, sol: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not sol or self._number(sol.get("total_sol_num")) <= 0:
+            return {"isEmpty": True}
+        rank = self.data_mgr.get_rank_by_score(sol.get("Rank_Score") or 0, "sol")
+        maps = self._weekly_usage_items(sol.get("total_mapid_num"), "sol", "map")
+        operators = self._weekly_usage_items(sol.get("total_ArmedForceId_num"), "sol", "operator")
+        gained = self._number(sol.get("Gained_Price"))
+        consumed = self._number(sol.get("consume_Price"))
+        profit_ratio = "∞" if gained > 0 and consumed == 0 else f"{gained / consumed:.2f}" if consumed > 0 else "0"
+        teammates = []
+        for item in sol.get("friends") or sol.get("teammates") or []:
+            if not isinstance(item, dict) or self._number(item.get("Friend_total_sol_num")) <= 0:
+                continue
+            openid = str(item.get("friend_openid") or "")
+            teammates.append(
+                {
+                    "name": f"...{openid[-6:]}" if openid else "匿名队友",
+                    "avatar": "",
+                    "total_sol_num": item.get("Friend_total_sol_num") or 0,
+                    "escape1": item.get("Friend_is_Escape1_num") or 0,
+                }
+            )
+        high_price_items = []
+        for item in sorted(
+            self._parse_compound_list(sol.get("CarryOut_highprice_list")),
+            key=lambda x: self._number(x.get("iPrice")),
+            reverse=True,
+        )[:5]:
+            high_price_items.append(
+                {
+                    "name": item.get("auctontype") or item.get("objectName") or "物品",
+                    "price": self.data_mgr.fmt_num(item.get("iPrice") or 0),
+                }
+            )
+        most_map = maps[0]["name"] if maps else "无"
+        most_operator = operators[0]["name"] if operators else "无"
+        return {
+            **sol,
+            "rankName": rank,
+            "rankImagePath": self.data_mgr.get_rank_image_path(rank, "sol"),
+            "rise_Price": self.data_mgr.fmt_num(sol.get("rise_Price") or 0),
+            "Gained_Price": self.data_mgr.fmt_num(sol.get("Gained_Price") or 0),
+            "consume_Price": self.data_mgr.fmt_num(sol.get("consume_Price") or 0),
+            "profitRatio": profit_ratio,
+            "assetTrend": self._weekly_asset_trend(sol.get("Total_Price")),
+            "mileage": f"{self._number(sol.get('Total_Mileage')) / 100000:.2f}",
+            "gameTime": self.data_mgr.fmt_duration(sol.get("total_Online_Time") or 0),
+            "mostUsedMap": most_map,
+            "mostUsedMapImagePath": self.data_mgr.get_map_image_path(most_map, "sol") if maps else "",
+            "mostUsedOperator": most_operator,
+            "mostUsedOperatorImagePath": self.data_mgr.get_operator_image_path(most_operator) if operators else "",
+            "maps": maps,
+            "operators": operators,
+            "highPriceItems": high_price_items,
+            "teammates": teammates,
+        }
+
+    def _build_weekly_mp(self, mp: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not mp or self._number(mp.get("total_num")) <= 0:
+            return {"isEmpty": True}
+        rank = self.data_mgr.get_rank_by_score(mp.get("Rank_Match_Score") or 0, "mp")
+        maps = self._weekly_usage_items(mp.get("max_inum_mapid"), "mp", "map")
+        operator_id = mp.get("max_inum_DeployArmedForceType")
+        operator_name = self.data_mgr.get_operator_name(operator_id) if operator_id not in (None, "") else "无"
+        teammates = []
+        for item in mp.get("friends") or mp.get("teammates") or []:
+            if not isinstance(item, dict):
+                continue
+            total = self._number(item.get("Friend_mp_total_num"))
+            wins = self._number(item.get("Friend_mp_win_num"))
+            kills = self._number(item.get("Friend_mp_KillNum"))
+            if total <= 0 and wins <= 0 and kills <= 0:
+                continue
+            deaths = self._number(item.get("Friend_mp_Death"))
+            assists = self._number(item.get("Friend_mp_Assist"))
+            openid = str(item.get("friend_openid") or "")
+            teammates.append(
+                {
+                    "name": f"...{openid[-6:]}" if openid else "匿名队友",
+                    "avatar": "",
+                    "total_num": int(total),
+                    "win_num": int(wins),
+                    "winRate": self._percent(wins, total),
+                    "kda": f"{int(kills)}/{int(deaths)}/{int(assists)}",
+                    "sumScore": self.data_mgr.fmt_num(item.get("Friend_mp_SumScore") or 0),
+                    "maxScore": self.data_mgr.fmt_num(item.get("Friend_mp_MaxScore") or 0),
+                }
+            )
+        most_map = maps[0]["name"] if maps else "无"
+        return {
+            **mp,
+            "rankName": rank,
+            "rankImagePath": self.data_mgr.get_rank_image_path(rank, "mp"),
+            "winRate": self._percent(mp.get("win_num"), mp.get("total_num")),
+            "hitRate": self._percent(mp.get("Hit_Bullet_Num"), mp.get("Consume_Bullet_Num")),
+            "total_score": self.data_mgr.fmt_num(mp.get("total_score") or 0),
+            "mostUsedMap": most_map,
+            "mostUsedMapImagePath": self.data_mgr.get_map_image_path(most_map, "mp") if maps else "",
+            "mostUsedOperator": operator_name,
+            "mostUsedOperatorImagePath": self.data_mgr.get_operator_image_path(operator_name) if operator_name != "无" else "",
+            "maps": maps,
+            "teammates": teammates,
+        }
+
+    def _weekly_usage_items(self, value: Any, mode: str, kind: str) -> List[Dict[str, Any]]:
+        result = []
+        for item in self._parse_compound_list(value):
+            count = int(self._number(item.get("inum") or item.get("count")))
+            if kind == "map":
+                item_id = item.get("MapId") or item.get("mapID") or item.get("mapId")
+                name = self.data_mgr.get_map_name(item_id)
+                image_path = self.data_mgr.get_map_image_path(name, mode)
+            else:
+                item_id = item.get("ArmedForceId") or item.get("armedForceId")
+                name = self.data_mgr.get_operator_name(item_id)
+                image_path = self.data_mgr.get_operator_image_path(name)
+            result.append({"id": item_id, "count": count, "name": name, "imagePath": image_path})
+        return sorted(result, key=lambda x: x["count"], reverse=True)
+
+    def _weekly_asset_trend(self, value: Any) -> Optional[Dict[str, Any]]:
+        day_names = {
+            "Monday": "周一", "Tuesday": "周二", "Wednesday": "周三", "Thursday": "周四",
+            "Friday": "周五", "Saturday": "周六", "Sunday": "周日",
+        }
+        prices: Dict[str, float] = {}
+        for part in str(value or "").split(","):
+            fields = part.split("-")
+            if len(fields) >= 2 and fields[0] in day_names:
+                prices[fields[0]] = self._number(fields[-1], float("nan"))
+        ordered = [(day, prices[day]) for day in day_names if day in prices and prices[day] == prices[day]]
+        if (
+            "Monday" not in prices
+            or "Sunday" not in prices
+            or prices["Monday"] != prices["Monday"]
+            or prices["Sunday"] != prices["Sunday"]
+            or len(ordered) < 2
+        ):
+            return None
+        width, height = 2000, 200
+        minimum = min(price for _, price in ordered)
+        maximum = max(price for _, price in ordered)
+        spread = maximum - minimum
+        points = []
+        for index, (day, price) in enumerate(ordered):
+            x = 160 + index / max(1, len(ordered) - 1) * 1680
+            y = 95 if spread == 0 else 20 + 150 - (price - minimum) / spread * 150
+            points.append(
+                {
+                    "dayName": day_names[day],
+                    "price": self.data_mgr.fmt_num(price),
+                    "rawPrice": price,
+                    "x": f"{x:.1f}",
+                    "y": f"{y:.1f}",
+                    "xPercent": f"{x / width * 100:.2f}",
+                    "yPercent": f"{y / height * 100:.2f}",
+                }
+            )
+        path = " ".join(("M" if index == 0 else "L") + f" {point['x']},{point['y']}" for index, point in enumerate(points))
+        return {
+            "startPrice": self.data_mgr.fmt_num(prices["Monday"]),
+            "endPrice": self.data_mgr.fmt_num(prices["Sunday"]),
+            "maxPrice": self.data_mgr.fmt_num(maximum),
+            "minPrice": self.data_mgr.fmt_num(minimum),
+            "chartWidth": width,
+            "chartHeight": height,
+            "pathData": path,
+            "allDays": points,
+        }
+
+    def _weekly_top_friends(self, wbn: Any) -> List[Dict[str, Any]]:
+        if not isinstance(wbn, dict):
+            return []
+        friends = wbn.get("friends") if isinstance(wbn.get("friends"), list) else []
+        ranked = sorted(friends, key=lambda x: self._number(x.get("total_gained_price")) if isinstance(x, dict) else 0, reverse=True)
+        result = []
+        for index, friend in enumerate(ranked[:10], 1):
+            if not isinstance(friend, dict):
+                continue
+            openid = str(friend.get("Friendopenid") or "")
+            result.append(
+                {
+                    **friend,
+                    "rank": index,
+                    "name": f"...{openid[-6:]}" if openid else "匿名好友",
+                    "avatar": "",
+                    "intimacy": friend.get("FriendIntimacy") or 0,
+                    "total_gained_price": self.data_mgr.fmt_num(friend.get("total_gained_price") or 0),
+                    "total_GainedPrice": self.data_mgr.fmt_num(friend.get("total_GainedPrice") or 0),
+                    "max_GainedPrice": self.data_mgr.fmt_num(friend.get("max_GainedPrice") or 0),
+                    "items": [],
+                }
+            )
+        return result
 
     async def _map_stats(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        mode, _, rest = self._parse_mode_page(arg)
-        season = next((x for x in arg.split() if x.isdigit()), "")
-        res = await self.client.map_stats(token, mode or "", season, rest)
-        if not self._ok(res):
-            yield event.plain_result(f"地图统计查询失败: {self._message_of(res)}")
+        mode: Optional[str] = None
+        season = "all"
+        season_explicit = False
+        keyword_parts = []
+        for part in arg.split():
+            low = part.lower()
+            if part in SOL_ALIASES or low in SOL_ALIASES:
+                mode = "sol"
+            elif part in MP_ALIASES or low in MP_ALIASES:
+                mode = "mp"
+            elif low in {"all", "全部"}:
+                season = "all"
+                season_explicit = True
+            elif re.fullmatch(r"\d+(?:,\d+)*", part):
+                season = part
+                season_explicit = True
+            else:
+                keyword_parts.append(part)
+        keyword = " ".join(keyword_parts).strip()
+        if season_explicit and not mode and not keyword:
+            yield event.plain_result("指定赛季时请同时指定游戏模式，例如：地图统计 烽火 7。")
             return
-        data = self._data(res, {}) or {}
-        yield event.plain_result(self._summary_dict("地图统计", data))
+
+        identity = await self._render_identity(event, token)
+        rendered = 0
+        failures = []
+        for item_mode in ([mode] if mode else ["sol", "mp"]):
+            res = await self.client.map_stats(token, item_mode, season)
+            if not self._ok(res):
+                failures.append(f"{'烽火地带' if item_mode == 'sol' else '全面战场'}: {self._message_of(res)}")
+                continue
+            payload = self._payload(res, {}) or {}
+            rows = self._first_list(payload, ("list", "items", "data"))
+            if keyword:
+                rows = [
+                    item for item in rows
+                    if isinstance(item, dict)
+                    and keyword in str(item.get("mapName") or self.data_mgr.get_map_name(item.get("mapId")))
+                ]
+            rows = [item for item in rows if isinstance(item, dict) and isinstance(item.get("data"), dict)]
+            if not rows:
+                continue
+            data = self._build_map_stats(item_mode, season, rows, identity)
+            title = "烽火地带" if item_mode == "sol" else "全面战场"
+            text_lines = [f"【{title}地图统计】"]
+            for item in data["mapStatsList"]:
+                detail = item.get(item_mode) or {}
+                text_lines.append(
+                    f"{item['mapName']}: "
+                    + (f"{detail.get('totalGames')}局，撤离率 {detail.get('escapeRate')}" if item_mode == "sol" else f"{detail.get('totalGames')}局，胜率 {detail.get('winRate')}")
+                )
+            async for result in self._render_or_text(
+                event,
+                "Template/mapStats/mapStats.html",
+                data,
+                "\n".join(text_lines),
+                {"viewport_width": 1100, "viewport_height": 1500},
+            ):
+                yield result
+            rendered += 1
+        if rendered:
+            for failure in failures:
+                yield event.plain_result(f"部分地图统计查询失败: {failure}")
+            return
+        if failures:
+            yield event.plain_result("地图统计查询失败: " + "；".join(failures))
+        elif keyword:
+            yield event.plain_result(f"未找到包含“{keyword}”的地图数据。")
+        else:
+            yield event.plain_result("暂未查询到地图统计数据。")
+
+    def _build_map_stats(
+        self,
+        mode: str,
+        season: str,
+        rows: List[Dict[str, Any]],
+        identity: Dict[str, str],
+    ) -> Dict[str, Any]:
+        stats = [self._map_stats_item(item, mode) for item in rows]
+        return {
+            "backgroundImage": self.data_mgr.get_random_background(),
+            "userName": identity.get("userName") or "",
+            "userAvatar": identity.get("userAvatar") or "",
+            "qqAvatarUrl": identity.get("qqAvatarUrl") or "",
+            "currentDate": dt.datetime.now().strftime("%Y-%m-%d"),
+            "type": mode,
+            "typeName": "烽火地带" if mode == "sol" else "全面战场",
+            "seasonid": "全部赛季" if season == "all" else f"第{season}赛季",
+            "totalMaps": len(stats),
+            "mapStatsList": stats,
+        }
+
+    def _map_stats_item(self, item: Dict[str, Any], mode: str) -> Dict[str, Any]:
+        detail = item.get("data") if isinstance(item.get("data"), dict) else {}
+        map_name = str(item.get("mapName") or self.data_mgr.get_map_name(item.get("mapId")))
+        base = {
+            "baseName": re.sub(r"[-（(].*$", "", map_name).strip(),
+            "mapName": map_name,
+            "mapId": item.get("mapId"),
+            "mapImage": self.data_mgr.get_map_image_path(map_name, mode),
+            "sol": None,
+            "mp": None,
+        }
+        if mode == "sol":
+            games = detail.get("zdj") or detail.get("cs") or 0
+            base["sol"] = {
+                "profit": self._format_profit(detail.get("a1")),
+                "totalGames": self.data_mgr.fmt_num(games),
+                "escaped": self.data_mgr.fmt_num(detail.get("isescapednum") or 0),
+                "escapeRate": self._percent(detail.get("isescapednum"), games),
+                "kill": self.data_mgr.fmt_num(detail.get("killnum") or 0),
+                "failed": self.data_mgr.fmt_num(detail.get("nums") or 0),
+            }
+        else:
+            games = detail.get("zdjnum") or 0
+            kills = self._number(detail.get("killnum"))
+            assists = self._number(detail.get("assist"))
+            deaths = self._number(detail.get("death"))
+            base["mp"] = {
+                "win": self.data_mgr.fmt_num(detail.get("winnum") or 0),
+                "totalGames": self.data_mgr.fmt_num(games),
+                "winRate": self._percent(detail.get("winnum"), games),
+                "score": self.data_mgr.fmt_num(detail.get("score") or 0),
+                "gameTime": self.data_mgr.fmt_duration(detail.get("gametime") or 0),
+                "kill": self.data_mgr.fmt_num(kills),
+                "assist": self.data_mgr.fmt_num(assists),
+                "death": self.data_mgr.fmt_num(deaths),
+                "kda": f"{kills:.2f}" if deaths == 0 else f"{(kills + assists) / deaths:.2f}",
+            }
+        return base
+
+    def _format_profit(self, value: Any) -> str:
+        number = self._number(value)
+        absolute = abs(number)
+        if absolute >= 1_000_000_000:
+            text = f"{absolute / 1_000_000_000:.2f}".rstrip("0").rstrip(".") + "B"
+        elif absolute >= 1_000_000:
+            text = f"{absolute / 1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
+        elif absolute >= 1_000:
+            text = f"{absolute / 1_000:.2f}".rstrip("0").rstrip(".") + "K"
+        else:
+            text = self.data_mgr.fmt_num(absolute)
+        return ("+" if number >= 0 else "-") + text
 
     async def _money(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

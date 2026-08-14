@@ -17,7 +17,7 @@
         <div class="header-right">
             <div class="user-info">
                 <div class="user-name-row">
-                    <div class="season-info">赛季 - {{season === '全部' ? '全部' : season}}</div>
+                    <div class="season-info">赛季 - {{season}}</div>
                     <div class="user-name">{{userName}}</div>
                 </div>
                 <div class="report-date">报告日期: {{currentDate}}</div>
@@ -52,7 +52,7 @@
             </div>
                 <div class="data-node highlight">
                     <div class="node-label">收藏大红 / COLLECTION VALUE</div>
-                    <span class="node-value large">{{solDetail.redTotalMoney?.toLocaleString() || '-'}}</span>
+                    <span class="node-value large">{{solDetail.redTotalMoneyFormatted || '-'}}</span>
                 </div>
             <!-- 第二行：其他数据（4个一行） -->
             <div class="data-node highlight">
@@ -86,11 +86,11 @@
             </div>
             <div class="data-node highlight">
                 <div class="node-label">胜率 / WIN RATE</div>
-                <span class="node-value large">{{mpDetail.winRatio ? mpDetail.winRatio + '%' : '-'}}</span>
+                <span class="node-value large">{{mpDetail.winRatioFormatted || '-'}}</span>
             </div>
             <div class="data-node highlight">
                 <div class="node-label">总得分 / TOTAL SCORE</div>
-                <span class="node-value large">{{mpDetail.totalScore?.toLocaleString() || '-'}}</span>
+                <span class="node-value large">{{mpDetail.totalScoreFormatted || '-'}}</span>
             </div>
             <div class="data-node highlight">
                 <div class="node-label">每分钟击杀 / KILLS PER MINUTE</div>

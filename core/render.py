@@ -131,7 +131,7 @@ class DeltaRenderer:
         expr = re.sub(r"\bnull\b", "None", expr, flags=re.I)
         expr = expr.replace("?.", ".")
         expr = expr.replace("$index", "loop.index0").replace("$last", "loop.last")
-        expr = re.sub(r"!\s*(?!=)([\w.$]+)", r"not \1", expr)
+        expr = re.sub(r"!\s*(?!=)", "not ", expr)
         expr = re.sub(r"([\w.]+)\.length\b", r"\1|length", expr)
         expr = re.sub(r"([\w.]+)\.trim\(\)", r"\1|trim", expr)
         expr = re.sub(r"([\w.]+)\.toLocaleString\(\)", r"fmt(\1)", expr)
@@ -179,7 +179,7 @@ class DeltaRenderer:
             content,
         )
         content = re.sub(
-            r"\{\{\s*([^{}%]+?)\s*\}\}",
+            r"\{\{\s*([^{}]+?)\s*\}\}",
             lambda m: "{{ " + self._expr(m.group(1)) + " }}",
             content,
         )

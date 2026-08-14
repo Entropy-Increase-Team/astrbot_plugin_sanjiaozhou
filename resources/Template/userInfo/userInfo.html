@@ -12,18 +12,18 @@
     <div class="decor-line" style="width: 5px; height: 88px; left: 45px; top: 46px; position: absolute"></div>
     
     <!-- 用户基础信息区域 -->
-    <div class="user-header" style="width: 384px; height: 88px; left: 53px; top: 46px; position: absolute">
+    <div class="user-header" style="width: 600px; height: 100px; left: 53px; top: 46px; position: absolute">
         <img class="user-avatar" style="width: 88px; height: 88px; left: 0px; top: 0px; position: absolute" 
              src="{{userAvatar}}" alt="头像" data-qq-avatar="{{qqAvatarUrl}}" onerror="if(this.dataset.qqAvatar){this.src=this.dataset.qqAvatar;this.onerror=null;}else{this.style.display='none';var placeholder=this.nextElementSibling;if(placeholder&&placeholder.classList.contains('user-avatar-placeholder')){placeholder.style.display='block';}}" />
         <div class="user-avatar-placeholder" style="width: 88px; height: 88px; left: 0px; top: 0px; position: absolute; display: none;"></div>
         
-        <div class="user-name" style="width: 294px; height: 40px; left: 112px; top: 0px; position: absolute">{{userName}}</div>
-        <div class="user-register-time" style="width: 400px; height: 24px; left: 112px; top: 40px; position: absolute">注册时间: {{registerTime}}</div>
-        <div class="user-last-login" style="width: 400px; height: 24px; left: 112px; top: 64px; position: absolute">上次登录: {{lastLoginTime}}</div>
+        <div class="user-name" style="width: 430px; height: 42px; left: 112px; top: 0px; position: absolute">{{userName}}</div>
+        <div class="user-register-time" style="width: 430px; height: 22px; left: 112px; top: 46px; position: absolute">注册时间: {{registerTime}}</div>
+        <div class="user-last-login" style="width: 430px; height: 22px; left: 112px; top: 70px; position: absolute">上次登录: {{lastLoginTime}}</div>
     </div>
     
     <!-- 账号状态信息 -->
-    <div class="account-status" style="width: 418px; height: 30px; left: 45px; top: 134px; position: absolute">{{accountStatus}}</div>
+    <div class="account-status" style="width: 520px; height: 30px; left: 45px; top: 150px; position: absolute">{{accountStatus}}</div>
     
     <!-- 烽火地带信息卡片 -->
     <div class="game-mode-card" style="width: 347px; height: 446px; left: 34px; top: 183px; position: absolute">
@@ -102,4 +102,4 @@
     <!-- 插件水印 -->
     <div class="plugin-watermark" style="width: 350px; height: 24px; left: 507px; top: 600px; position: absolute">Delta-Force-Plugin</div>
 </div>
-{{/block}} 
+{{/block}}

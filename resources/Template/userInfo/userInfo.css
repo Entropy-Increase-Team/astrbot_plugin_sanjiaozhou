@@ -58,26 +58,24 @@ img {
 
 .user-name { 
     color: white; 
-    font-size: 36px; 
+    font-size: 32px;
     font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
     font-weight: 700; 
-    word-wrap: break-word;
-    justify-content: center;
-    display: flex;
-    flex-direction: column;
+    line-height: 42px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .user-register-time, .user-last-login { 
     color: white; 
-    font-size: 18px; 
+    font-size: 16px;
     font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
     font-weight: 700; 
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    align-items: flex-start;
-    display: flex;
-    flex-direction: column;
+    line-height: 22px;
 }
 
 /* 账号状态信息 */
@@ -246,4 +244,4 @@ img {
 .user-avatar:hover {
     transform: scale(1.05);
     transition: transform 0.3s ease;
-} 
+}

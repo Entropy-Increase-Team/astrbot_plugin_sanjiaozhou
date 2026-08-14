@@ -236,7 +236,7 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             results = await _collect(plugin._login(_Event(), "登录"))
 
         self.assertEqual(results[0]["type"], "chain")
-        image = next(item for item in results[0]["chain"] if isinstance(item, _Image))
+        image = next(item for item in results[0]["chain"] if hasattr(item, "file"))
         self.assertTrue(image.file.startswith("base64://"))
         self.assertNotIn("data:image", results[0]["chain"][0].text)
         self.assertIn("已扫码", results[1]["text"])

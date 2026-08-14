@@ -20,12 +20,12 @@
 | 娱乐 | `apps/entertainment/Voice.js` | `getCharacterList`、`getTagList`、`getCategoryList`、`getAudioStats`、`sendVoice` | 角色、标签、分类、统计、语音 | 语音列表、语音及别名 | `_voice_meta`、`_voice` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/banhistory.js` | `getBanHistory` | 封号记录、违规记录/历史 | 封号记录及别名 | `_ban_history` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/Collection.js` | `getCollection` | 藏品、资产 | 藏品及别名 | `_collection` | 待逐项复核 | `collection` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/Data.js` | `getPersonalData` | 数据、data，含模式和赛季参数 | 数据及别名 | `_personal_data` | `GET /api/v1/df/person/personaldata` | `personalData` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/Data.js` | `getPersonalData` | 数据、data，含模式和赛季参数 | 数据及别名 | `_personal_data` | `GET /api/v1/df/person/personaldata`；Query：`type`、`seasonid` | `personalData` | 有 | fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/Flows.js` | `getFlows` | 流水，设备/道具/货币、分页 | 流水及别名 | `_flows` | `GET /api/v1/df/person/flows` | `flows` | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/health.js` | `getServerHealth` | 服务器健康状态 | 服务器状态 | `_server_status` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/HealthInfo.js` | `getHealthInfo` | 健康状态 | 健康状态 | `_health_info` | 待逐项复核 | `healthInfo` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/Info.js` | `getUserInfo`、`getUid` | 信息、UID | 信息、uid及别名 | `_user_info`、`_uid` | `GET /api/v1/df/person/personalinfo` | `userInfo` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/MapStats.js` | `getMapStats` | 地图统计，含模式、赛季、地图 | 地图统计及别名 | `_map_stats` | `GET /api/v1/df/person/mapstats` | `mapStats` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/Info.js` | `getUserInfo`、`getUid` | 信息、UID | 信息、uid及别名 | `_user_info`、`_uid` | `GET /api/v1/df/person/personalinfo` | `userInfo` | 有 | fixture 与 Playwright 通过 | 缺少角色 fixture 通过 | fixture 通过 | 已验证 |
+| 信息 | `apps/info/MapStats.js` | `getMapStats` | 地图统计，含模式、赛季、地图 | 地图统计及别名 | `_map_stats` | `GET /api/v1/df/person/mapstats`；Query：`type`、`serial`、`mapId` | `mapStats` | 有 | 双模式 fixture 与 Playwright 通过 | 搜索空结果 fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/Money.js` | `getMoney` | 货币、余额 | 货币及别名 | `_money` | `GET /api/v1/df/person/money` | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/Operator.js` | `getOperatorInfo` | 干员详情 | 干员 | `_operator_info` | 待逐项复核 | `operator` | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/OperatorList.js` | `getOperatorList` | 干员列表 | 干员列表 | `_operator_list` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
@@ -38,10 +38,10 @@
 | 推送 | `apps/push/PlaceTask.js` | `checkAndPushScheduledTasks`、`pollAndScheduleTasks` | 特勤处后台调度 | 无独立后台任务 | 无 | 待逐项复核 | `placeInfo` | 无 | 待测 | 待测 | 待测 | 未开始 |
 | 推送 | `apps/push/Task.js` | `toggleDailyKeywordPush`、`pushDailyKeyword` | 每日密码订阅与定时推送 | 开启/关闭每日密码推送入口 | `_dispatch` 中占位分支 | 待逐项复核 | 无 | 有占位提示 | 待测 | 待测 | 待测 | 未开始 |
 | 推送 | `apps/push/WeeklyPush.js` | `pushWeeklyReports` | 周报定时推送 | 开启/关闭周报推送入口 | `_dispatch` 中占位分支 | 待逐项复核 | `weeklyReport` | 有占位提示 | 待测 | 待测 | 待测 | 未开始 |
-| 报告 | `apps/report/Daily.js` | `getDailyReport`、`getYesterdayProfit`、`toggleDailyPush` | 日报、昨日收益、日报推送开关 | 日报、昨日收益；开启/关闭日报推送入口 | `_daily`；`_dispatch` 中占位分支 | 待逐项复核 | `dailyReport` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 报告 | `apps/report/Record.js` | `getRecord` | 战绩，含模式和分页 | 战绩 | `_record` | `GET /api/v2/df/person/record` | `record` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 报告 | `apps/report/Daily.js` | `getDailyReport`、`getYesterdayProfit`、`toggleDailyPush` | 日报、昨日收益、日报推送开关 | 日报、昨日收益；开启/关闭日报推送入口 | `_daily`；推送分支待实现 | `GET /api/v1/df/person/dailyrecord`；Query：`type` | `dailyReport` | 有 | 查询 fixture 与 Playwright 通过 | 日报/昨日日期 fixture 通过 | fixture 通过 | 部分（查询已验证，推送未实现） |
+| 报告 | `apps/report/Record.js` | `getRecord` | 战绩，含模式和分页 | 战绩 | `_record` | `GET /api/v1/df/person/record`；Query：`type`、`page`、`enrich` | `record` | 有 | fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 报告 | `apps/report/RecordSubscription.js` | `subscribeRecord`、`unsubscribeRecord`、`getSubscriptionStatus`、`enableGroupPush`、`disableGroupPush`、`enablePrivatePush`、`disablePrivatePush` | 战绩订阅、状态、群/私聊推送开关 | 合法根命令 `订阅`、`取消订阅`、`订阅状态`，以 `战绩` 为参数 | `_dispatch` 中占位分支 | 待逐项复核 | `recordPush` | 有占位提示 | 待测 | 待测 | 待测 | 未开始 |
-| 报告 | `apps/report/Weekly.js` | `getWeeklyReport`、`toggleWeeklyPush` | 周报、周报推送开关 | 周报；开启/关闭周报推送入口 | `_weekly`；`_dispatch` 中占位分支 | 待逐项复核 | `weeklyReport` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 报告 | `apps/report/Weekly.js` | `getWeeklyReport`、`toggleWeeklyPush` | 周报、周报推送开关 | 周报；开启/关闭周报推送入口 | `_weekly`；推送分支待实现 | `GET /api/v1/df/person/weeklyrecord`；Query：`type`、`date`、`showExtra` | `weeklyReport` | 有 | 查询 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 部分（查询已验证，推送未实现） |
 | 系统 | `apps/system/Help.js` | `help`、`entertainmentHelp` | 帮助、娱乐帮助 | 帮助、娱乐帮助、计算帮助及别名 | `_help`、`_calculator_help` | 无 | `help/index.html` | 有 | Playwright fixture 通过 | 不适用 | 待测 | 部分 |
 | 系统 | `apps/system/Update.js` | `update`、`update_log` | 更新、强制更新、更新日志 | 更新及别名 | `_dispatch` 中插件管理器提示 | 无 | 无 | 有占位提示 | 待测 | 不适用 | 待测 | 未开始 |
 | 系统 | `apps/system/WebSocketClient.js` | `connectWebSocket`、`disconnectWebSocket`、`getWebSocketStatus` | WebSocket 连接、断开、状态 | ws连接及大量别名 | `_dispatch` 中占位分支 | `docs/websocket-protocol.md` 待实现 | 无 | 有占位提示 | 待测 | 不适用 | 待测 | 未开始 |
@@ -92,3 +92,12 @@
 - 注册结果中空格命令、重复命令名和 `RegexFilter` 数量均为 0。
 - 脱敏登录二维码 fixture 为 `328×328` PNG，可由图片解析器识别并通过 `Image.fromBase64()` 路径发送。
 - 帮助菜单已由插件自身的 `DeltaRenderer` 和 Playwright 渲染为 `2560×6090` PNG，已人工检查中文、背景、图标、换行和底部完整性。
+
+## 第二阶段核心查询证据
+
+- Go API 的单模式结果保留 AMS `data.data` 业务层级；AstrBot 只移除最外层统一响应信封。个人数据、日报和周报均覆盖单模式与双模式 fixture。
+- 战绩按 Yunzai 行为使用 `GET /api/v1/df/person/record`，保留烽火 `teammateArr`；适配玩家、AI 玩家、AI 三类击杀和队友数据。
+- 地图统计按当前后端要求发送 `type`、`serial`、`mapId`；未指定模式时分别查询 `sol`、`mp`，地图名称搜索在返回列表上执行。
+- “昨日收益”仅在 `recentGainDate` 确实等于昨天时展示，避免将任意最近收益误标为昨日数据。
+- 共 25 项脱敏单元测试通过，覆盖登录安全与核心查询的成功、空数据、错误分支。
+- Playwright 已生成并人工检查信息、烽火数据、全面数据、战绩、日报、周报、烽火地图统计、全面地图统计共 8 张截图；长昵称、趋势首尾数值、中文、底部和动态高度均无重叠或裁切。

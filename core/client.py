@@ -246,7 +246,7 @@ class DeltaForceClient:
 
     async def record(self, framework_token: str, type_id: str, page: str = "1", enrich: bool = True):
         return await self.get(
-            "/api/v2/df/person/record",
+            "/api/v1/df/person/record",
             params={"type": type_id, "page": page, "enrich": "true" if enrich else ""},
             framework_token=framework_token,
         )
@@ -254,7 +254,7 @@ class DeltaForceClient:
     async def map_stats(self, framework_token: str, mode: str = "", seasonid: str = "", map_id: str = ""):
         return await self.get(
             "/api/v1/df/person/mapstats",
-            params={"type": mode, "seasonid": seasonid, "mapid": map_id},
+            params={"type": mode, "serial": seasonid, "mapId": map_id},
             framework_token=framework_token,
         )
 
