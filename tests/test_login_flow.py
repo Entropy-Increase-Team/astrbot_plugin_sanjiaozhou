@@ -3,6 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 
@@ -475,6 +476,321 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             params={"character": "mai"},
             require_key=False,
         )
+
+    async def test_client_uses_authoritative_account_and_role_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0})
+        client.delete = AsyncMock(return_value={"code": 0})
+        client.post = AsyncMock(return_value={"code": 0})
+
+        await client.bind_character("fixture-token")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/person/bind")
+        self.assertEqual(client.get.await_args.kwargs["params"], {"method": "bind"})
+        self.assertEqual(client.get.await_args.kwargs["framework_token"], "fixture-token")
+
+        await client.login_refresh("qq", "fixture-token")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/login/qq/refresh")
+        self.assertEqual(client.get.await_args.kwargs["framework_token"], "fixture-token")
+
+        await client.login_delete("wechat", "fixture-token")
+        self.assertEqual(client.delete.await_args.args[0], "/api/v1/login/wechat/token")
+        self.assertEqual(client.delete.await_args.kwargs["framework_token"], "fixture-token")
+
+        await client.set_primary_binding("fixture-binding", "qq_mock-user", "mock-bot")
+        self.assertEqual(
+            client.post.await_args.args[0],
+            "/api/v1/user/bindings/fixture-binding/primary",
+        )
+
+    async def test_account_switch_syncs_remote_before_local_and_rejects_failure(self):
+        class Bindings:
+            def __init__(self):
+                self.items = [
+                    {
+                        "binding_id": "fixture-binding",
+                        "framework_token": "fixture-token",
+                        "nickname": "测试账号",
+                        "is_valid": True,
+                    }
+                ]
+                self.primary_calls = []
+
+            async def get_user_bindings(self, _user_id):
+                return [dict(item) for item in self.items]
+
+            async def set_primary(self, _user_id, index):
+                self.primary_calls.append(index)
+                return dict(self.items[index - 1])
+
+        client = SimpleNamespace(
+            set_primary_binding=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"message": "主绑定已更新"}},
+                    {"code": 500, "message": "后端切换失败", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.config["client_id"] = "mock-bot"
+        plugin.bindings = Bindings()
+
+        success = await _collect(plugin._switch_account(_Event(), 1))
+        failed = await _collect(plugin._switch_account(_Event(), 1))
+
+        self.assertIn("已切换到：测试账号", success[0]["text"])
+        self.assertIn("后端切换失败", failed[0]["text"])
+        self.assertEqual(plugin.bindings.primary_calls, [1])
+        self.assertEqual(
+            client.set_primary_binding.await_args_list[0].args,
+            ("fixture-binding", "qq_mock-user", "mock-bot"),
+        )
+
+    async def test_account_unbind_and_login_delete_keep_remote_and_local_consistent(self):
+        class Bindings:
+            def __init__(self, item):
+                self.items = [dict(item)]
+                self.deleted = 0
+
+            async def get_user_bindings(self, _user_id):
+                return [dict(item) for item in self.items]
+
+            async def delete_binding(self, _user_id, index):
+                self.deleted += 1
+                return self.items.pop(index - 1) if self.items else None
+
+        base = {
+            "binding_id": "fixture-binding",
+            "framework_token": "fixture-token",
+            "login_type": "qq",
+        }
+
+        unbind_client = SimpleNamespace(
+            delete_binding=AsyncMock(return_value={"code": 0, "data": {}}),
+            login_delete=AsyncMock(),
+        )
+        unbind_plugin = self._plugin(unbind_client)
+        unbind_plugin.config["client_id"] = "mock-bot"
+        unbind_plugin.bindings = Bindings(base)
+        unbound = await _collect(unbind_plugin._delete_account(_Event(), 1, False))
+
+        self.assertIn("账号解绑成功", unbound[0]["text"])
+        unbind_client.delete_binding.assert_awaited_once_with(
+            "fixture-binding", "qq_mock-user", "mock-bot"
+        )
+        unbind_client.login_delete.assert_not_awaited()
+        self.assertEqual(unbind_plugin.bindings.deleted, 1)
+
+        delete_client = SimpleNamespace(
+            login_delete=AsyncMock(return_value={"code": 0, "data": {"success": True}}),
+            delete_binding=AsyncMock(return_value={"code": 0, "data": {}}),
+        )
+        delete_plugin = self._plugin(delete_client)
+        delete_plugin.config["client_id"] = "mock-bot"
+        delete_plugin.bindings = Bindings(base)
+        deleted = await _collect(delete_plugin._delete_account(_Event(), 1, True))
+
+        self.assertIn("登录数据已删除，账号绑定已自动解除", deleted[0]["text"])
+        delete_client.login_delete.assert_awaited_once_with("qq", "fixture-token")
+        delete_client.delete_binding.assert_not_awaited()
+        self.assertEqual(delete_plugin.bindings.deleted, 1)
+
+    async def test_account_remote_failure_does_not_remove_local_binding(self):
+        class Bindings:
+            def __init__(self):
+                self.deleted = 0
+
+            async def get_user_bindings(self, _user_id):
+                return [
+                    {
+                        "binding_id": "fixture-binding",
+                        "framework_token": "fixture-token",
+                        "login_type": "qq",
+                    }
+                ]
+
+            async def delete_binding(self, _user_id, _index):
+                self.deleted += 1
+                return {}
+
+        client = SimpleNamespace(
+            delete_binding=AsyncMock(
+                return_value={"code": 500, "message": "后端解绑失败", "data": None}
+            ),
+            login_delete=AsyncMock(),
+        )
+        plugin = self._plugin(client)
+        plugin.config["client_id"] = "mock-bot"
+        plugin.bindings = Bindings()
+
+        result = await _collect(plugin._delete_account(_Event(), 1, False))
+
+        self.assertIn("后端解绑失败", result[0]["text"])
+        self.assertEqual(plugin.bindings.deleted, 0)
+
+    async def test_account_login_delete_rejects_unsupported_type(self):
+        class Bindings:
+            async def get_user_bindings(self, _user_id):
+                return [
+                    {
+                        "binding_id": "local-fixture",
+                        "framework_token": "fixture-token",
+                        "login_type": "wegame",
+                    }
+                ]
+
+            async def delete_binding(self, _user_id, _index):
+                raise AssertionError("不应删除本地绑定")
+
+        client = SimpleNamespace(login_delete=AsyncMock(), delete_binding=AsyncMock())
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+
+        result = await _collect(plugin._delete_account(_Event(), 1, True))
+
+        self.assertIn("仅支持 QQ 和微信账号", result[0]["text"])
+        client.login_delete.assert_not_awaited()
+
+    async def test_account_refresh_uses_login_route_and_checks_account_type(self):
+        class Bindings:
+            def __init__(self, login_type="qq"):
+                self.login_type = login_type
+
+            async def get_primary_binding(self, _user_id):
+                return {
+                    "binding_id": "fixture-binding",
+                    "framework_token": "fixture-token",
+                    "login_type": self.login_type,
+                }
+
+        client = SimpleNamespace(
+            login_refresh=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"success": True}},
+                    {"code": 400, "message": "Cookie 已失效", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+
+        success = await _collect(plugin._refresh_account(_Event(), "qq"))
+        failed = await _collect(plugin._refresh_account(_Event(), "qq"))
+        mismatch = await _collect(plugin._refresh_account(_Event(), "wechat"))
+
+        self.assertIn("QQ登录凭证刷新成功", success[0]["text"])
+        self.assertIn("Cookie 已失效", failed[0]["text"])
+        self.assertIn("当前主账号类型为 qq", mismatch[0]["text"])
+        self.assertEqual(client.login_refresh.await_count, 2)
+
+    async def test_character_binding_success_error_and_missing_account(self):
+        client = SimpleNamespace(
+            bind_character=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"bindarea": "36"}},
+                    {"code": 401, "message": "登录凭证已失效", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin._need_token = AsyncMock(return_value=None)
+
+        success = await _collect(plugin._bind_character(_Event(), "fixture-token"))
+        error = await _collect(plugin._bind_character(_Event(), "fixture-token"))
+        missing = await _collect(plugin._bind_character(_Event(), ""))
+
+        self.assertIn("角色绑定请求已完成", success[0]["text"])
+        self.assertIn("登录凭证已失效", error[0]["text"])
+        self.assertIn("尚未绑定账号", missing[0]["text"])
+
+    async def test_manual_binding_keeps_explicit_local_fallback_on_remote_error(self):
+        bindings = SimpleNamespace(
+            upsert_binding=AsyncMock(
+                side_effect=[
+                    {
+                        "binding_id": "fixture-binding",
+                        "framework_token": "fixture-token",
+                        "nickname": "测试账号",
+                    },
+                    {
+                        "binding_id": "local-fixture",
+                        "framework_token": "local-token",
+                        "nickname": "",
+                    },
+                ]
+            )
+        )
+        client = SimpleNamespace(
+            create_binding=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "binding": {
+                                "id": "fixture-binding",
+                                "framework_token": "fixture-token",
+                            }
+                        },
+                    },
+                    {"code": 503, "message": "绑定服务暂不可用", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        del plugin._bind_token
+        plugin.config["client_id"] = "mock-bot"
+        plugin.bindings = bindings
+        plugin._fill_binding_info = AsyncMock()
+
+        success = await _collect(plugin._bind_token(_Event(), "fixture-token"))
+        fallback = await _collect(plugin._bind_token(_Event(), "local-token"))
+
+        self.assertIn("绑定成功：测试账号", success[0]["text"])
+        self.assertIn("已先保存到 AstrBot 本地绑定", fallback[0]["text"])
+        self.assertIn("绑定服务暂不可用", fallback[0]["text"])
+        self.assertEqual(bindings.upsert_binding.await_count, 2)
+
+    async def test_account_list_success_and_empty(self):
+        bindings = SimpleNamespace(
+            get_user_bindings=AsyncMock(
+                side_effect=[
+                    [
+                        {
+                            "framework_token": "fixture-token",
+                            "nickname": "测试账号",
+                            "login_type": "qq",
+                            "delta_uid": "123456",
+                            "is_primary": True,
+                        }
+                    ],
+                    [],
+                ]
+            )
+        )
+        plugin = self._plugin(SimpleNamespace())
+        plugin.bindings = bindings
+
+        success = await _collect(plugin._account_list(_Event()))
+        empty = await _collect(plugin._account_list(_Event()))
+
+        self.assertIn("★ 1. 测试账号 [qq] UID:123456", success[0]["text"])
+        self.assertIn("尚未绑定任何账号", empty[0]["text"])
+
+    async def test_qr_login_handles_missing_image_and_api_error(self):
+        client = SimpleNamespace(
+            login_qr=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"frameworkToken": "fixture-token"}},
+                    {"code": 503, "message": "登录服务暂不可用", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        missing = await _collect(plugin._login(_Event(), "登录"))
+        error = await _collect(plugin._login(_Event(), "登录"))
+
+        self.assertIn("未返回可用二维码", missing[0]["text"])
+        self.assertIn("登录服务暂不可用", error[0]["text"])
 
     async def test_random_voice_reads_nested_download_url(self):
         client = _EntertainmentClient()

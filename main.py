@@ -974,11 +974,12 @@ class DeltaForcePlugin(Star):
                 yield r
             return
         if m := re.fullmatch(r"(?:解绑|删除)\s*(\d+)", body):
-            async for r in self._delete_account(event, int(m.group(1)), delete_remote=body.startswith("删除")):
+            async for r in self._delete_account(event, int(m.group(1)), delete_login_data=body.startswith("删除")):
                 yield r
             return
         if re.fullmatch(r"(微信刷新|刷新微信|qq刷新|QQ刷新|刷新qq|刷新QQ)", body):
-            async for r in self._refresh_account(event):
+            platform = "wechat" if "微信" in body else "qq"
+            async for r in self._refresh_account(event, platform):
                 yield r
             return
 
@@ -1609,37 +1610,101 @@ class DeltaForcePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     async def _switch_account(self, event: AstrMessageEvent, index: int) -> AsyncGenerator[Any, None]:
+        bindings = await self.bindings.get_user_bindings(event.get_sender_id())
+        if index < 1 or index > len(bindings):
+            yield event.plain_result("序号无效，请发送 账号 查看列表。")
+            return
+        target = bindings[index - 1]
+        if not target.get("is_valid", True):
+            yield event.plain_result("该账号凭证已失效，无法切换，请重新登录。")
+            return
+        binding_id = str(target.get("binding_id") or "")
+        if binding_id and not binding_id.startswith("local-"):
+            res = await self.client.set_primary_binding(
+                binding_id,
+                self._user_identifier(event),
+                self._client_id(event),
+            )
+            if not self._ok(res):
+                yield event.plain_result(f"账号切换失败: {self._message_of(res)}")
+                return
         binding = await self.bindings.set_primary(event.get_sender_id(), index)
         if not binding:
             yield event.plain_result("序号无效，请发送 账号 查看列表。")
             return
         yield event.plain_result(f"已切换到：{binding.get('nickname') or binding.get('framework_token', '')[:8]}")
 
-    async def _delete_account(self, event: AstrMessageEvent, index: int, delete_remote: bool = False) -> AsyncGenerator[Any, None]:
-        binding = await self.bindings.delete_binding(event.get_sender_id(), index)
-        if not binding:
+    async def _delete_account(self, event: AstrMessageEvent, index: int, delete_login_data: bool = False) -> AsyncGenerator[Any, None]:
+        bindings = await self.bindings.get_user_bindings(event.get_sender_id())
+        if index < 1 or index > len(bindings):
             yield event.plain_result("序号无效，请发送 账号 查看列表。")
             return
-        if delete_remote and binding.get("binding_id") and not str(binding["binding_id"]).startswith("local-"):
-            await self.client.delete_binding(binding["binding_id"], self._user_identifier(event), self._client_id(event))
-        yield event.plain_result("已删除该账号绑定。")
+        target = bindings[index - 1]
+        token = str(target.get("framework_token") or "")
+        login_type = str(target.get("login_type") or target.get("token_type") or "").lower()
+        binding_id = str(target.get("binding_id") or "")
+        login_deleted = False
 
-    async def _refresh_account(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        if delete_login_data:
+            if login_type not in {"qq", "wechat"}:
+                yield event.plain_result(
+                    f"该账号类型（{login_type or '未知'}）不支持删除登录数据；"
+                    "删除功能仅支持 QQ 和微信账号。"
+                )
+                return
+            if not token:
+                yield event.plain_result("该账号缺少 frameworkToken，无法删除登录数据。")
+                return
+            delete_res = await self.client.login_delete(login_type, token)
+            if not self._ok(delete_res):
+                yield event.plain_result(f"登录数据删除失败: {self._message_of(delete_res)}")
+                return
+            login_deleted = True
+
+        if not login_deleted and binding_id and not binding_id.startswith("local-"):
+            unbind_res = await self.client.delete_binding(
+                binding_id,
+                self._user_identifier(event),
+                self._client_id(event),
+            )
+            if not self._ok(unbind_res):
+                yield event.plain_result(f"账号解绑失败: {self._message_of(unbind_res)}")
+                return
+
+        binding = await self.bindings.delete_binding(event.get_sender_id(), index)
+        if not binding:
+            yield event.plain_result("本地账号状态已变化，请发送 账号 重新查看列表。")
+            return
+        if login_deleted:
+            yield event.plain_result("登录数据已删除，账号绑定已自动解除。")
+        elif binding_id.startswith("local-") or not binding_id:
+            yield event.plain_result("已删除 AstrBot 本地账号绑定。")
+        else:
+            yield event.plain_result("账号解绑成功。")
+
+    async def _refresh_account(self, event: AstrMessageEvent, platform: str) -> AsyncGenerator[Any, None]:
         binding = await self.bindings.get_primary_binding(event.get_sender_id())
         if not binding:
             yield event.plain_result("您尚未绑定账号。")
             return
-        if binding.get("binding_id") and not str(binding["binding_id"]).startswith("local-"):
-            res = await self.client.refresh_binding(binding["binding_id"], self._user_identifier(event), self._client_id(event))
-            data = self._data(res, {}) or {}
-            token = data.get("framework_token") or data.get("frameworkToken")
-            if self._ok(res) and token:
-                await self.bindings.update_token(event.get_sender_id(), binding["binding_id"], token)
-                yield event.plain_result("凭证刷新成功。")
-                return
-            yield event.plain_result(f"凭证刷新失败: {self._message_of(res)}")
+        login_type = str(binding.get("login_type") or binding.get("token_type") or "").lower()
+        if login_type != platform:
+            platform_name = "微信" if platform == "wechat" else "QQ"
+            yield event.plain_result(
+                f"当前主账号类型为 {login_type or '未知'}，无法执行{platform_name}刷新；"
+                "请先切换到对应账号。"
+            )
             return
-        yield event.plain_result("该账号是本地绑定，缺少后端 binding_id，无法刷新；请重新登录。")
+        token = str(binding.get("framework_token") or "")
+        if not token:
+            yield event.plain_result("当前账号缺少 frameworkToken，请重新登录。")
+            return
+        res = await self.client.login_refresh(platform, token)
+        if not self._ok(res):
+            yield event.plain_result(f"登录凭证刷新失败: {self._message_of(res)}")
+            return
+        platform_name = "微信" if platform == "wechat" else "QQ"
+        yield event.plain_result(f"{platform_name}登录凭证刷新成功。")
 
     def _parse_mode_page(self, arg: str) -> Tuple[Optional[str], int, str]:
         mode = None

@@ -64,19 +64,19 @@ helpList:
           desc: "查看已绑定token列表"
         - icon: 71
           title: "账号切换 [序号]"
-          desc: "激活指定序号账号"
+          desc: "激活指定账号并同步后端主绑定"
         - icon: 86
           title: "绑定 [token]"
           desc: "绑定token"
         - icon: 48
           title: "解绑 [序号]"
-          desc: "解绑指定序号token"
+          desc: "解除后端绑定并移除本地记录"
         - icon: 47
           title: "删除 [序号]"
           desc: "删除QQ/微信登录数据"
         - icon: 49
           title: "(微信/QQ)刷新"
-          desc: "刷新微信/QQ token"
+          desc: "刷新当前微信/QQ登录凭证"
         - icon: 64
           title: "(QQ/微信)登陆"
           desc: "通过QQ/微信扫码登录"
