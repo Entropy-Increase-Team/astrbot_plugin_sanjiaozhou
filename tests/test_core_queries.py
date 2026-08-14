@@ -521,6 +521,79 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("非空数组", invalid[0]["text"])
         client.create_community_solution.assert_not_awaited()
 
+    async def test_solution_queries_handle_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            community_solutions=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": [], "total": 0}},
+                    {"code": 500, "message": "方案列表服务异常"},
+                ]
+            ),
+            my_community_favorites=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": [], "total": 0}},
+                    {"code": 500, "message": "收藏列表服务异常"},
+                ]
+            ),
+            community_solution_detail=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {}},
+                    {"code": 404, "message": "方案不存在"},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+
+        list_empty = await _collect(plugin._solution_list(_Event(), "", favorites=False))
+        list_error = await _collect(plugin._solution_list(_Event(), "", favorites=False))
+        favorites_empty = await _collect(plugin._solution_list(_Event(), "", favorites=True))
+        favorites_error = await _collect(plugin._solution_list(_Event(), "", favorites=True))
+        detail_empty = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
+        detail_error = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
+
+        self.assertIn("未找到符合条件", list_empty[0]["text"])
+        self.assertIn("方案列表服务异常", list_error[0]["text"])
+        self.assertIn("未找到符合条件", favorites_empty[0]["text"])
+        self.assertIn("收藏列表服务异常", favorites_error[0]["text"])
+        self.assertIn("不存在或暂不可见", detail_empty[0]["text"])
+        self.assertIn("方案不存在", detail_error[0]["text"])
+
+    async def test_solution_write_operations_report_success_and_permission_errors(self):
+        denied = {"code": 403, "message": "缺少 gunmod:community:write 权限"}
+        client = SimpleNamespace(
+            create_community_solution=AsyncMock(return_value=denied),
+            update_community_solution=AsyncMock(side_effect=[{"code": 0}, denied]),
+            delete_community_solution=AsyncMock(side_effect=[{"code": 0}, denied]),
+            vote_community_solution=AsyncMock(side_effect=[{"code": 0}, denied]),
+            favorite_community_solution=AsyncMock(side_effect=[{"code": 0}, denied]),
+        )
+        plugin = self._plugin(client)
+
+        upload = await _collect(
+            plugin._solution_upload(
+                _Event(),
+                'CODE456 180100001 sol 测试方案 [{"slotId":"scope","objectId":1001}]',
+            )
+        )
+        update_ok = await _collect(plugin._solution_update(_Event(), "fixture-uuid", "新描述 公开"))
+        update_error = await _collect(plugin._solution_update(_Event(), "fixture-uuid", "新描述"))
+        delete_ok = await _collect(plugin._solution_delete(_Event(), "fixture-uuid"))
+        delete_error = await _collect(plugin._solution_delete(_Event(), "fixture-uuid"))
+        vote_ok = await _collect(plugin._solution_vote(_Event(), "fixture-uuid", 1))
+        vote_error = await _collect(plugin._solution_vote(_Event(), "fixture-uuid", -1))
+        favorite_ok = await _collect(plugin._solution_favorite(_Event(), "fixture-uuid", True))
+        favorite_error = await _collect(plugin._solution_favorite(_Event(), "fixture-uuid", False))
+
+        self.assertIn("gunmod:community:write", upload[0]["text"])
+        self.assertIn("已更新", update_ok[0]["text"])
+        self.assertIn("gunmod:community:write", update_error[0]["text"])
+        self.assertIn("已删除", delete_ok[0]["text"])
+        self.assertIn("gunmod:community:write", delete_error[0]["text"])
+        self.assertIn("已点赞", vote_ok[0]["text"])
+        self.assertIn("gunmod:community:write", vote_error[0]["text"])
+        self.assertIn("已收藏", favorite_ok[0]["text"])
+        self.assertIn("gunmod:community:write", favorite_error[0]["text"])
+
     async def test_record_event_push_is_deduplicated(self):
         plugin = self._plugin()
         plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
@@ -1286,6 +1359,46 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("4,567", price[0]["text"])
         self.assertIn("测试材料（2001） 88", material[0]["text"])
 
+    async def test_price_queries_handle_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 1001}]}}),
+            current_price=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": []}},
+                    {"code": 500, "message": "实时价格服务异常"},
+                ]
+            ),
+            object_value_search=AsyncMock(return_value={"code": 500, "message": "价格后备服务异常"}),
+            price_history_v2=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": []}},
+                    {"code": 500, "message": "价格历史服务异常"},
+                ]
+            ),
+            object_value_history=AsyncMock(return_value={"code": 500, "message": "历史后备服务异常"}),
+            material_price=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"materials": []}},
+                    {"code": 500, "message": "材料价格服务异常"},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+
+        current_empty = await _collect(plugin._price_now(_Event(), "测试物品"))
+        current_error = await _collect(plugin._price_now(_Event(), "测试物品"))
+        history_empty = await _collect(plugin._price_history(_Event(), "测试物品"))
+        history_error = await _collect(plugin._price_history(_Event(), "测试物品"))
+        material_empty = await _collect(plugin._material_price(_Event(), "测试材料"))
+        material_error = await _collect(plugin._material_price(_Event(), "测试材料"))
+
+        self.assertIn("未查询到", current_empty[0]["text"])
+        self.assertIn("价格后备服务异常", current_error[0]["text"])
+        self.assertIn("未查询到", history_empty[0]["text"])
+        self.assertIn("历史后备服务异常", history_error[0]["text"])
+        self.assertIn("未查询到符合条件", material_empty[0]["text"])
+        self.assertIn("材料价格服务异常", material_error[0]["text"])
+
     async def test_profit_history_resolves_positional_item_and_days(self):
         client = SimpleNamespace(
             object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 3001}]}}),
@@ -1325,6 +1438,45 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         client.profit_rank.assert_awaited_once_with({"limit": "5", "place": "workbench", "type": "hour"})
         self.assertIn("测试制品", results[0]["text"])
         self.assertIn("+99", results[0]["text"])
+
+    async def test_profit_queries_handle_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 3001}]}}),
+            object_value_search=AsyncMock(),
+            profit_history=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"history": []}},
+                    {"code": 500, "message": "利润历史服务异常"},
+                ]
+            ),
+            profit_rank=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": []}},
+                    {"code": 500, "message": "利润排行服务异常"},
+                ]
+            ),
+            place_profit=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"manufacturingPlaces": []}},
+                    {"code": 500, "message": "特勤处利润服务异常"},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+
+        history_empty = await _collect(plugin._profit(_Event(), "利润历史", "测试制品"))
+        history_error = await _collect(plugin._profit(_Event(), "利润历史", "测试制品"))
+        rank_empty = await _collect(plugin._profit(_Event(), "利润排行", ""))
+        rank_error = await _collect(plugin._profit(_Event(), "利润排行", ""))
+        place_empty = await _collect(plugin._profit(_Event(), "特勤处利润", ""))
+        place_error = await _collect(plugin._profit(_Event(), "特勤处利润", ""))
+
+        self.assertIn("暂无该物品", history_empty[0]["text"])
+        self.assertIn("利润历史服务异常", history_error[0]["text"])
+        self.assertIn("没有利润排行", rank_empty[0]["text"])
+        self.assertIn("利润排行服务异常", rank_error[0]["text"])
+        self.assertIn("没有特勤处利润", place_empty[0]["text"])
+        self.assertIn("特勤处利润服务异常", place_error[0]["text"])
 
     async def test_ai_review_returns_content_and_accepts_numeric_mode_alias(self):
         client = SimpleNamespace(
