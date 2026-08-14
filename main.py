@@ -1363,6 +1363,14 @@ class DeltaForcePlugin(Star):
             async for result in self._toggle_scheduled_push(event, kind, match.group(1) == "开启"):
                 yield result
             return
+        if body.startswith("房间信息"):
+            parts = body.split()
+            if len(parts) != 3:
+                yield event.plain_result("用法：房间信息 <烽火/全面> <对局房间ID>，例如：房间信息 烽火 123456。")
+                return
+            async for result in self._battle_room_info(event, parts[1], parts[2]):
+                yield result
+            return
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
             yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")
             return
@@ -2243,6 +2251,163 @@ class DeltaForcePlugin(Star):
             "kills": kills,
             "rescue": teammate.get("Rescue") or 0,
         }
+
+    @staticmethod
+    def _room_player_data(item: Dict[str, Any]) -> Dict[str, Any]:
+        """合并全面战场响应中可能嵌套的玩家详情。"""
+        result = dict(item)
+        for _ in range(2):
+            changed = False
+            for key in ("userDetail", "playerDetail", "userInfo", "playerInfo"):
+                detail = result.get(key)
+                if isinstance(detail, dict):
+                    result.update(detail)
+                    changed = True
+            if not changed:
+                break
+        return result
+
+    def _room_players(self, raw: Any) -> List[Dict[str, Any]]:
+        if isinstance(raw, list):
+            candidates = raw
+        else:
+            candidates = []
+            for key in (
+                "players",
+                "playerList",
+                "userList",
+                "memberList",
+                "members",
+                "roomUsers",
+                "needUserDetail",
+                "list",
+                "data",
+            ):
+                candidates = self._find_nested_list(raw, key)
+                if candidates:
+                    break
+        return [self._room_player_data(item) for item in candidates if isinstance(item, dict)]
+
+    @staticmethod
+    def _room_value(item: Dict[str, Any], *keys: str, default: Any = "") -> Any:
+        for key in keys:
+            value = item.get(key)
+            if value is not None and value != "":
+                return value
+        return default
+
+    async def _battle_room_info(
+        self,
+        event: AstrMessageEvent,
+        mode_token: str,
+        room_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        mode_text = str(mode_token or "").strip().lower()
+        if mode_text in SOL_ALIASES:
+            mode, type_id, mode_name = "sol", "4", "烽火地带"
+        elif mode_text in MP_ALIASES:
+            mode, type_id, mode_name = "mp", "5", "全面战场"
+        else:
+            yield event.plain_result("模式仅支持烽火（sol/4）或全面（mp/5）。")
+            return
+
+        room_id = str(room_id or "").strip()
+        if not room_id or len(room_id) > 128:
+            yield event.plain_result("对局房间 ID 无效。用法：房间信息 <烽火/全面> <对局房间ID>。")
+            return
+        token = await self._need_token(event)
+        if not token:
+            yield event.plain_result("您尚未绑定账号。")
+            return
+
+        response = await self.client.room_info(token, room_id, type_id)
+        if not self._ok(response):
+            yield event.plain_result(f"{mode_name}房间详情查询失败：{self._message_of(response)}")
+            return
+        players = self._room_players(self._payload(response, []))
+        if not players:
+            yield event.plain_result(f"未查询到{mode_name}对局房间 {room_id} 的成员详情。")
+            return
+
+        first = players[0]
+        map_id = self._room_value(first, "MapId", "MapID", "mapId", "mapID")
+        event_time = self._room_value(first, "dtEventTime", "eventTime", "matchTime", default="未知")
+        map_name = self.data_mgr.get_map_name(map_id)
+        lines = [
+            "【战绩对局房间详情】",
+            f"模式：{mode_name}",
+            f"房间 ID：{room_id}",
+            f"地图：{map_name}",
+            f"时间：{event_time}",
+            f"玩家：{len(players)} 人",
+        ]
+        for index, player in enumerate(players[:20], 1):
+            nickname = self.data_mgr.decode_text(
+                self._room_value(
+                    player,
+                    "nickName",
+                    "NickName",
+                    "nickname",
+                    "userName",
+                    "UserName",
+                    "roleName",
+                    "charac_name",
+                    default="未知玩家",
+                )
+            )
+            team_id = self._room_value(player, "TeamId", "TeamID", "teamId", "teamID", "team", default="-")
+            operator_id = self._room_value(
+                player,
+                "ArmedForceId",
+                "armedForceId",
+                "DeployArmedForceType",
+                "deployArmedForceType",
+                "operatorId",
+            )
+            operator = self.data_mgr.get_operator_name(operator_id)
+            lines.append(f"{index}. {nickname}｜队伍 {team_id}｜{operator}")
+            if mode == "sol":
+                reason = str(self._room_value(player, "EscapeFailReason", "escapeFailReason"))
+                status = ESCAPE_REASONS.get(reason, "撤离结果未知")
+                player_kills = self._room_value(player, "KillCount", "killCount", default=0)
+                ai_player_kills = self._room_value(player, "KillPlayerAICount", "killPlayerAICount", default=0)
+                ai_kills = self._room_value(player, "KillAICount", "killAICount", default=0)
+                value = self._room_value(
+                    player,
+                    "FinalPrice",
+                    "finalPrice",
+                    "KeyChainCarryOutPrice",
+                    "keyChainCarryOutPrice",
+                    default=0,
+                )
+                rescue = self._room_value(player, "Rescue", "rescue", default=0)
+                revive = self._room_value(player, "Revive", "revive", default=0)
+                duration = self.data_mgr.fmt_duration(
+                    self._room_value(player, "DurationS", "durationS", "gameTime", "gametime", default=0)
+                )
+                lines.append(
+                    f"   {status}｜击杀 玩家 {player_kills} / AI玩家 {ai_player_kills} / AI {ai_kills}｜"
+                    f"带出 {self.data_mgr.fmt_num(value)}｜救援 {rescue} / 复活 {revive}｜{duration}"
+                )
+            else:
+                kills = self._room_value(player, "KillNum", "killNum", "KillCount", "killCount", default=0)
+                deaths = self._room_value(player, "Death", "death", "DeathNum", "deathNum", default=0)
+                assists = self._room_value(player, "Assist", "assist", "AssistNum", "assistNum", default=0)
+                score = self._room_value(player, "TotalScore", "totalScore", "Score", "score", default=0)
+                rescue = self._room_value(
+                    player,
+                    "RescueTeammateCount",
+                    "rescueTeammateCount",
+                    "Rescue",
+                    "rescue",
+                    default=0,
+                )
+                lines.append(
+                    f"   K/D/A {kills}/{deaths}/{assists}｜得分 {self.data_mgr.fmt_num(score)}｜救援 {rescue}"
+                )
+        if len(players) > 20:
+            lines.append(f"仅显示前 20 名玩家，另有 {len(players) - 20} 人未展开。")
+        yield event.plain_result("\n".join(lines))
 
     async def _daily(self, event: AstrMessageEvent, arg: str, yesterday: bool) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

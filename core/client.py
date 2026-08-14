@@ -333,6 +333,13 @@ class DeltaForceClient:
             framework_token=framework_token,
         )
 
+    async def room_info(self, framework_token: str, room_id: str, type_id: str):
+        return await self.get(
+            "/api/v1/df/person/roominfo",
+            params={"roomId": room_id, "type": type_id},
+            framework_token=framework_token,
+        )
+
     async def map_stats(self, framework_token: str, mode: str = "", seasonid: str = "", map_id: str = ""):
         return await self.get(
             "/api/v1/df/person/mapstats",

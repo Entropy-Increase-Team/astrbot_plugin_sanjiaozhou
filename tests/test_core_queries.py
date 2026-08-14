@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, mock_open, patch
+from urllib.parse import unquote
 
 import httpx
 
@@ -201,7 +202,7 @@ class _DataManager:
 
     @staticmethod
     def decode_text(value):
-        return str(value or "")
+        return unquote(str(value or ""))
 
 
 class _ReadinessDataManager:
@@ -414,6 +415,13 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.record("fixture-token", "4", "2")
         self.assertEqual(client.get.await_args.args[0], "/api/v1/df/person/record")
         self.assertEqual(client.get.await_args.kwargs["params"]["page"], "2")
+
+        await client.room_info("fixture-token", "fixture-room", "5")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/person/roominfo")
+        self.assertEqual(
+            client.get.await_args.kwargs["params"],
+            {"roomId": "fixture-room", "type": "5"},
+        )
 
         await client.map_stats("fixture-token", "sol", "all", "100")
         params = client.get.await_args.kwargs["params"]
@@ -1583,6 +1591,104 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("烽火地带战绩", success[0]["text"])
         self.assertIn("暂无战绩", empty[0]["text"])
         self.assertIn("fixture-error", error[0]["text"])
+
+    async def test_room_info_supports_sol_and_nested_mp_players(self):
+        client = SimpleNamespace(
+            room_info=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": [
+                            {
+                                "nickName": "%E6%B5%8B%E8%AF%95%E7%8E%A9%E5%AE%B6",
+                                "TeamId": "1",
+                                "ArmedForceId": "10",
+                                "MapId": "100",
+                                "dtEventTime": "2026-08-14 12:00:00",
+                                "EscapeFailReason": 1,
+                                "KillCount": 2,
+                                "KillPlayerAICount": 3,
+                                "KillAICount": 4,
+                                "FinalPrice": "585563",
+                                "Rescue": 1,
+                                "Revive": 2,
+                                "DurationS": 1021,
+                            }
+                        ],
+                    },
+                    {
+                        "code": 0,
+                        "data": {
+                            "userList": [
+                                {
+                                    "MapId": "200",
+                                    "dtEventTime": "2026-08-14 13:00:00",
+                                    "KillNum": 12,
+                                    "Death": 3,
+                                    "Assist": 8,
+                                    "TotalScore": 45678,
+                                    "RescueTeammateCount": 2,
+                                    "userDetail": {
+                                        "nickName": "%E5%85%A8%E9%9D%A2%E7%8E%A9%E5%AE%B6",
+                                        "teamId": "2",
+                                        "armedForceId": "20",
+                                    },
+                                }
+                            ]
+                        },
+                    },
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        sol = await _collect(plugin._battle_room_info(_Event(), "烽火", "room-sol"))
+        mp = await _collect(plugin._battle_room_info(_Event(), "全面", "room-mp"))
+
+        self.assertIn("测试玩家", sol[0]["text"])
+        self.assertIn("撤离成功", sol[0]["text"])
+        self.assertIn("玩家 2 / AI玩家 3 / AI 4", sol[0]["text"])
+        self.assertIn("585,563", sol[0]["text"])
+        self.assertIn("全面玩家", mp[0]["text"])
+        self.assertIn("K/D/A 12/3/8", mp[0]["text"])
+        self.assertIn("45,678", mp[0]["text"])
+        self.assertEqual(client.room_info.await_args_list[0].args, ("fixture-token", "room-sol", "4"))
+        self.assertEqual(client.room_info.await_args_list[1].args, ("fixture-token", "room-mp", "5"))
+
+    async def test_room_info_handles_empty_error_invalid_mode_and_unbound_account(self):
+        client = SimpleNamespace(
+            room_info=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": []},
+                    {"code": 500, "message": "fixture-error", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._battle_room_info(_Event(), "4", "empty-room"))
+        error = await _collect(plugin._battle_room_info(_Event(), "5", "error-room"))
+        invalid = await _collect(plugin._battle_room_info(_Event(), "未知", "room"))
+
+        async def missing_token(_event):
+            return None
+
+        plugin._need_token = missing_token
+        unbound = await _collect(plugin._battle_room_info(_Event(), "烽火", "room"))
+
+        self.assertIn("未查询到", empty[0]["text"])
+        self.assertIn("fixture-error", error[0]["text"])
+        self.assertIn("模式仅支持", invalid[0]["text"])
+        self.assertIn("尚未绑定账号", unbound[0]["text"])
+
+    async def test_room_dispatch_shows_usage_and_keeps_management_blocked(self):
+        plugin = self._plugin()
+
+        usage = await _collect(plugin._dispatch(_Event(), "房间信息"))
+        blocked = await _collect(plugin._dispatch(_Event(), "创建房间"))
+
+        self.assertIn("房间信息 <烽火/全面> <对局房间ID>", usage[0]["text"])
+        self.assertIn("没有创建、加入、退出、踢人等房间管理路由", blocked[0]["text"])
 
     def test_daily_supports_single_and_double_mode_envelopes(self):
         plugin = self._plugin()
