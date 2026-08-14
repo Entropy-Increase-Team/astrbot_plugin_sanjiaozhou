@@ -15,21 +15,21 @@
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 账户 | `apps/account/Account.js` | `showAccounts`、`bindToken`、`unbindToken`、`deleteToken`、`switchAccount`、`refreshWechat`、`refreshQq` | 账号、绑定、解绑、删除、切换、刷新 | 账号、绑定、解绑、账号切换、微信刷新及别名 | `_account_list`、`_bind_token`、`_delete_account`、`_switch_account`、`_refresh_account` | `/api/v1/user/bindings` 及其删除、主账号、刷新子路由；登录 token 刷新路由待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 登录 | `apps/account/Login.js` | `login`、`loginWithCookie`、`qqOAuthLogin`、`wechatOAuthLogin`、`webLogin`、`bindCharacter` | 扫码登录、CK 登录、QQ/微信 OAuth、网页登录、角色绑定 | 登录、ck登录、qq授权登录、微信授权登录、网页登录、角色绑定及别名 | `_login`、`_cookie_login`、`_oauth_login`、`_bind_character` | `GET /api/v1/login/{platform}/qr`；`GET /api/v1/login/{platform}/status`；`POST /api/v1/login/qq/ck`；`GET/POST /api/v1/login/{qq,wechat}/oauth`；`GET /api/v1/df/person/bind` | 无 | 有 | 脱敏 fixture 通过 | 待测 | 脱敏 fixture 通过 | 部分 |
-| 娱乐 | `apps/entertainment/Music.js` | `getLyrics`、`sendShushuVoice`、`getMusicCacheStats`、`cleanMusicCache`、`getShushuMusicRank`、`getShushuPlaylist`、`selectMusicByNumber`、`sendShushuMusic` | 歌词、鼠鼠语音、音乐缓存、排行、歌单、点歌、鼠鼠音乐 | 歌词、鼠鼠音乐列表、鼠鼠歌单、点歌、鼠鼠音乐 | `_music`、`_music_list`、`_voice_meta` | 待逐项复核 | `musicList` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 娱乐 | `apps/entertainment/TTS.js` | `getTtsHealth`、`getTtsPresets`、`getTtsPresetDetail`、`downloadLastTts`、`synthesize` | TTS 状态、角色列表、角色详情、下载、合成 | tts状态、tts角色列表、tts角色详情、tts | `_tts_status`、`_tts_presets`、`_tts_preset`、`_tts` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
-| 娱乐 | `apps/entertainment/Voice.js` | `getCharacterList`、`getTagList`、`getCategoryList`、`getAudioStats`、`sendVoice` | 角色、标签、分类、统计、语音 | 语音列表、语音及别名 | `_voice_meta`、`_voice` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
+| 娱乐 | `apps/entertainment/Music.js` | `getLyrics`、`sendShushuVoice`、`getMusicCacheStats`、`cleanMusicCache`、`getShushuMusicRank`、`getShushuPlaylist`、`selectMusicByNumber`、`sendShushuMusic` | 歌词、鼠鼠语音、音乐缓存、排行、歌单、点歌、鼠鼠音乐 | 歌词、鼠鼠音乐列表、鼠鼠歌单、点歌、鼠鼠音乐 | `_music`、`_music_list`、`_music_playlist`、`_music_select`、`_music_lyrics`、`_music_replay` | `GET /api/v1/df/audio/shushu`；`GET /api/v1/df/audio/shushu/list` | `musicList` | 有 | 搜索、歌单名/艺术家回退、点歌、远程 LRC 与 Playwright 通过 | fixture 通过 | fixture 通过 | 部分（音乐缓存管理未移植） |
+| 娱乐 | `apps/entertainment/TTS.js` | `getTtsHealth`、`getTtsPresets`、`getTtsPresetDetail`、`downloadLastTts`、`synthesize` | TTS 状态、角色列表、角色详情、下载、合成 | tts状态、tts角色列表、tts角色详情、tts | `_tts_status`、`_tts_presets`、`_tts_preset`、`_tts` | `GET /api/v1/df/tts/health`；`GET /api/v1/df/tts/presets`；`GET /api/v1/df/tts/preset?character=`；`POST /api/v1/df/tts/synthesize`；`GET /api/v1/df/tts/task` | 无 | 有 | 异步任务轮询与语音组件 fixture 通过 | 空预设分支存在，待补测试 | 失败状态 fixture 通过 | 部分（下载最近 TTS 未移植） |
+| 娱乐 | `apps/entertainment/Voice.js` | `getCharacterList`、`getTagList`、`getCategoryList`、`getAudioStats`、`sendVoice` | 角色、标签、分类、统计、语音 | 语音列表、语音及别名 | `_voice_meta`、`_voice` | `GET /api/v1/df/audio/random`；`GET /api/v1/df/audio/categories`；`GET /api/v1/df/audio/characters`；`GET /api/v1/df/audio/stats`；`GET /api/v1/df/audio/tags` | 无 | 有 | 嵌套下载地址与语音组件 fixture 通过 | fixture 通过 | fixture 通过 | 部分（元数据接口待补测试） |
 | 信息 | `apps/info/banhistory.js` | `getBanHistory` | 封号记录、违规记录/历史 | 封号记录及别名 | `_ban_history` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/Collection.js` | `getCollection` | 藏品、资产 | 藏品及别名 | `_collection` | 待逐项复核 | `collection` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/Collection.js` | `getCollection` | 藏品、资产 | 藏品及别名 | `_collection` | `GET /api/v2/df/person/collection`；`GET /api/v1/df/object/collection` | `collection` | 有 | 合并映射 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/Data.js` | `getPersonalData` | 数据、data，含模式和赛季参数 | 数据及别名 | `_personal_data` | `GET /api/v1/df/person/personaldata`；Query：`type`、`seasonid` | `personalData` | 有 | fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
-| 信息 | `apps/info/Flows.js` | `getFlows` | 流水，设备/道具/货币、分页 | 流水及别名 | `_flows` | `GET /api/v1/df/person/flows` | `flows` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/Flows.js` | `getFlows` | 流水，设备/道具/货币、分页 | 流水及别名 | `_flows` | `GET /api/v1/df/person/flows`；Query：`type`、`page` | `flows` | 有 | 三类型 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/health.js` | `getServerHealth` | 服务器健康状态 | 服务器状态 | `_server_status` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/HealthInfo.js` | `getHealthInfo` | 健康状态 | 健康状态 | `_health_info` | 待逐项复核 | `healthInfo` | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/Info.js` | `getUserInfo`、`getUid` | 信息、UID | 信息、uid及别名 | `_user_info`、`_uid` | `GET /api/v1/df/person/personalinfo` | `userInfo` | 有 | fixture 与 Playwright 通过 | 缺少角色 fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/MapStats.js` | `getMapStats` | 地图统计，含模式、赛季、地图 | 地图统计及别名 | `_map_stats` | `GET /api/v1/df/person/mapstats`；Query：`type`、`serial`、`mapId` | `mapStats` | 有 | 双模式 fixture 与 Playwright 通过 | 搜索空结果 fixture 通过 | fixture 通过 | 已验证 |
-| 信息 | `apps/info/Money.js` | `getMoney` | 货币、余额 | 货币及别名 | `_money` | `GET /api/v1/df/person/money` | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/Operator.js` | `getOperatorInfo` | 干员详情 | 干员 | `_operator_info` | 待逐项复核 | `operator` | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/OperatorList.js` | `getOperatorList` | 干员列表 | 干员列表 | `_operator_list` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
-| 信息 | `apps/info/PlaceInfo.js` | `getPlaceInfo` | 特勤处信息 | 特勤处信息 | `_place_info` | 待逐项复核 | `placeInfo` | 有 | 待测 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/Money.js` | `getMoney` | 货币、余额 | 货币及别名 | `_money` | `GET /api/v1/df/person/money`；默认三种货币 | 无 | 有 | fixture 通过 | fixture 通过 | fixture 通过 | 已验证 |
+| 信息 | `apps/info/Operator.js` | `getOperatorInfo` | 干员详情 | 干员 | `_operator_info` | `GET /api/v1/df/object/operator` | `operator` | 有 | AMS 字段 fixture 与 Playwright 通过 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/OperatorList.js` | `getOperatorList` | 干员列表 | 干员列表 | `_operator_list` | `GET /api/v1/df/object/operator2` | 无 | 有 | endpoint 与参数 fixture 通过 | 待测 | 待测 | 部分 |
+| 信息 | `apps/info/PlaceInfo.js` | `getPlaceInfo` | 特勤处信息 | 特勤处信息 | `_place_info` | `GET /api/v1/df/place/info`；Query：`place` | `placeInfo` | 有 | 中文类型/等级 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/red.js` | `getRedCollection`、`getRedByName` | 大红收藏、按名称查询 | 出红记录及相关别名 | `_red_records`、`_red_list`、`_red_one`、`_red_collection` | 待逐项复核 | `redCollection`、`redRecord`、`redRecordList` | 有 | 待测 | 待测 | 待测 | 部分 |
 | 信息 | `apps/info/Stats.js` | `getUserStats` | 用户统计 | 用户统计 | `_user_stats` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
 | 推送 | `apps/push/DailyPush.js` | `pushDailyReports` | 日报定时推送 | 开启/关闭日报推送入口 | `_dispatch` 中占位分支 | 待逐项复核 | `dailyReport` | 有占位提示 | 待测 | 待测 | 待测 | 未开始 |
@@ -45,10 +45,10 @@
 | 系统 | `apps/system/Help.js` | `help`、`entertainmentHelp` | 帮助、娱乐帮助 | 帮助、娱乐帮助、计算帮助及别名 | `_help`、`_calculator_help` | 无 | `help/index.html` | 有 | Playwright fixture 通过 | 不适用 | 待测 | 部分 |
 | 系统 | `apps/system/Update.js` | `update`、`update_log` | 更新、强制更新、更新日志 | 更新及别名 | `_dispatch` 中插件管理器提示 | 无 | 无 | 有占位提示 | 待测 | 不适用 | 待测 | 未开始 |
 | 系统 | `apps/system/WebSocketClient.js` | `connectWebSocket`、`disconnectWebSocket`、`getWebSocketStatus` | WebSocket 连接、断开、状态 | ws连接及大量别名 | `_dispatch` 中占位分支 | `docs/websocket-protocol.md` 待实现 | 无 | 有占位提示 | 待测 | 不适用 | 待测 | 未开始 |
-| 工具 | `apps/tools/AIEvaluation.js` | `getAiCommentary`、`getAiCommentaryWithPreset`、`listAiPresets` | AI 锐评、指定预设、预设列表 | ai锐评、ai评价、ai预设列表 | `_ai_review`、`_ai_presets` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
+| 工具 | `apps/tools/AIEvaluation.js` | `getAiCommentary`、`getAiCommentaryWithPreset`、`listAiPresets` | AI 锐评、指定预设、预设列表 | ai锐评、ai评价、ai预设列表 | `_ai_review`、`_ai_presets` | `POST /api/v1/df/tools/ai`，Body：`type`、`preset`；`GET /api/v1/df/tools/ai/presets` | 无 | 有 | 正文、模式别名与请求 Body fixture 通过 | 待测 | 待测 | 部分 |
 | 工具 | `apps/tools/Calculator.js` | `startDamageCalculation`、`startReadinessCalculation`、`startRepairCalculation`、`quickRepairCalculation`、`quickDamageCalculation`、`showHelp`、`showMappingTable`、`cancelCalculation` | 伤害、战备、维修、修甲、帮助、映射表、取消 | 伤害计算、战备计算、维修计算、修甲、计算帮助、计算映射表、取消计算 | `_quick_damage`、`_quick_repair`、`_calculator_help` 及分发逻辑 | 静态数据与计算逻辑 | 帮助 YAML | 有 | 待测 | 待测 | 待测 | 部分 |
-| 工具 | `apps/tools/Object.js` | `getObjectList`、`searchObject` | 物品列表、物品搜索 | 物品列表、物品搜索 | `_object_list`、`_object_search`、`_object_info` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
-| 工具 | `apps/tools/Price.js` | `getPriceHistory`、`getCurrentPrice`、`getMaterialPrice`、`getProfitHistory`、`getProfitRank`、`getProfitRankV2`、`getSpecialOpsProfit` | 当前/历史/材料价格、利润历史和排行 | 当前价格、价格历史、材料价格、利润历史及别名 | `_price_now`、`_price_history`、`_material_price`、`_profit` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
+| 工具 | `apps/tools/Object.js` | `getObjectList`、`searchObject` | 物品列表、物品搜索 | 物品列表、物品搜索 | `_object_list`、`_object_search`、`_object_info` | `GET /api/v1/df/object/list`；`GET /api/v1/df/object/search` | 无 | 有 | 默认分类、分页与多 ID 参数 fixture 通过 | 待测 | 待测 | 部分 |
+| 工具 | `apps/tools/Price.js` | `getPriceHistory`、`getCurrentPrice`、`getMaterialPrice`、`getProfitHistory`、`getProfitRank`、`getProfitRankV2`、`getSpecialOpsProfit` | 当前/历史/材料价格、利润历史和排行 | 当前价格、价格历史、材料价格、利润历史及别名 | `_price_now`、`_price_history`、`_material_price`、`_profit` | `GET /api/v1/df/object/price/ams/latest`；`GET /api/v1/df/object/price/ams/history/v2`；`GET /api/v1/df/place/material/price`；`GET /api/v1/df/place/profit`；`GET /api/v1/df/place/profit/history`；`GET /api/v1/df/place/profit/rank` | 无 | 有 | 当前/材料价格、利润历史/排行参数与文本 fixture 通过 | 待测 | 待测 | 部分 |
 | 工具 | `apps/tools/Room.js` | `getRoomList`、`createRoom`、`joinRoom`、`quitRoom`、`kickMember`、`getRoomInfo`、`getMapList`、`getTagList` | 房间列表、创建、加入、退出、踢人、信息、地图、标签 | 房间列表及相关别名 | `_dispatch` 中占位分支 | 待逐项复核 | 无 | 有占位提示 | 待测 | 待测 | 待测 | 未开始 |
 | 工具 | `apps/tools/SolutionV2.js` | `uploadSolution`、`getSolutionList`、`getSolutionDetail`、`voteSolution`、`updateSolution`、`deleteSolution`、`collectSolution`、`getCollectList` | 战备方案上传、列表、详情、投票、更新、删除、收藏 | 无完整对应命令 | 无 | 待逐项复核 | 无 | 无 | 待测 | 待测 | 待测 | 未开始 |
 | 工具 | `apps/tools/Tools.js` | `getDailyKeyword`、`getArticleList`、`getArticleDetail` | 每日密码、文章列表、文章详情 | 每日密码、文章列表、文章详情 | `_daily_keyword`、`_article_list`、`_article_detail` | 待逐项复核 | 无 | 有 | 待测 | 待测 | 待测 | 部分 |
@@ -101,3 +101,11 @@
 - “昨日收益”仅在 `recentGainDate` 确实等于昨天时展示，避免将任意最近收益误标为昨日数据。
 - 共 25 项脱敏单元测试通过，覆盖登录安全与核心查询的成功、空数据、错误分支。
 - Playwright 已生成并人工检查信息、烽火数据、全面数据、战绩、日报、周报、烽火地图统计、全面地图统计共 8 张截图；长昵称、趋势首尾数值、中文、底部和动态高度均无重叠或裁切。
+
+## 第三阶段工具与娱乐证据
+
+- 音乐接口按最新版 `songs[]`、`playlistId`、`artist`、`keyword` 适配；歌单名称在客户端按 `playlistName` 匹配，未命中时回退艺术家查询。
+- 远程 LRC 会下载并去除时间标签；异常 `metadata`、空音频、空音乐和服务错误均有 fixture。
+- TTS 使用 `character` 参数提交异步任务并轮询 `taskId`，已覆盖完成与失败状态、相对音频 URL 和 AstrBot `Record` 组件。
+- 干员详细数据来自 `/api/v1/df/object/operator`，静态列表来自 `/api/v1/df/object/operator2`；干员模板已从 Yunzai 语法转换为 Jinja2。
+- 当前共 50 项脱敏单元测试通过。Playwright 已额外生成并人工检查流水、藏品、特勤处、音乐和干员 5 张截图；干员截图为 `2400×1400`，背景、技能卡、长描述和底部均完整。

@@ -26,47 +26,47 @@
             <div class="operator-info-section">
                 <div class="operator-name-row">
                     <div class="operator-name-main">{{operatorName}}</div>
-                    {{if fullName}}
+                    {% if fullName %}
                     <div class="operator-name-en">{{fullName}}</div>
-                    {{/if}}
+                    {% endif %}
                 </div>
             </div>
 
             <!-- 兵种信息 -->
-            {{if armyType}}
+            {% if armyType %}
             <div class="army-type-section">
                 <span class="army-type-label">兵种:</span>
                 <span class="army-type-value">{{armyType}}</span>
-                {{if armyTypeDesc}}
+                {% if armyTypeDesc %}
                 <span class="army-type-desc">{{armyTypeDesc}}</span>
-                {{/if}}
+                {% endif %}
             </div>
-            {{/if}}
+            {% endif %}
 
             <!-- 技能列表 -->
-            {{if abilitiesList && abilitiesList.length > 0}}
+            {% if abilitiesList %}
             <div class="abilities-section">
                 <div class="section-title">技能列表</div>
                 <div class="abilities-grid">
-                    {{each abilitiesList ability}}
+                    {% for ability in abilitiesList %}
                     <div class="ability-card">
                         <div class="ability-icon-wrapper">
-                            {{if ability.abilityPic}}
+                            {% if ability.abilityPic %}
                             <img class="ability-icon" src="{{ability.abilityPic}}" alt="{{ability.abilityName}}" onerror="this.style.display='none';" />
-                            {{/if}}
+                            {% endif %}
                         </div>
                         <div class="ability-info">
                             <div class="ability-name">{{ability.abilityName}}</div>
-                            <div class="ability-type">{{ability.abilityTypeCN || ability.abilityType}}</div>
-                            {{if ability.abilityDesc}}
+                            <div class="ability-type">{{ability.abilityTypeCN or ability.abilityType}}</div>
+                            {% if ability.abilityDesc %}
                             <div class="ability-desc">{{ability.abilityDesc}}</div>
-                            {{/if}}
+                            {% endif %}
                         </div>
                     </div>
-                    {{/each}}
+                    {% endfor %}
                 </div>
             </div>
-            {{/if}}
+            {% endif %}
         </div>
     </div>
 </body>

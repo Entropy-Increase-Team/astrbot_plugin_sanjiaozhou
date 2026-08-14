@@ -44,6 +44,16 @@ class _Image:
         return _Image(f"file:///{value}")
 
 
+class _Record:
+    def __init__(self, file: str, **kwargs):
+        self.file = file
+        self.text = kwargs.get("text")
+
+    @staticmethod
+    def fromURL(value: str, **kwargs):
+        return _Record(value, **kwargs)
+
+
 class _Star:
     def __init__(self, context=None):
         self.context = context
@@ -76,6 +86,7 @@ def _install_astrbot_stubs():
     core.AstrBotConfig = dict
     components.Plain = _Plain
     components.Image = _Image
+    components.Record = _Record
     astrbot.api = api
     astrbot.core = core
     sys.modules.update(
@@ -194,6 +205,26 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.map_stats("fixture-token", "sol", "all", "100")
         params = client.get.await_args.kwargs["params"]
         self.assertEqual(params, {"type": "sol", "serial": "all", "mapId": "100"})
+
+    async def test_client_uses_authoritative_tool_endpoints_and_parameters(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+        client.post = AsyncMock(return_value={"code": 0, "data": {}})
+
+        await client.operators(detail=False)
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/object/operator2")
+        await client.operators(detail=True)
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/object/operator")
+
+        await client.object_search("1001，1002")
+        self.assertEqual(client.get.await_args.kwargs["params"]["objectID"], "1001,1002")
+        await client.material_price("测试材料")
+        self.assertEqual(client.get.await_args.kwargs["params"]["objectName"], "测试材料")
+        self.assertNotIn("id", client.get.await_args.kwargs["params"])
+
+        await client.ai_review("fixture-token", "sol", "rp")
+        self.assertEqual(client.post.await_args.args[0], "/api/v1/df/tools/ai")
+        self.assertEqual(client.post.await_args.kwargs["json_data"], {"type": "sol", "preset": "rp"})
 
     async def test_user_info_success_missing_role_and_error_branches(self):
         success_payload = {
@@ -484,6 +515,290 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("未找到", empty[0]["text"])
         self.assertIn("fixture-error", error[0]["text"])
 
+    async def test_money_formats_authoritative_currency_list(self):
+        client = SimpleNamespace(
+            money=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [
+                            {"item": "17020000010", "name": "哈夫币", "totalMoney": "1234567"},
+                            {"item": "17888808889", "name": "三角券", "totalMoney": "88"},
+                        ]
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._money(_Event()))
+
+        self.assertIn("哈夫币: 1,234,567", results[0]["text"])
+        self.assertIn("三角券: 88", results[0]["text"])
+
+    async def test_money_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            money=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "货币服务异常"},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._money(_Event()))
+        error = await _collect(plugin._money(_Event()))
+
+        self.assertIn("未查询到任何货币", empty[0]["text"])
+        self.assertIn("货币服务异常", error[0]["text"])
+
+    async def test_flows_without_type_queries_all_three_categories(self):
+        async def flows(_token, type_id, page):
+            fixtures = {
+                "1": {"LoginArr": [{"indtEventTime": "2026-08-14 10:00", "SystemHardware": "PC", "vClientIP": "127.0.0.1"}]},
+                "2": {"itemArr": [{"dtEventTime": "2026-08-14 11:00", "Name": "测试物品", "AddOrReduce": "+1", "Reason": "%E6%B5%8B%E8%AF%95"}]},
+                "3": {"iMoneyArr": [{"dtEventTime": "2026-08-14 12:00", "AddOrReduce": "-20", "leftMoney": "9980", "Reason": "%E8%B4%AD%E4%B9%B0"}]},
+            }
+            return {"code": 0, "data": {"list": [fixtures[type_id]]}}
+
+        client = SimpleNamespace(flows=AsyncMock(side_effect=flows))
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._flows(_Event(), "", "1"))
+
+        self.assertEqual(client.flows.await_count, 3)
+        self.assertEqual([call.args[1] for call in client.flows.await_args_list], ["1", "2", "3"])
+        self.assertIn("设备流水", results[0]["text"])
+        self.assertIn("测试物品", results[1]["text"])
+        self.assertIn("购买", results[2]["text"])
+
+    async def test_flows_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            flows=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "流水服务异常"},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._flows(_Event(), "设备", "1"))
+        error = await _collect(plugin._flows(_Event(), "设备", "1"))
+
+        self.assertIn("暂无记录", empty[0]["text"])
+        self.assertIn("流水服务异常", error[0]["text"])
+
+    async def test_collection_merges_owned_items_with_public_mapping(self):
+        client = SimpleNamespace(
+            collection=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"data": {"userData": [{"ItemId": "1001"}], "weponData": [{"ItemId": "1002"}]}},
+                }
+            ),
+            object_collection_map=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [
+                            {"id": "1001", "name": "测试皮肤", "type": "干员皮肤", "rare": "橙"},
+                            {"id": "1002", "name": "测试枪皮", "type": "枪皮", "rare": "紫"},
+                        ]
+                    },
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._collection(_Event(), "枪皮"))
+
+        self.assertIn("枪皮", results[0]["text"])
+        self.assertIn("共 1 件", results[0]["text"])
+
+    async def test_collection_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            collection=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"data": {"userData": [], "weponData": []}}},
+                    {"code": 500, "message": "藏品服务异常"},
+                ]
+            ),
+            object_collection_map=AsyncMock(return_value={"code": 0, "data": {"list": []}}),
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._collection(_Event(), ""))
+        error = await _collect(plugin._collection(_Event(), ""))
+
+        self.assertIn("藏品库为空", empty[0]["text"])
+        self.assertIn("藏品服务异常", error[0]["text"])
+
+    async def test_place_info_maps_chinese_type_level_and_template_fields(self):
+        client = SimpleNamespace(
+            place_info=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "places": [
+                            {
+                                "placeType": "workbench",
+                                "placeName": "工作台",
+                                "level": 3,
+                                "upgradeInfo": {"hafCount": 5000, "condition": "解锁等级30；完成任务"},
+                                "upgradeRequired": [{"objectID": "2001", "count": 2}],
+                                "unlockInfo": {"properties": {"list": ["制造速度提升"]}, "props": []},
+                            }
+                        ],
+                        "relateMap": {"2001": {"objectName": "测试材料", "pic": "https://example.invalid/item.png"}},
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._place_info(_Event(), "工作台 3"))
+
+        self.assertEqual(client.place_info.await_args.args[1], "workbench")
+        self.assertIn("工作台 Lv.3", results[0]["text"])
+
+    async def test_place_info_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            place_info=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"places": [], "relateMap": {}}},
+                    {"code": 500, "message": "特勤处服务异常"},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._place_info(_Event(), "工作台"))
+        error = await _collect(plugin._place_info(_Event(), "工作台"))
+
+        self.assertIn("未查询到符合条件", empty[0]["text"])
+        self.assertIn("特勤处服务异常", error[0]["text"])
+
+    async def test_operator_detail_uses_ams_fields(self):
+        client = SimpleNamespace(
+            operators=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": [
+                        {
+                            "operator": "乌鲁鲁",
+                            "fullName": "大卫·费莱尔",
+                            "armyType": "工程",
+                            "abilitiesList": [{"abilityName": "巡飞弹", "abilityDesc": "发射巡飞弹"}],
+                        }
+                    ],
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._operator_info(_Event(), "乌鲁鲁"))
+
+        client.operators.assert_awaited_once_with(detail=True)
+        self.assertIn("乌鲁鲁", results[0]["text"])
+        self.assertIn("巡飞弹", results[0]["text"])
+
+    async def test_object_list_parses_default_category_page_and_formats_items(self):
+        client = SimpleNamespace(
+            object_list=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [{"objectID": 1001, "objectName": "测试藏品", "primaryClass": "props", "secondClass": "collection", "avgPrice": 1234}],
+                        "total": 21,
+                        "page": 2,
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._object_list(_Event(), "2"))
+
+        client.object_list.assert_awaited_once_with("props", "collection", "2", "20")
+        self.assertIn("第 2 页", results[0]["text"])
+        self.assertIn("测试藏品（1001）", results[0]["text"])
+
+    async def test_price_and_material_outputs_use_current_response_fields(self):
+        client = SimpleNamespace(
+            object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 1001}]}}),
+            current_price=AsyncMock(return_value={"code": 0, "data": {"items": [{"objectID": 1001, "avgPrice": 4567}]}}),
+            object_value_search=AsyncMock(),
+            material_price=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"materials": [{"objectID": 2001, "objectName": "测试材料", "price": 88}], "pagination": {"page": 1, "total": 1}},
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        price = await _collect(plugin._price_now(_Event(), "测试物品"))
+        material = await _collect(plugin._material_price(_Event(), "测试材料"))
+
+        self.assertIn("4,567", price[0]["text"])
+        self.assertIn("测试材料（2001） 88", material[0]["text"])
+
+    async def test_profit_history_resolves_positional_item_and_days(self):
+        client = SimpleNamespace(
+            object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 3001}]}}),
+            object_value_search=AsyncMock(),
+            profit_history=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "objectInfo": {"objectName": "测试制品", "placeName": "工作台", "level": 3, "period": 2},
+                        "history": [{"timestamp": 123, "salePrice": 500, "totalProfit": 100, "hourProfit": 50}],
+                        "days": 14,
+                    },
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._profit(_Event(), "利润历史", "测试制品 14天"))
+
+        client.profit_history.assert_awaited_once_with({"objectID": "3001", "days": "14"})
+        self.assertIn("测试制品利润历史", results[0]["text"])
+        self.assertIn("时均 +50", results[0]["text"])
+
+    async def test_profit_rank_parses_chinese_place_sort_and_limit(self):
+        client = SimpleNamespace(
+            profit_rank=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"items": [{"rank": 1, "objectName": "测试制品", "placeName": "工作台", "level": 3, "hourProfit": 99}], "sortType": "hour"},
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._profit(_Event(), "利润排行", "工作台 时均 5"))
+
+        client.profit_rank.assert_awaited_once_with({"limit": "5", "place": "workbench", "type": "hour"})
+        self.assertIn("测试制品", results[0]["text"])
+        self.assertIn("+99", results[0]["text"])
+
+    async def test_ai_review_returns_content_and_accepts_numeric_mode_alias(self):
+        client = SimpleNamespace(
+            ai_review=AsyncMock(
+                return_value={"code": 0, "data": {"content": "这是一段测试锐评。", "preset": "rp", "presetName": "锐评"}}
+            )
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._ai_review(_Event(), "4 rp", preset_required=True))
+
+        client.ai_review.assert_awaited_once_with("fixture-token", "sol", "rp")
+        self.assertIn("烽火地带 AI锐评", results[0]["text"])
+        self.assertIn("这是一段测试锐评", results[0]["text"])
+
     async def test_core_templates_compile_with_adapted_fixture(self):
         renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))
         fixtures = {
@@ -507,6 +822,25 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "totalMaps": 0,
             },
             "Template/record/record.html": {"modeName": "烽火地带", "page": 1, "records": []},
+            "Template/flows/flows.html": {"typeName": "货币", "typeValue": 3, "page": 1, "moneyColumns": []},
+            "Template/collection/collection.html": {"typeName": "所有藏品", "totalCount": 0, "qualityStats": [], "categories": []},
+            "Template/placeInfo/placeInfo.html": {"places": []},
+            "Template/operator/operator.html": {
+                "operatorName": "乌鲁鲁",
+                "fullName": "大卫·费莱尔",
+                "operatorPic": "",
+                "armyType": "工程",
+                "armyTypeDesc": "战术破坏",
+                "abilitiesList": [
+                    {
+                        "abilityName": "巡飞弹",
+                        "abilityType": "战术装备",
+                        "abilityTypeCN": "战术装备",
+                        "abilityDesc": "发射巡飞弹攻击指定区域。",
+                        "abilityPic": "",
+                    }
+                ],
+            },
         }
         try:
             for name, data in fixtures.items():

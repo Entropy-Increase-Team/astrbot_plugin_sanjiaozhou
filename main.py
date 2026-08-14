@@ -7,7 +7,7 @@ import json
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import yaml
 from astrbot.api import logger
@@ -27,8 +27,8 @@ from .core.render import DeltaRenderer
 from .core.user import BindingManager
 
 
-SOL_ALIASES = {"sol", "烽火", "烽火地带", "摸金"}
-MP_ALIASES = {"mp", "tdm", "全面", "全面战场", "战场", "大战场"}
+SOL_ALIASES = {"sol", "烽火", "烽火地带", "摸金", "4"}
+MP_ALIASES = {"mp", "tdm", "全面", "全面战场", "战场", "大战场", "5"}
 ESCAPE_REASONS = {"1": "撤离成功", "2": "被玩家击杀", "3": "被人机击杀", "10": "撤离失败"}
 MP_RESULTS = {"1": "胜利", "2": "失败", "3": "中途退出"}
 
@@ -136,6 +136,8 @@ class DeltaForcePlugin(Star):
         )
         self._static_task: Optional[asyncio.Task] = None
         self._oauth_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        self._music_lists: Dict[str, Dict[str, Any]] = {}
+        self._music_last: Dict[str, Dict[str, Any]] = {}
 
     async def initialize(self):
         self._static_task = asyncio.create_task(self.data_mgr.refresh_static(self.client))
@@ -556,11 +558,15 @@ class DeltaForcePlugin(Star):
                 yield r
             return
         if m := re.fullmatch(r"(ai|AI)锐评\s*(.*)", body):
-            async for r in self._ai_review(event, m.group(2).strip()):
+            async for r in self._ai_review(event, m.group(2).strip(), preset_required=False):
                 yield r
             return
         if m := re.fullmatch(r"(ai|AI)评价\s+(\S+)\s+(\S+)(?:\s+(\S+))?", body):
-            async for r in self._ai_review(event, f"{m.group(2)} {m.group(3)} {m.group(4) or ''}".strip()):
+            async for r in self._ai_review(
+                event,
+                f"{m.group(2)} {m.group(3)} {m.group(4) or ''}".strip(),
+                preset_required=True,
+            ):
                 yield r
             return
 
@@ -572,8 +578,12 @@ class DeltaForcePlugin(Star):
             async for r in self._voice(event, m.group(1).strip()):
                 yield r
             return
-        if re.fullmatch(r"(歌词|鼠鼠歌词|鼠鼠音乐歌词|鼠鼠语音)", body):
-            async for r in self._music(event, ""):
+        if re.fullmatch(r"(歌词|鼠鼠歌词|鼠鼠音乐歌词)", body):
+            async for r in self._music_lyrics(event):
+                yield r
+            return
+        if body == "鼠鼠语音":
+            async for r in self._music_replay(event):
                 yield r
             return
         if m := re.fullmatch(r"鼠鼠音乐(列表|排行榜)\s*(\d*)", body):
@@ -581,11 +591,11 @@ class DeltaForcePlugin(Star):
                 yield r
             return
         if m := re.fullmatch(r"鼠鼠歌单\s*(.*)", body):
-            async for r in self._music(event, m.group(1).strip()):
+            async for r in self._music_playlist(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(点歌|听|听歌|播放)\s*(\d+)", body):
-            async for r in self._music(event, m.group(2)):
+            async for r in self._music_select(event, int(m.group(2))):
                 yield r
             return
         if m := re.fullmatch(r"鼠鼠音乐\s*(.*)", body):
@@ -1808,30 +1818,251 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("您尚未绑定账号。")
             return
         res = await self.client.money(token)
-        yield event.plain_result(self._summary_or_error("货币信息", res))
+        if not self._ok(res):
+            yield event.plain_result(f"货币信息查询失败: {self._message_of(res)}")
+            return
+        rows = self._first_list(self._data(res, {}), ("list", "items", "data"))
+        if not rows:
+            yield event.plain_result("未查询到任何货币信息。")
+            return
+        lines = ["【三角洲行动 - 货币信息】"]
+        for item in rows:
+            name = item.get("name") or item.get("item") or "未知货币"
+            amount = self.data_mgr.fmt_num(item.get("totalMoney") or item.get("amount") or 0)
+            lines.append(f"{name}: {amount}")
+        yield event.plain_result("\n".join(lines))
 
     async def _flows(self, event: AstrMessageEvent, flow_type: str, page: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        type_map = {"设备": "1", "道具": "2", "货币": "3", "all": ""}
-        res = await self.client.flows(token, type_map.get(flow_type, flow_type), page)
-        yield event.plain_result(self._summary_or_error("流水记录", res))
+        type_map = {"设备": "1", "道具": "2", "货币": "3"}
+        targets = [(flow_type, type_map[flow_type])] if flow_type in type_map else list(type_map.items())
+        results = await asyncio.gather(
+            *(self._fetch_flows(token, type_id, page) for _name, type_id in targets),
+            return_exceptions=True,
+        )
+        for (type_name, type_id), res in zip(targets, results):
+            if isinstance(res, Exception):
+                yield event.plain_result(f"{type_name}流水查询失败: {res}")
+                continue
+            if not self._ok(res):
+                yield event.plain_result(f"{type_name}流水查询失败: {self._message_of(res)}")
+                continue
+            data = self._adapt_flows(res, int(type_id), type_name, page)
+            record_count = sum(len(column) for key, value in data.items() if key.endswith("Columns") for column in value)
+            if record_count == 0:
+                yield event.plain_result(f"【{type_name}流水】第 {data['page']} 页暂无记录。")
+                continue
+            text = self._flows_text(data)
+            async for result in self._render_or_text(
+                event,
+                "Template/flows/flows.html",
+                data,
+                text,
+                {"viewport_width": 2200, "viewport_height": 1200},
+            ):
+                yield result
+
+    async def _fetch_flows(self, token: str, type_id: str, page: str) -> Dict[str, Any]:
+        if page != "all":
+            return await self.client.flows(token, type_id, page)
+        merged: List[Any] = []
+        for current_page in range(1, 51):
+            res = await self.client.flows(token, type_id, str(current_page))
+            if not self._ok(res):
+                return res if not merged else {"code": 0, "data": {"list": merged}}
+            rows = self._first_list(self._data(res, {}), ("list", "items", "data"))
+            if not rows or self._flow_record_count(rows, int(type_id)) == 0:
+                break
+            merged.extend(rows)
+        return {"code": 0, "data": {"list": merged}}
+
+    @staticmethod
+    def _flow_record_count(rows: List[Any], type_id: int) -> int:
+        key = {1: "LoginArr", 2: "itemArr", 3: "iMoneyArr"}[type_id]
+        return sum(len(row.get(key) or []) for row in rows if isinstance(row, dict))
+
+    def _adapt_flows(self, res: Dict[str, Any], type_id: int, type_name: str, page: str) -> Dict[str, Any]:
+        rows = self._first_list(self._data(res, {}), ("list", "items", "data"))
+        source = next((row for row in rows if isinstance(row, dict)), {})
+        result: Dict[str, Any] = {"typeName": type_name, "typeValue": type_id, "page": "全部" if page == "all" else page}
+        if type_id == 1:
+            records = [item for row in rows if isinstance(row, dict) for item in (row.get("LoginArr") or []) if isinstance(item, dict)]
+            formatted = [
+                {
+                    "index": index,
+                    "indtEventTime": item.get("indtEventTime") or "-",
+                    "outdtEventTime": item.get("outdtEventTime") or "-",
+                    "vClientIP": item.get("vClientIP") or "未知",
+                    "SystemHardware": item.get("SystemHardware") or "未知",
+                }
+                for index, item in enumerate(records, 1)
+            ]
+            device_stats: Dict[str, int] = {}
+            ip_stats: Dict[str, int] = {}
+            for item in formatted:
+                device_stats[item["SystemHardware"]] = device_stats.get(item["SystemHardware"], 0) + 1
+                ip_stats[item["vClientIP"]] = ip_stats.get(item["vClientIP"], 0) + 1
+            result.update(
+                {
+                    "playerInfo": {
+                        "vRoleName": source.get("vRoleName") or "未知",
+                        "Level": source.get("Level") or "未知",
+                        "loginDay": source.get("loginDay") or "未知",
+                    },
+                    "totalCount": len(formatted),
+                    "deviceStats": [{"name": key, "count": value} for key, value in sorted(device_stats.items(), key=lambda item: item[1], reverse=True)],
+                    "ipStats": [{"ip": key, "count": value} for key, value in sorted(ip_stats.items(), key=lambda item: item[1], reverse=True)],
+                    "loginColumns": self._flow_columns(formatted),
+                }
+            )
+        elif type_id == 2:
+            records = [item for row in rows if isinstance(row, dict) for item in (row.get("itemArr") or []) if isinstance(item, dict)]
+            formatted = [
+                {
+                    "index": index,
+                    "dtEventTime": item.get("dtEventTime") or "-",
+                    "Name": item.get("Name") or "未知物品",
+                    "AddOrReduce": str(item.get("AddOrReduce") or "0"),
+                    "Reason": self._decode_reason(item.get("Reason")),
+                    "changeType": "positive" if str(item.get("AddOrReduce") or "").startswith("+") else "negative",
+                }
+                for index, item in enumerate(records, 1)
+            ]
+            result["itemColumns"] = self._flow_columns(formatted)
+        else:
+            records = [item for row in rows if isinstance(row, dict) for item in (row.get("iMoneyArr") or []) if isinstance(item, dict)]
+            formatted = [
+                {
+                    "index": index,
+                    "dtEventTime": item.get("dtEventTime") or "-",
+                    "AddOrReduce": str(item.get("AddOrReduce") or "0"),
+                    "leftMoney": self.data_mgr.fmt_num(item.get("leftMoney") or 0),
+                    "Reason": self._decode_reason(item.get("Reason")),
+                    "changeType": "positive" if str(item.get("AddOrReduce") or "").startswith("+") else "negative",
+                }
+                for index, item in enumerate(records, 1)
+            ]
+            result["moneyColumns"] = self._flow_columns(formatted)
+        return result
+
+    @staticmethod
+    def _flow_columns(records: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        columns = [[] for _ in range(min(5, max(1, len(records))))]
+        for index, record in enumerate(records):
+            columns[index % len(columns)].append(record)
+        return columns if records else []
+
+    @staticmethod
+    def _decode_reason(value: Any) -> str:
+        try:
+            return unquote(str(value or "")) or "未知原因"
+        except Exception:
+            return str(value or "未知原因")
+
+    @staticmethod
+    def _flows_text(data: Dict[str, Any]) -> str:
+        key = {1: "loginColumns", 2: "itemColumns", 3: "moneyColumns"}[data["typeValue"]]
+        rows = [item for column in data.get(key, []) for item in column]
+        lines = [f"【{data['typeName']}流水】第 {data['page']} 页，共 {len(rows)} 条"]
+        for item in sorted(rows, key=lambda value: value.get("index", 0))[:20]:
+            if data["typeValue"] == 1:
+                lines.append(f"{item['index']}. {item['indtEventTime']} {item['SystemHardware']} {item['vClientIP']}")
+            elif data["typeValue"] == 2:
+                lines.append(f"{item['index']}. {item['dtEventTime']} {item['Name']} {item['AddOrReduce']} {item['Reason']}")
+            else:
+                lines.append(f"{item['index']}. {item['dtEventTime']} {item['AddOrReduce']} 余额 {item['leftMoney']} {item['Reason']}")
+        return "\n".join(lines)
 
     async def _collection(self, event: AstrMessageEvent, kind: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        res = await self.client.collection(token, 2)
-        if not self._ok(res):
-            yield event.plain_result(f"藏品查询失败: {self._message_of(res)}")
+        collection_res, map_res = await asyncio.gather(
+            self.client.collection(token, 2),
+            self.client.object_collection_map(),
+            return_exceptions=True,
+        )
+        if isinstance(collection_res, Exception) or not self._ok(collection_res):
+            message = str(collection_res) if isinstance(collection_res, Exception) else self._message_of(collection_res)
+            yield event.plain_result(f"藏品查询失败: {message}")
             return
-        data = self._data(res, {}) or {}
-        text = self._summary_dict("藏品资产", data)
-        async for r in self._render_or_text(event, "Template/collection/collection.html", {"data": data, "collectionData": data, "filterType": kind}, text, {"viewport_width": 1200, "viewport_height": 1600}):
+        if isinstance(map_res, Exception) or not self._ok(map_res):
+            message = str(map_res) if isinstance(map_res, Exception) else self._message_of(map_res)
+            yield event.plain_result(f"藏品基础信息查询失败: {message}")
+            return
+        raw = self._payload(collection_res, {}) or {}
+        user_items = self._find_nested_list(raw, "userData")
+        weapon_items = self._find_nested_list(raw, "weponData") or self._find_nested_list(raw, "weaponData")
+        owned = [item for item in user_items + weapon_items if isinstance(item, dict)]
+        if not owned:
+            yield event.plain_result("您的藏品库为空。")
+            return
+        mapping_rows = self._first_list(self._data(map_res, {}), ("list", "items", "data"))
+        mapping = {str(item.get("id") or item.get("objectID") or ""): item for item in mapping_rows if isinstance(item, dict)}
+        render_data = self._adapt_collection(owned, mapping, kind)
+        if not render_data["categories"]:
+            suffix = f"类型“{kind}”" if kind else ""
+            yield event.plain_result(f"未找到{suffix}的藏品。")
+            return
+        text = "\n".join(
+            [f"【{render_data['typeName']}】共 {render_data['totalCount']} 件"]
+            + [f"{category['name']}: {category['count']} 件" for category in render_data["categories"]]
+        )
+        async for r in self._render_or_text(event, "Template/collection/collection.html", render_data, text, {"viewport_width": 1200, "viewport_height": 1600}):
             yield r
+
+    def _adapt_collection(self, owned: List[Dict[str, Any]], mapping: Dict[str, Dict[str, Any]], kind: str) -> Dict[str, Any]:
+        quality = {"橙": ("传说", 5), "紫": ("史诗", 4), "蓝": ("稀有", 3), "绿": ("普通", 2)}
+        background = {
+            "干员皮肤": "operator-skin",
+            "喷漆": "property-gx-li3.webp",
+            "挂饰": "property-gx-li2.webp",
+            "典藏枪皮": "property-jz-bg.webp",
+            "枪皮": "property-jz-bg.webp",
+            "载具": "property-qx-bg2.webp",
+            "头像": "property-gx-li3.webp",
+            "军牌": "property-jz-bg.webp",
+        }
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        quality_counts: Dict[int, int] = {}
+        for item in owned:
+            item_id = str(item.get("ItemId") or item.get("itemId") or item.get("objectID") or item.get("id") or "")
+            info = mapping.get(item_id)
+            if not info:
+                continue
+            category = str(info.get("type") or "其他资产")
+            if kind and kind not in category and category not in kind:
+                continue
+            _quality_name, level = quality.get(str(info.get("rare") or ""), ("其他", 1))
+            quality_counts[level] = quality_counts.get(level, 0) + 1
+            grouped.setdefault(category, []).append(
+                {
+                    "name": info.get("name") or info.get("objectName") or f"物品 {item_id}",
+                    "id": item_id,
+                    "imageUrl": info.get("pic") or f"https://playerhub.df.qq.com/playerhub/60004/object/{item_id}.png",
+                    "qualityLevel": level,
+                    "category": category,
+                }
+            )
+        categories = [
+            {
+                "name": name,
+                "items": sorted(items, key=lambda item: (-item["qualityLevel"], item["name"])),
+                "count": len(items),
+                "bgImage": background.get(name, "property-gx-li3.webp"),
+            }
+            for name, items in sorted(grouped.items())
+        ]
+        return {
+            "typeName": kind or "所有藏品",
+            "totalCount": sum(category["count"] for category in categories),
+            "qualityStats": [{"level": level, "count": quality_counts[level]} for level in sorted(quality_counts, reverse=True)],
+            "categories": categories,
+        }
 
     async def _red_records(self, event: AstrMessageEvent, command: str, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
@@ -2102,14 +2333,136 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        res = await self.client.place_info(token, place)
+        type_names = {
+            "storage": "仓库",
+            "control": "指挥中心",
+            "workbench": "工作台",
+            "tech": "技术中心",
+            "shoot": "靶场",
+            "training": "训练中心",
+            "pharmacy": "制药台",
+            "armory": "防具台",
+            "diving": "潜水中心",
+        }
+        type_aliases = {**{key: key for key in type_names}, **{value: key for key, value in type_names.items()}}
+        args = place.split()
+        requested = args[0] if args and args[0].lower() not in {"all", "全部"} else ""
+        place_type = type_aliases.get(requested, "") if requested else ""
+        if requested and not place_type:
+            yield event.plain_result("未知特勤处类型。支持：" + "、".join(type_names.values()))
+            return
+        level = next((int(value) for value in args[1:] if value.isdigit()), 0)
+        res = await self.client.place_info(token, place_type)
         if not self._ok(res):
             yield event.plain_result(f"特勤处信息查询失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
-        text = self._summary_dict("特勤处信息", data)
-        async for r in self._render_or_text(event, "Template/placeInfo/placeInfo.html", {"placeData": data, "data": data}, text, {"viewport_width": 1200, "viewport_height": 1600}):
+        places = self._first_list(data, ("places", "list", "items", "data"))
+        relate_map = data.get("relateMap") if isinstance(data, dict) and isinstance(data.get("relateMap"), dict) else {}
+        processed = self._adapt_places(places, relate_map, type_names)
+        if level:
+            exact = [item for item in processed if int(self._num(item.get("level"))) == level]
+            if exact:
+                processed = exact
+            elif processed:
+                highest = max(int(self._num(item.get("level"))) for item in processed)
+                processed = [item for item in processed if int(self._num(item.get("level"))) == highest]
+                yield event.plain_result(f"未找到等级 {level}，已展示当前可用最高等级 {highest}。")
+        if not processed:
+            yield event.plain_result("未查询到符合条件的特勤处设施。")
+            return
+        text = "\n".join(
+            ["【特勤处信息】"]
+            + [f"{item['displayName']} Lv.{item['level']}，升级材料 {len(item['upgradeRequired'])} 种" for item in processed]
+        )
+        async for r in self._render_or_text(event, "Template/placeInfo/placeInfo.html", {"places": processed}, text, {"viewport_width": 1200, "viewport_height": 1600}):
             yield r
+
+    def _adapt_places(
+        self,
+        places: List[Any],
+        relate_map: Dict[str, Any],
+        type_names: Dict[str, str],
+    ) -> List[Dict[str, Any]]:
+        type_images = {
+            "storage": "仓库.png",
+            "control": "指挥中心.png",
+            "workbench": "工作台.png",
+            "tech": "技术中心.png",
+            "shoot": "靶场.png",
+            "training": "训练中心.png",
+            "pharmacy": "制药台.png",
+            "armory": "防具台.png",
+            "diving": "潜水中心.png",
+        }
+        result = []
+        for place in places:
+            if not isinstance(place, dict):
+                continue
+            place_type = str(place.get("placeType") or "")
+            upgrade = place.get("upgradeInfo") if isinstance(place.get("upgradeInfo"), dict) else {}
+            condition_text = str(upgrade.get("condition") or "")
+            conditions = [value.strip() for value in re.split(r"[;；]", condition_text) if value.strip()]
+            level_condition = next((value for value in conditions if re.search(r"解锁等级|等级\s*\d+", value)), "")
+            other_conditions = [value for value in conditions if value != level_condition]
+            required = []
+            for item in place.get("upgradeRequired") or []:
+                if not isinstance(item, dict):
+                    continue
+                object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "")
+                info = relate_map.get(object_id) if isinstance(relate_map.get(object_id), dict) else {}
+                required.append(
+                    {
+                        "objectName": info.get("objectName") or info.get("name") or f"物品 {object_id}",
+                        "count": item.get("count") or item.get("perCount") or 1,
+                        "imageUrl": info.get("pic") or (f"https://playerhub.df.qq.com/playerhub/60004/object/{object_id}.png" if object_id else ""),
+                    }
+                )
+            unlock = place.get("unlockInfo") if isinstance(place.get("unlockInfo"), dict) else {}
+            properties_raw = unlock.get("properties") or []
+            if isinstance(properties_raw, dict):
+                properties_raw = properties_raw.get("list") or []
+            properties = []
+            for item in properties_raw if isinstance(properties_raw, list) else []:
+                if isinstance(item, dict):
+                    properties.append(str(item.get("name") or item.get("objectName") or item.get("desc") or "未知效果"))
+                else:
+                    properties.append(str(item))
+            unlocked_props = []
+            for item in unlock.get("props") or []:
+                if not isinstance(item, dict):
+                    unlocked_props.append({"objectName": str(item), "imageUrl": "", "count": ""})
+                    continue
+                object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "")
+                info = item.get("itemInfo") if isinstance(item.get("itemInfo"), dict) else {}
+                if not info and object_id and isinstance(relate_map.get(object_id), dict):
+                    info = relate_map[object_id]
+                unlocked_props.append(
+                    {
+                        "objectName": info.get("objectName") or info.get("name") or item.get("name") or f"物品 {object_id}",
+                        "imageUrl": info.get("pic") or (f"https://playerhub.df.qq.com/playerhub/60004/object/{object_id}.png" if object_id else ""),
+                        "count": item.get("count") or item.get("perCount") or "",
+                    }
+                )
+            haf_count = self._number(upgrade.get("hafCount"))
+            result.append(
+                {
+                    "displayName": place.get("placeName") or type_names.get(place_type) or "未知设施",
+                    "level": int(self._num(place.get("level"))),
+                    "imageUrl": f"imgs/place/{type_images[place_type]}" if place_type in type_images else "",
+                    "upgradeInfo": {
+                        "condition": condition_text,
+                        "conditions": other_conditions,
+                        "levelCondition": level_condition,
+                        "hafCount": haf_count,
+                        "hafCountFormatted": self.data_mgr.fmt_num(haf_count),
+                    } if upgrade else None,
+                    "upgradeRequired": required,
+                    "unlockInfo": {"properties": properties, "props": unlocked_props} if properties or unlocked_props else None,
+                    "detail": place.get("detail") or "",
+                }
+            )
+        return sorted(result, key=lambda item: (item["displayName"], item["level"]))
 
     async def _server_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         health, object_health = await asyncio.gather(self.client.health(), self.client.object_health(), return_exceptions=True)
@@ -2129,10 +2482,28 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"干员列表查询失败: {self._message_of(res)}")
             return
         rows = self._first_list(self._data(res, []), ("operators", "items", "list", "data"))
-        lines = ["【三角洲干员列表】"]
-        for item in rows[:50]:
-            lines.append(f"{item.get('id') or item.get('operatorId') or '-'} - {item.get('name') or item.get('operatorName') or '-'}")
-        yield event.plain_result("\n".join(lines) if rows else self._summary_dict("干员列表", self._data(res, {})))
+        if not rows:
+            yield event.plain_result("未查询到任何干员信息。")
+            return
+        groups: Dict[str, List[str]] = {"突击": [], "工程": [], "支援": [], "侦察": [], "未知": []}
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            operator_id = int(self._num(item.get("id") or item.get("operatorId")))
+            army_type = str(item.get("armyType") or "")
+            if not army_type:
+                army_type = next(
+                    (name for lower, upper, name in ((10000, 20000, "突击"), (20000, 30000, "支援"), (30000, 40000, "工程"), (40000, 50000, "侦察")) if lower <= operator_id < upper),
+                    "未知",
+                )
+            name = item.get("name") or item.get("operator") or item.get("operatorName") or item.get("fullName") or "未知干员"
+            groups.setdefault(army_type, []).append(str(name))
+        lines = [f"【三角洲干员列表】共 {sum(len(values) for values in groups.values())} 名"]
+        for army_type in ("突击", "工程", "支援", "侦察", "未知"):
+            if groups.get(army_type):
+                lines.append(f"\n【{army_type}】({len(groups[army_type])} 人)")
+                lines.extend(f"- {name}" for name in groups[army_type])
+        yield event.plain_result("\n".join(lines))
 
     async def _operator_info(self, event: AstrMessageEvent, name: str) -> AsyncGenerator[Any, None]:
         res = await self.client.operators(detail=True)
@@ -2142,15 +2513,18 @@ class DeltaForcePlugin(Star):
         rows = self._first_list(self._data(res, []), ("operators", "items", "list", "data"))
         target = None
         for item in rows:
-            item_name = str(item.get("name") or item.get("operatorName") or "")
-            if name == item_name or name in item_name:
+            if not isinstance(item, dict):
+                continue
+            item_name = str(item.get("operator") or item.get("name") or item.get("operatorName") or "")
+            full_name = str(item.get("fullName") or "")
+            if name in {item_name, full_name} or name in item_name or name in full_name:
                 target = item
                 break
         if not target:
             yield event.plain_result(f"未找到干员：{name}")
             return
-        op_name = target.get("name") or target.get("operatorName") or name
-        abilities = target.get("abilities") or target.get("abilityList") or target.get("skills") or []
+        op_name = target.get("operator") or target.get("name") or target.get("operatorName") or name
+        abilities = target.get("abilitiesList") or target.get("abilities") or target.get("abilityList") or target.get("skills") or []
         render_data = {
             "operatorName": op_name,
             "fullName": target.get("fullName") or target.get("englishName") or "",
@@ -2165,13 +2539,49 @@ class DeltaForcePlugin(Star):
 
     async def _object_list(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         parts = arg.split()
-        res = await self.client.object_list(parts[0] if parts else "", parts[1] if len(parts) > 1 else "")
-        yield event.plain_result(self._summary_or_error("物品列表", res))
+        page = next((part for part in parts if part.isdigit()), "1")
+        categories = [part for part in parts if not part.isdigit()]
+        primary = categories[0] if categories else "props"
+        second = categories[1] if len(categories) > 1 else ("collection" if not categories else "")
+        res = await self.client.object_list(primary, second, page, "20")
+        if not self._ok(res):
+            yield event.plain_result(f"物品列表查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [item for item in self._first_list(data, ("list", "items", "data")) if isinstance(item, dict)]
+        if not rows:
+            yield event.plain_result("未找到符合条件的物品。")
+            return
+        total = int(self._number(data.get("total") if isinstance(data, dict) else len(rows), len(rows)))
+        current_page = int(self._number(data.get("page") if isinstance(data, dict) else page, 1))
+        lines = [f"【物品列表】{primary}/{second or '全部'}，第 {current_page} 页，共 {total} 件"]
+        for index, item in enumerate(rows, 1):
+            item_id = item.get("objectID") or item.get("id") or "-"
+            item_name = item.get("objectName") or item.get("gameName") or "未知物品"
+            category_parts = [
+                str(item.get("primaryClass") or ""),
+                str(item.get("secondClassCN") or item.get("secondClass") or ""),
+            ]
+            category = "/".join(value for value in category_parts if value)
+            price = self.data_mgr.fmt_num(item.get("price") or item.get("avgPrice") or 0)
+            lines.append(f"{index}. {item_name}（{item_id}） {category or '未分类'}，价格 {price}")
+        yield event.plain_result("\n".join(lines))
 
     async def _object_search(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
         res = await self.client.object_search(keyword)
         if self._ok(res):
-            yield event.plain_result(self._summary_dict("物品搜索", self._data(res, {})))
+            data = self._data(res, {}) or {}
+            rows = [item for item in self._first_list(data, ("list", "items", "data")) if isinstance(item, dict)]
+            if not rows:
+                yield event.plain_result(f"未搜索到与“{keyword}”相关的物品。")
+                return
+            lines = [f"【物品搜索：{keyword}】共 {data.get('total', len(rows)) if isinstance(data, dict) else len(rows)} 条"]
+            for index, item in enumerate(rows, 1):
+                item_id = item.get("objectID") or item.get("id") or "-"
+                name = item.get("objectName") or item.get("gameName") or "未知物品"
+                category = item.get("secondClassCN") or item.get("secondClass") or item.get("primaryClass") or "未分类"
+                lines.append(f"{index}. {name}（{item_id}） {category}")
+            yield event.plain_result("\n".join(lines))
             return
         local = self.data_mgr.search_local_items(keyword)
         if local:
@@ -2197,28 +2607,188 @@ class DeltaForcePlugin(Star):
         res = await self.client.current_price(item_id)
         if not self._ok(res):
             res = await self.client.object_value_search(keyword)
-        yield event.plain_result(self._summary_or_error("当前价格", res))
+        if not self._ok(res):
+            yield event.plain_result(f"当前价格查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
+        if not rows and isinstance(data, dict) and data.get("avgPrice") is not None:
+            rows = [data]
+        if not rows:
+            yield event.plain_result(f"未查询到“{keyword}”的当前价格。")
+            return
+        lines = [f"【当前价格：{keyword}】"]
+        for item in rows:
+            item_id = item.get("objectID") or item.get("id") or item_id
+            lines.append(f"物品 {item_id}: {self.data_mgr.fmt_num(item.get('avgPrice') or item.get('price') or 0)}")
+        yield event.plain_result("\n".join(lines))
 
     async def _price_history(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
         item_id = await self._resolve_item_id(keyword)
         res = await self.client.price_history_v2(item_id)
         if not self._ok(res):
             res = await self.client.object_value_history(item_id)
-        yield event.plain_result(self._summary_or_error("价格历史", res))
+        if not self._ok(res):
+            yield event.plain_result(f"价格历史查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        item = data
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            item = data["items"][0] if data["items"] else {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result(f"未查询到“{keyword}”的价格历史。")
+            return
+        stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
+        lines = [f"【价格历史：{item.get('objectName') or keyword}】", f"物品 ID: {item.get('objectID') or item_id}"]
+        if stats:
+            lines.extend(
+                [
+                    f"最新: {self.data_mgr.fmt_num(stats.get('latestPrice') or 0)}",
+                    f"平均: {self.data_mgr.fmt_num(stats.get('avgPrice') or 0)}",
+                    f"最低/最高: {self.data_mgr.fmt_num(stats.get('minPrice') or 0)} / {self.data_mgr.fmt_num(stats.get('maxPrice') or 0)}",
+                    f"变化: {self._format_profit(stats.get('priceChange') or 0)}（{self._number(stats.get('priceChangePercent')):.2f}%）",
+                ]
+            )
+        else:
+            history = self._first_list(item, ("history", "list", "data"))
+            lines.extend(f"{point.get('hour') or point.get('timestamp')}: {self.data_mgr.fmt_num(point.get('price') or point.get('avgPrice') or 0)}" for point in history[:10] if isinstance(point, dict))
+        yield event.plain_result("\n".join(lines))
 
     async def _material_price(self, event: AstrMessageEvent, item_id: str) -> AsyncGenerator[Any, None]:
         res = await self.client.material_price(item_id)
-        yield event.plain_result(self._summary_or_error("材料价格", res))
+        if not self._ok(res):
+            yield event.plain_result(f"材料价格查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [item for item in self._first_list(data, ("materials", "items", "list", "data")) if isinstance(item, dict)]
+        if not rows:
+            yield event.plain_result("未查询到符合条件的制造材料。")
+            return
+        pagination = data.get("pagination") if isinstance(data, dict) and isinstance(data.get("pagination"), dict) else {}
+        lines = [f"【材料价格】第 {pagination.get('page', 1)} 页，共 {pagination.get('total', len(rows))} 种"]
+        for index, item in enumerate(rows, 1):
+            name = item.get("objectName") or "未知材料"
+            item_id = item.get("objectID") or "-"
+            price = "暂无" if item.get("price") is None else self.data_mgr.fmt_num(item.get("price"))
+            lines.append(f"{index}. {name}（{item_id}） {price}")
+        yield event.plain_result("\n".join(lines))
 
     async def _profit(self, event: AstrMessageEvent, command: str, arg: str) -> AsyncGenerator[Any, None]:
+        place_aliases = {
+            "工作台": "workbench",
+            "技术中心": "tech",
+            "制药台": "pharmacy",
+            "防具台": "armory",
+            "workbench": "workbench",
+            "tech": "tech",
+            "pharmacy": "pharmacy",
+            "armory": "armory",
+        }
         params = self._parse_key_values(arg)
+        parts = [part for part in arg.split() if "=" not in part]
         if "历史" in command:
+            days = str(params.get("days") or "")
+            query_parts = []
+            for part in parts:
+                match = re.fullmatch(r"(\d+)天", part)
+                if match:
+                    days = match.group(1)
+                else:
+                    query_parts.append(part)
+            query = str(params.get("objectID") or params.get("objectId") or " ".join(query_parts)).strip()
+            if not query:
+                yield event.plain_result("用法：利润历史 <物品名称/ID> [天数]")
+                return
+            object_id = await self._resolve_item_id(query)
+            if not object_id.isdigit():
+                yield event.plain_result(f"未找到物品：{query}")
+                return
+            params = {"objectID": object_id}
+            if days:
+                params["days"] = days
             res = await self.client.profit_history(params)
         elif "排行" in command or "利润榜" in command or "最高" in command:
+            params = self._profit_query_params(parts, params, place_aliases, default_limit="10")
             res = await self.client.profit_rank(params)
         else:
+            params = self._profit_query_params(parts, params, place_aliases)
             res = await self.client.place_profit(params)
-        yield event.plain_result(self._summary_or_error(command, res))
+        if not self._ok(res):
+            yield event.plain_result(f"{command}查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if "历史" in command:
+            info = data.get("objectInfo") if isinstance(data, dict) and isinstance(data.get("objectInfo"), dict) else {}
+            history = self._first_list(data, ("history", "items", "list", "data"))
+            if not history:
+                yield event.plain_result("暂无该物品的利润历史数据。")
+                return
+            lines = [f"【{info.get('objectName') or '物品'}利润历史】{data.get('days', params.get('days', 7))} 天"]
+            lines.append(f"{info.get('placeName') or info.get('placeType') or '未知场所'} Lv.{info.get('level') or '-'}，周期 {info.get('period') or '-'} 小时")
+            for item in history[:20]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"{item.get('timestamp') or '-'} 售价 {self.data_mgr.fmt_num(item.get('salePrice') or 0)}，"
+                    f"总利润 {self._format_profit(item.get('totalProfit') or 0)}，时均 {self._format_profit(item.get('hourProfit') or 0)}"
+                )
+            yield event.plain_result("\n".join(lines))
+            return
+        if "排行" in command or "利润榜" in command or "最高" in command:
+            rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
+            if not rows:
+                yield event.plain_result("当前查询条件下没有利润排行数据。")
+                return
+            sort_name = "时均利润" if str(data.get("sortType") or params.get("type")) == "hour" else "总利润"
+            lines = [f"【利润排行 · {sort_name}】"]
+            for index, item in enumerate(rows, 1):
+                value = item.get("hourProfit") if sort_name == "时均利润" else item.get("totalProfit")
+                lines.append(
+                    f"{item.get('rank') or index}. {item.get('objectName') or item.get('objectID') or '未知物品'} "
+                    f"({item.get('placeName') or item.get('placeType') or '未知场所'} Lv.{item.get('level') or '-'}) {self._format_profit(value or 0)}"
+                )
+            yield event.plain_result("\n".join(lines))
+            return
+        places = [item for item in self._first_list(data, ("manufacturingPlaces", "places", "list", "data")) if isinstance(item, dict)]
+        if not places:
+            yield event.plain_result("当前查询条件下没有特勤处利润数据。")
+            return
+        lines = [f"【特勤处利润 · {'时均' if str(data.get('sortType') or params.get('type')) == 'hour' else '总利润'}】"]
+        for place in places:
+            lines.append(f"\n【{place.get('placeName') or place.get('placeType') or '未知场所'} Lv.{place.get('level') or '-'}】")
+            items = [item for item in place.get("manufacturingItems") or [] if isinstance(item, dict)]
+            for index, item in enumerate(items[:10], 1):
+                value = item.get("hourProfit") if str(data.get("sortType") or params.get("type")) == "hour" else item.get("totalProfit")
+                lines.append(f"{index}. {item.get('objectName') or item.get('objectID') or '未知物品'} {self._format_profit(value or 0)}")
+        yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _profit_query_params(
+        parts: List[str],
+        initial: Dict[str, Any],
+        place_aliases: Dict[str, str],
+        default_limit: str = "",
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {}
+        for key, value in initial.items():
+            normalized = {"objectId": "objectID", "sort": "type"}.get(key, key)
+            params[normalized] = value
+        if default_limit and "limit" not in params:
+            params["limit"] = default_limit
+        for part in parts:
+            lowered = part.lower()
+            if lowered in place_aliases:
+                params["place"] = place_aliases[lowered]
+            elif lowered in {"hour", "hourprofit", "小时", "时均"}:
+                params["type"] = "hour"
+            elif lowered in {"total", "totalprofit", "profit", "总利润"}:
+                params["type"] = "total"
+            elif match := re.fullmatch(r"(?:lv|等级)(\d+)", lowered):
+                params["level"] = match.group(1)
+            elif part.isdigit():
+                params["limit"] = part
+        params["type"] = "hour" if str(params.get("type") or "hour").lower() in {"hour", "hourprofit"} else "total"
+        return params
 
     async def _daily_keyword(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.daily_keyword()
@@ -2234,16 +2804,60 @@ class DeltaForcePlugin(Star):
 
     async def _ai_presets(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.ai_presets()
-        yield event.plain_result(self._summary_or_error("AI 预设", res))
+        if not self._ok(res):
+            yield event.plain_result(f"AI 预设查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        presets = self._first_list(data, ("presets", "items", "list", "data"))
+        if not presets:
+            yield event.plain_result("暂无可用的 AI 预设。")
+            return
+        lines = ["【AI 评价预设列表】"]
+        for index, item in enumerate(presets, 1):
+            if isinstance(item, dict):
+                code = item.get("code") or item.get("id") or "-"
+                name = item.get("name") or item.get("displayName") or code
+                default = "（默认）" if item.get("isDefault") or item.get("default") else ""
+                lines.append(f"{index}. {name} - {code}{default}")
+            else:
+                lines.append(f"{index}. {item}")
+        yield event.plain_result("\n".join(lines))
 
-    async def _ai_review(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
+    async def _ai_review(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        preset_required: bool = False,
+    ) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
         mode, _, rest = self._parse_mode_page(arg)
-        res = await self.client.ai_review(token, mode or "sol", rest)
-        yield event.plain_result(self._summary_or_error("AI 锐评", res))
+        if arg and not mode:
+            yield event.plain_result("无法识别游戏模式，请使用 sol/烽火/4 或 mp/战场/5。")
+            return
+        options = rest.split()
+        if preset_required and not options:
+            yield event.plain_result("用法：ai评价 <模式> <预设> [音色]")
+            return
+        preset = options[0] if options else ""
+        voice = options[1] if len(options) > 1 else ""
+        res = await self.client.ai_review(token, mode or "sol", preset)
+        if not self._ok(res):
+            yield event.plain_result(f"AI 评价失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        content = str(data.get("content") or "").strip() if isinstance(data, dict) else ""
+        if not content:
+            yield event.plain_result("AI 评价完成，但后端未返回正文。")
+            return
+        mode_name = "烽火地带" if (mode or "sol") == "sol" else "全面战场"
+        preset_name = str(data.get("presetName") or preset or "锐评") if isinstance(data, dict) else (preset or "锐评")
+        yield event.plain_result(f"【{mode_name} AI{preset_name}】\n{content}")
+        if voice:
+            async for result in self._tts(event, f"{voice} {content}"):
+                yield result
 
     async def _voice_meta(self, event: AstrMessageEvent, command: str) -> AsyncGenerator[Any, None]:
         if command == "语音列表":
@@ -2259,26 +2873,209 @@ class DeltaForcePlugin(Star):
     async def _voice(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         params = self._parse_key_values(arg)
         if arg and not params:
-            params = {"keyword": arg}
+            params = {"character": arg}
         res = await self.client.audio_random(params)
+        if not self._ok(res):
+            yield event.plain_result(f"随机语音查询失败: {self._message_of(res)}")
+            return
         data = self._data(res, {}) or {}
-        url = data.get("url") or data.get("audioUrl") or data.get("audio_url")
-        if self._ok(res) and url and Comp:
-            yield event.chain_result([Comp.Plain("三角洲语音\n"), Comp.Record(file=url, url=url)])
-        else:
-            yield event.plain_result(self._summary_or_error("随机语音", res))
+        audios = self._first_list(data, ("audios", "items", "list", "data"))
+        if not audios:
+            yield event.plain_result("没有找到符合条件的语音。")
+            return
+        audio = audios[0]
+        download = audio.get("download") if isinstance(audio.get("download"), dict) else {}
+        url = download.get("url") or audio.get("url") or audio.get("audioUrl") or audio.get("audio_url")
+        url = self.client.resolve_url(url)
+        if not url or not Comp or not hasattr(Comp, "Record"):
+            yield event.plain_result("语音数据缺少可播放地址。")
+            return
+        character = audio.get("character") if isinstance(audio.get("character"), dict) else {}
+        title = character.get("name") or audio.get("fileName") or "三角洲语音"
+        yield event.chain_result([Comp.Plain(f"{title}\n"), Comp.Record.fromURL(url)])
 
     async def _music(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
-        params = {"keyword": arg} if arg else {}
-        res = await self.client.shushu_music(params)
-        yield event.plain_result(self._summary_or_error("鼠鼠音乐", res))
+        if arg:
+            res = await self.client.shushu_music_list({"keyword": arg, "page": "1", "limit": "1"})
+        else:
+            res = await self.client.shushu_music({"count": "1"})
+        if not self._ok(res):
+            yield event.plain_result(f"鼠鼠音乐查询失败: {self._message_of(res)}")
+            return
+        songs = self._first_list(self._data(res, {}), ("songs", "musics", "items", "list", "data"))
+        if not songs:
+            suffix = f"：{arg}" if arg else ""
+            yield event.plain_result(f"未找到鼠鼠音乐{suffix}")
+            return
+        yield self._music_result(event, songs[0])
 
     async def _music_list(self, event: AstrMessageEvent, page: str) -> AsyncGenerator[Any, None]:
-        res = await self.client.shushu_music_list({"page": page})
+        async for result in self._music_list_query(event, {"page": page, "limit": "20"}, "鼠鼠音乐排行榜"):
+            yield result
+
+    async def _music_playlist(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
+        keyword = keyword.strip()
+        if not keyword:
+            yield event.plain_result("请指定歌单名称、ID 或艺术家。")
+            return
+        params = {"page": "1", "limit": "20"}
+        if keyword.isdigit():
+            params["playlistId"] = keyword
+            async for result in self._music_list_query(event, params, f"鼠鼠歌单 {keyword}"):
+                yield result
+            return
+
+        all_res = await self.client.shushu_music_list({"page": "1", "limit": "2000"})
+        if not self._ok(all_res):
+            yield event.plain_result(f"鼠鼠歌单 {keyword}查询失败: {self._message_of(all_res)}")
+            return
+        all_songs = [
+            song
+            for song in self._first_list(self._data(all_res, {}), ("songs", "musics", "items", "list", "data"))
+            if isinstance(song, dict)
+        ]
+        exact = [song for song in all_songs if str(song.get("playlistName") or "").casefold() == keyword.casefold()]
+        matched = exact or [
+            song for song in all_songs if keyword.casefold() in str(song.get("playlistName") or "").casefold()
+        ]
+        if matched:
+            page_songs = matched[:20]
+            response = {
+                "code": 0,
+                "data": {"songs": page_songs, "total": len(matched), "page": 1, "limit": 20},
+            }
+            title = str(page_songs[0].get("playlistName") or f"鼠鼠歌单 {keyword}")
+            async for result in self._music_list_query(event, params, title, response=response):
+                yield result
+            return
+
+        params["artist"] = keyword
+        async for result in self._music_list_query(event, params, f"{keyword} 的歌曲"):
+            yield result
+
+    async def _music_list_query(
+        self,
+        event: AstrMessageEvent,
+        params: Dict[str, Any],
+        title: str,
+        response: Optional[Dict[str, Any]] = None,
+    ) -> AsyncGenerator[Any, None]:
+        res = response if response is not None else await self.client.shushu_music_list(params)
+        if not self._ok(res):
+            yield event.plain_result(f"{title}查询失败: {self._message_of(res)}")
+            return
         data = self._data(res, {}) or {}
-        text = self._summary_dict("鼠鼠音乐列表", data)
-        async for r in self._render_or_text(event, "Template/musicList/musicList.html", {"data": data, "musicList": self._first_list(data, ('items', 'list', 'songs'))}, text):
+        songs = [
+            song
+            for song in self._first_list(data, ("songs", "musics", "items", "list", "data"))
+            if isinstance(song, dict)
+        ]
+        if not songs:
+            yield event.plain_result(f"{title}暂无歌曲。")
+            return
+        user_key = self._user_identifier(event)
+        self._music_lists[user_key] = {"created_at": dt.datetime.now().timestamp(), "songs": songs}
+        music_list = []
+        for index, song in enumerate(songs, 1):
+            metadata = song.get("metadata") if isinstance(song.get("metadata"), dict) else {}
+            music_list.append({
+                "index": index,
+                "name": song.get("title") or song.get("fileName") or "未知歌曲",
+                "artist": song.get("artist") or "未知艺术家",
+                "cover": song.get("cover") or metadata.get("cover", ""),
+                "playlist": song.get("playlistName") or song.get("playlist") or "",
+                "hot": song.get("hot") or metadata.get("hot") or "",
+            })
+        total = int(self._num(data.get("total") or len(songs)))
+        page = str(data.get("page") or params.get("page") or "1")
+        render_data = {
+            "listTitle": title,
+            "subtitle": f"第 {page} 页",
+            "totalCount": total,
+            "musicList": music_list,
+        }
+        text = "\n".join(
+            [f"【{title}】第 {page} 页，共 {total} 首"]
+            + [f"{item['index']}. {item['name']} - {item['artist']}" for item in music_list]
+            + ["发送 点歌 <序号> 播放本页歌曲。"]
+        )
+        async for r in self._render_or_text(event, "Template/musicList/musicList.html", render_data, text):
             yield r
+
+    async def _music_select(self, event: AstrMessageEvent, index: int) -> AsyncGenerator[Any, None]:
+        memory = self._music_lists.get(self._user_identifier(event))
+        if not memory or dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > 600:
+            yield event.plain_result("音乐列表已失效，请先发送 鼠鼠音乐列表。")
+            return
+        songs = memory.get("songs") or []
+        if index < 1 or index > len(songs):
+            yield event.plain_result(f"序号超出范围，请输入 1-{len(songs)}。")
+            return
+        yield self._music_result(event, songs[index - 1])
+
+    async def _music_replay(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        memory = self._music_last.get(self._user_identifier(event))
+        if memory and dt.datetime.now().timestamp() - self._num(memory.get("created_at")) <= 600:
+            yield self._music_result(event, memory.get("song") or {})
+            return
+        async for result in self._music(event, ""):
+            yield result
+
+    async def _music_lyrics(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        memory = self._music_last.get(self._user_identifier(event))
+        if not memory or dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > 600:
+            yield event.plain_result("暂无最近播放的歌曲，请先发送 鼠鼠音乐。")
+            return
+        song = memory.get("song") or {}
+        if not isinstance(song, dict):
+            yield event.plain_result("最近播放的歌曲数据异常，请重新播放。")
+            return
+        metadata = song.get("metadata") if isinstance(song.get("metadata"), dict) else {}
+        lyrics = str(song.get("lrc") or metadata.get("lrc") or "").strip()
+        title = song.get("title") or song.get("fileName") or "当前歌曲"
+        if not lyrics:
+            yield event.plain_result(f"歌曲“{title}”暂无歌词。")
+            return
+        if lyrics.startswith(("http://", "https://", "/")):
+            lyrics = await self.client.fetch_text(lyrics)
+            if not lyrics:
+                yield event.plain_result(f"歌曲“{title}”歌词下载失败，请稍后重试。")
+                return
+        parsed = self._parse_lrc(lyrics)
+        if not parsed:
+            yield event.plain_result(f"歌曲“{title}”暂无可显示的歌词。")
+            return
+        yield event.plain_result(f"【{title} 歌词】\n{parsed}")
+
+    @staticmethod
+    def _parse_lrc(content: str) -> str:
+        lyrics: List[str] = []
+        for raw_line in str(content or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if re.fullmatch(r"\[(?:ti|ar|al|by|offset):.*\]", line, flags=re.IGNORECASE):
+                continue
+            text = re.sub(r"(?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\])+", "", line).strip()
+            if text and not text.startswith("["):
+                lyrics.append(text)
+        return "\n".join(lyrics)
+
+    def _music_result(self, event: AstrMessageEvent, song: Dict[str, Any]) -> Any:
+        if not isinstance(song, dict):
+            return event.plain_result("歌曲数据异常，请重新查询。")
+        download = song.get("download") if isinstance(song.get("download"), dict) else {}
+        url = song.get("url") or download.get("url") or song.get("audioUrl") or song.get("audio_url")
+        url = self.client.resolve_url(url)
+        title = song.get("title") or song.get("fileName") or "未知歌曲"
+        artist = song.get("artist") or "未知艺术家"
+        if not url or not Comp or not hasattr(Comp, "Record"):
+            return event.plain_result(f"歌曲“{title}”缺少可播放地址。")
+        self._music_last[self._user_identifier(event)] = {
+            "created_at": dt.datetime.now().timestamp(),
+            "song": song,
+        }
+        return event.chain_result([Comp.Plain(f"{title} - {artist}\n"), Comp.Record.fromURL(url)])
 
     async def _tts_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.tts_health()
@@ -2293,17 +3090,92 @@ class DeltaForcePlugin(Star):
         yield event.plain_result(self._summary_or_error("TTS 角色详情", res))
 
     async def _tts(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
-        parts = arg.split(maxsplit=2)
-        if len(parts) < 3:
-            yield event.plain_result("用法：tts <角色/预设> <情感> <文本>")
+        parts = arg.split()
+        if len(parts) < 2:
+            yield event.plain_result("用法：tts <角色/预设> [情感] <文本>")
             return
-        preset, emotion, text = parts
+        presets_res = await self.client.tts_presets()
+        if not self._ok(presets_res):
+            yield event.plain_result(f"TTS 角色列表查询失败: {self._message_of(presets_res)}")
+            return
+        presets_data = self._data(presets_res, {}) or {}
+        presets = presets_data.get("presets") if isinstance(presets_data, dict) else {}
+        if not isinstance(presets, dict) or not presets:
+            yield event.plain_result("TTS 角色预设为空。")
+            return
+        preset_text = parts[0]
+        character_id = ""
+        preset_data: Dict[str, Any] = {}
+        for key, value in presets.items():
+            item = value if isinstance(value, dict) else {}
+            if preset_text in {str(key), str(item.get("name") or "")}:
+                character_id = str(key)
+                preset_data = item
+                break
+        if not character_id:
+            yield event.plain_result(f"未找到 TTS 角色：{preset_text}。发送 tts角色列表 查看可用角色。")
+            return
+        emotion = ""
+        text_start = 1
+        emotions = preset_data.get("emotions") or {}
+        if len(parts) >= 3:
+            candidates = emotions.items() if isinstance(emotions, dict) else []
+            for key, value in candidates:
+                item = value if isinstance(value, dict) else {}
+                if parts[1] in {str(key), str(item.get("name") or "")}:
+                    emotion = str(key)
+                    text_start = 2
+                    break
+        text = " ".join(parts[text_start:]).strip()
+        if not text:
+            yield event.plain_result("请输入需要合成的文本。")
+            return
         max_len = int(self.config.get("tts_max_length", 800) or 800)
         if len(text) > max_len:
             yield event.plain_result(f"TTS 文本过长，最多 {max_len} 字。")
             return
-        res = await self.client.tts_synthesize({"characterId": preset, "emotion": emotion, "text": text})
-        yield event.plain_result(self._summary_or_error("TTS 合成", res))
+        payload = {"character": character_id, "text": text}
+        if emotion:
+            payload["emotion"] = emotion
+        res = await self.client.tts_synthesize(payload)
+        if not self._ok(res):
+            yield event.plain_result(f"TTS 合成任务提交失败: {self._message_of(res)}")
+            return
+        task_data = self._data(res, {}) or {}
+        task_id = str(task_data.get("taskId") or "")
+        if not task_id:
+            yield event.plain_result("TTS 合成任务提交成功，但后端未返回 taskId。")
+            return
+        position = task_data.get("position")
+        queue_text = f"，当前队列位置 {position}" if position else ""
+        yield event.plain_result(f"TTS 合成任务已提交{queue_text}，正在处理。")
+
+        timeout = max(5.0, float(self.config.get("tts_poll_timeout", 450) or 450))
+        interval = max(0.5, float(self.config.get("tts_poll_interval", 5) or 5))
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            status_res = await self.client.tts_task(task_id)
+            if not self._ok(status_res):
+                yield event.plain_result(f"TTS 任务状态查询失败: {self._message_of(status_res)}")
+                return
+            status_data = self._data(status_res, {}) or {}
+            status = str(status_data.get("status") or "").lower()
+            if status == "completed":
+                result = status_data.get("result") if isinstance(status_data.get("result"), dict) else {}
+                audio_url = self.client.resolve_url(result.get("audio_url") or result.get("audioUrl") or result.get("url") or "")
+                if not audio_url or not Comp or not hasattr(Comp, "Record"):
+                    yield event.plain_result("TTS 已完成，但后端未返回可播放的音频地址。")
+                    return
+                yield event.chain_result([Comp.Plain(f"TTS 合成完成：{preset_data.get('name') or character_id}\n"), Comp.Record.fromURL(audio_url, text=text)])
+                return
+            if status == "failed":
+                yield event.plain_result(f"TTS 合成失败: {status_data.get('error') or '未知错误'}")
+                return
+            if status not in {"queued", "processing"}:
+                yield event.plain_result(f"TTS 返回了未知任务状态：{status or '空'}")
+                return
+            await asyncio.sleep(interval)
+        yield event.plain_result("TTS 合成超时，任务可能仍在后端处理中，请稍后重试。")
 
     async def _calculator_help(self, event: AstrMessageEvent, command: str) -> AsyncGenerator[Any, None]:
         if command in {"伤害计算", "伤害"}:
@@ -2535,6 +3407,23 @@ class DeltaForcePlugin(Star):
                 if found:
                     return found
         return {}
+
+    @staticmethod
+    def _find_nested_list(data: Any, key: str) -> List[Any]:
+        if isinstance(data, dict):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+            for child in data.values():
+                found = DeltaForcePlugin._find_nested_list(child, key)
+                if found:
+                    return found
+        elif isinstance(data, list):
+            for child in data:
+                found = DeltaForcePlugin._find_nested_list(child, key)
+                if found:
+                    return found
+        return []
 
     @staticmethod
     def _num(value: Any) -> float:

@@ -52,5 +52,15 @@
     "description": "TTS 文本最大长度。",
     "type": "int",
     "default": 800
+  },
+  "tts_poll_timeout": {
+    "description": "TTS 合成任务最长等待时间，单位秒。",
+    "type": "int",
+    "default": 450
+  },
+  "tts_poll_interval": {
+    "description": "TTS 合成任务状态轮询间隔，单位秒。",
+    "type": "int",
+    "default": 5
   }
 }

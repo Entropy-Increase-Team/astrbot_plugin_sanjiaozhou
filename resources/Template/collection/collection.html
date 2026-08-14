@@ -46,7 +46,7 @@
                                         <div class="category-section">
                                             <div class="category-header">{{category.name}}</div>
                                             <div class="collections-list" data-bg="{{category.bgImage}}">
-                                                {{each category.items item}}
+                                                {{each category['items'] item}}
                                                 <div class="collection-item collection-card--{{item.qualityLevel}}">
                                                     <div class="collection-item-inner">
                                                         <div class="collection-item-bg" {{if category.bgImage === 'operator-skin'}}style="background-image: url('{{item.imageUrl}}'); background-size: cover; background-position: center; opacity: 0.9;"{{/if}}>

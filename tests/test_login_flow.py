@@ -33,6 +33,16 @@ class _Image:
         return _Image(f"file:///{value}")
 
 
+class _Record:
+    def __init__(self, file: str, **kwargs):
+        self.file = file
+        self.text = kwargs.get("text")
+
+    @staticmethod
+    def fromURL(value: str, **kwargs):
+        return _Record(value, **kwargs)
+
+
 class _Filter:
     @staticmethod
     def command(_name, alias=None):
@@ -77,6 +87,7 @@ def _install_astrbot_stubs():
     core.AstrBotConfig = dict
     components.Plain = _Plain
     components.Image = _Image
+    components.Record = _Record
 
     astrbot.api = api
     astrbot.core = core
@@ -190,12 +201,101 @@ class _RequestClient:
         return _Response()
 
 
+class _EntertainmentClient:
+    def __init__(self):
+        self.tts_payload = None
+        self.tts_statuses = [
+            {"code": 0, "data": {"status": "queued"}},
+            {
+                "code": 0,
+                "data": {
+                    "status": "completed",
+                    "result": {"audio_url": "/api/v1/df/tts/audio/mock.wav?token=mock"},
+                },
+            },
+        ]
+        self.songs = [
+            {
+                "songId": 101,
+                "title": "测试歌曲",
+                "artist": "测试歌手",
+                "url": "https://media.example.invalid/song.mp3",
+                "lrc": "第一句\n第二句",
+                "playlistName": "测试歌单",
+                "hot": "99",
+            }
+        ]
+        self.fetched_urls = []
+
+    @staticmethod
+    def resolve_url(value):
+        if str(value).startswith("/"):
+            return f"https://api.example.invalid{value}"
+        return value
+
+    async def audio_random(self, params):
+        self.audio_params = params
+        return {
+            "code": 0,
+            "data": {
+                "audios": [
+                    {
+                        "fileName": "mock.wav",
+                        "character": {"name": "麦晓雯"},
+                        "download": {"url": "https://media.example.invalid/voice.wav"},
+                    }
+                ]
+            },
+        }
+
+    async def shushu_music(self, params):
+        self.music_params = params
+        return {"code": 0, "data": {"songs": self.songs, "count": 1}}
+
+    async def shushu_music_list(self, params):
+        self.music_list_params = params
+        return {"code": 0, "data": {"songs": self.songs, "total": 1, "page": 1, "limit": 20}}
+
+    async def fetch_text(self, url):
+        self.fetched_urls.append(url)
+        return "[ti:测试歌曲]\n[00:01.20]远程第一句\n[00:02.30]远程第二句"
+
+    async def tts_presets(self):
+        return {
+            "code": 0,
+            "data": {
+                "presets": {
+                    "mai": {
+                        "name": "麦晓雯",
+                        "emotions": {"happy": {"name": "开心"}},
+                    }
+                }
+            },
+        }
+
+    async def tts_synthesize(self, payload):
+        self.tts_payload = payload
+        return {"code": 0, "data": {"taskId": "mock-task", "position": 1}}
+
+    async def tts_task(self, task_id):
+        self.tts_task_id = task_id
+        return self.tts_statuses.pop(0)
+
+
 class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
     def _plugin(self, client):
         plugin = object.__new__(DeltaForcePlugin)
         plugin.client = client
-        plugin.config = {"login_poll_timeout": 30, "login_poll_interval": 1}
+        plugin.config = {
+            "enable_image_render": False,
+            "login_poll_timeout": 30,
+            "login_poll_interval": 1,
+            "tts_poll_timeout": 30,
+            "tts_poll_interval": 1,
+        }
         plugin._oauth_sessions = {}
+        plugin._music_lists = {}
+        plugin._music_last = {}
 
         async def bind_token(_event, _token, login_type="", quiet=False):
             del login_type, quiet
@@ -290,6 +390,138 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         client.api_mode = "auto"
         client.api_base_url = ""
         self.assertEqual(client._base_urls(), ["https://delta-test-api.shallow.ink"])
+
+    def test_client_resolves_relative_resource_and_uses_current_tts_parameter(self):
+        client = object.__new__(DeltaForceClient)
+        client.api_mode = "custom"
+        client.api_base_url = "https://api.example.invalid/base"
+        self.assertEqual(
+            client.resolve_url("/api/v1/df/tts/audio/mock.wav"),
+            "https://api.example.invalid/api/v1/df/tts/audio/mock.wav",
+        )
+
+    async def test_tts_preset_uses_character_query_parameter(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0})
+
+        await client.tts_preset("mai")
+
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/tts/preset",
+            params={"character": "mai"},
+            require_key=False,
+        )
+
+    async def test_random_voice_reads_nested_download_url(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._voice(_Event(), "麦晓雯"))
+
+        self.assertEqual(client.audio_params, {"character": "麦晓雯"})
+        self.assertEqual(results[0]["type"], "chain")
+        self.assertEqual(results[0]["chain"][-1].file, "https://media.example.invalid/voice.wav")
+
+    async def test_random_voice_handles_empty_and_error_responses(self):
+        client = _EntertainmentClient()
+        client.audio_random = AsyncMock(
+            side_effect=[
+                {"code": 0, "data": {"audios": []}},
+                {"code": 500, "message": "语音服务异常"},
+            ]
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._voice(_Event(), ""))
+        error = await _collect(plugin._voice(_Event(), ""))
+
+        self.assertIn("没有找到", empty[0]["text"])
+        self.assertIn("语音服务异常", error[0]["text"])
+
+    async def test_music_list_selection_and_lyrics_form_a_closed_loop(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+
+        listing = await _collect(plugin._music_list(_Event(), "1"))
+        selected = await _collect(plugin._music_select(_Event(), 1))
+        lyrics = await _collect(plugin._music_lyrics(_Event()))
+
+        self.assertIn("测试歌曲", listing[0]["text"])
+        self.assertEqual(selected[0]["chain"][-1].file, "https://media.example.invalid/song.mp3")
+        self.assertIn("第一句", lyrics[0]["text"])
+
+    async def test_music_playlist_supports_name_and_artist_fallback(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+
+        by_name = await _collect(plugin._music_playlist(_Event(), "测试歌单"))
+        self.assertEqual(client.music_list_params, {"page": "1", "limit": "2000"})
+        self.assertIn("测试歌曲", by_name[0]["text"])
+
+        by_artist = await _collect(plugin._music_playlist(_Event(), "测试歌手"))
+        self.assertEqual(client.music_list_params["artist"], "测试歌手")
+        self.assertIn("测试歌曲", by_artist[0]["text"])
+
+    async def test_music_lyrics_downloads_and_parses_lrc_url(self):
+        client = _EntertainmentClient()
+        client.songs[0]["lrc"] = "https://media.example.invalid/song.lrc"
+        client.songs[0]["metadata"] = "异常元数据"
+        plugin = self._plugin(client)
+
+        await _collect(plugin._music_list(_Event(), "1"))
+        await _collect(plugin._music_select(_Event(), 1))
+        lyrics = await _collect(plugin._music_lyrics(_Event()))
+
+        self.assertEqual(client.fetched_urls, ["https://media.example.invalid/song.lrc"])
+        self.assertIn("远程第一句", lyrics[0]["text"])
+        self.assertNotIn("[00:", lyrics[0]["text"])
+
+    async def test_music_handles_empty_error_and_invalid_metadata(self):
+        client = _EntertainmentClient()
+        client.shushu_music = AsyncMock(
+            side_effect=[
+                {"code": 0, "data": {"songs": []}},
+                {"code": 500, "message": "音乐服务异常"},
+            ]
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._music(_Event(), ""))
+        error = await _collect(plugin._music(_Event(), ""))
+        client.songs[0]["metadata"] = "异常元数据"
+        listing = await _collect(plugin._music_list(_Event(), "1"))
+
+        self.assertIn("未找到", empty[0]["text"])
+        self.assertIn("音乐服务异常", error[0]["text"])
+        self.assertIn("测试歌曲", listing[0]["text"])
+
+    async def test_tts_resolves_character_and_polls_until_audio_is_ready(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+
+        with patch("astrbot_plugin_sanjiaozhou.main.asyncio.sleep", new=AsyncMock()):
+            results = await _collect(plugin._tts(_Event(), "麦晓雯 开心 测试文本"))
+
+        self.assertEqual(
+            client.tts_payload,
+            {"character": "mai", "emotion": "happy", "text": "测试文本"},
+        )
+        self.assertEqual(client.tts_task_id, "mock-task")
+        self.assertIn("任务已提交", results[0]["text"])
+        self.assertEqual(
+            results[-1]["chain"][-1].file,
+            "https://api.example.invalid/api/v1/df/tts/audio/mock.wav?token=mock",
+        )
+
+    async def test_tts_reports_failed_task_status(self):
+        client = _EntertainmentClient()
+        client.tts_statuses = [{"code": 0, "data": {"status": "failed", "error": "模型不可用"}}]
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._tts(_Event(), "麦晓雯 测试文本"))
+
+        self.assertIn("任务已提交", results[0]["text"])
+        self.assertIn("模型不可用", results[-1]["text"])
 
 
 if __name__ == "__main__":

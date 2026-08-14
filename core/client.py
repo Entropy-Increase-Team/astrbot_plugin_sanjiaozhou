@@ -1,5 +1,6 @@
 import json
 from typing import Any, Dict, Optional
+from urllib.parse import urljoin
 
 import httpx
 from astrbot.api import logger
@@ -52,6 +53,29 @@ class DeltaForceClient:
             return [DEFAULT_URLS[self.api_mode]]
         urls = [DEFAULT_URLS["eo"], DEFAULT_URLS["esa"], DEFAULT_URLS["default"]]
         return list(dict.fromkeys(urls))
+
+    def resolve_url(self, value: str) -> str:
+        """将后端返回的相对资源地址转换为可直接访问的完整地址。"""
+        raw = str(value or "").strip()
+        if not raw or raw.startswith(("http://", "https://")):
+            return raw
+        base_url = self._base_urls()[0].rstrip("/") + "/"
+        return urljoin(base_url, raw)
+
+    async def fetch_text(self, value: str, max_bytes: int = 256 * 1024) -> str:
+        """下载后端提供的文本资源，并限制响应大小。"""
+        url = self.resolve_url(value)
+        if not url.startswith(("http://", "https://")):
+            return ""
+        try:
+            response = await self.client.get(url, follow_redirects=True)
+            response.raise_for_status()
+            content = response.content
+            if len(content) > max_bytes:
+                return ""
+            return response.text
+        except (httpx.HTTPError, UnicodeError):
+            return ""
 
     def _headers(
         self,
@@ -316,7 +340,7 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/object/maps", require_key=False)
 
     async def operators(self, detail: bool = False):
-        return await self.get("/api/v1/df/object/operator2" if detail else "/api/v1/df/object/operator", require_key=False)
+        return await self.get("/api/v1/df/object/operator" if detail else "/api/v1/df/object/operator2", require_key=False)
 
     async def rank_score(self):
         return await self.get("/api/v1/df/object/rankscore", require_key=False)
@@ -325,7 +349,11 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/object/health", require_key=False)
 
     async def object_collection_map(self):
-        return await self.get("/api/v1/df/object/collection", require_key=False)
+        return await self.get(
+            "/api/v1/df/object/collection",
+            params={"page": "1", "limit": "2000"},
+            require_key=False,
+        )
 
     async def object_list(self, primary: str = "", second: str = "", page: str = "1", limit: str = "100"):
         return await self.get(
@@ -335,11 +363,13 @@ class DeltaForceClient:
         )
 
     async def object_search(self, keyword: str, page: str = "1", limit: str = "20"):
+        key = str(keyword or "").strip()
         params = {"page": page, "limit": limit}
-        if str(keyword).isdigit():
-            params["objectID"] = keyword
+        id_parts = [part.strip() for part in key.strip("[]").replace("，", ",").split(",")]
+        if id_parts and all(part.isdigit() for part in id_parts):
+            params["objectID"] = ",".join(id_parts)
         else:
-            params["objectName"] = keyword
+            params["objectName"] = key
         return await self.get("/api/v1/df/object/search", params=params, require_key=False)
 
     async def object_value_list(self, params: Optional[Dict[str, Any]] = None):
@@ -368,8 +398,14 @@ class DeltaForceClient:
     async def current_price(self, item_id: str):
         return await self.get("/api/v1/df/object/price/ams/latest", params={"id": item_id}, require_key=False)
 
-    async def material_price(self, item_id: str = ""):
-        return await self.get("/api/v1/df/place/material/price", params={"id": item_id}, require_key=False)
+    async def material_price(self, keyword: str = "", page: str = "1", page_size: str = "50"):
+        key = str(keyword or "").strip()
+        params = {"page": page, "pageSize": page_size}
+        if key.isdigit():
+            params["objectID"] = key
+        elif key:
+            params["objectName"] = key
+        return await self.get("/api/v1/df/place/material/price", params=params, require_key=False)
 
     async def profit_history(self, params: Dict[str, Any]):
         return await self.get("/api/v1/df/place/profit/history", params=params, require_key=False)
@@ -421,7 +457,7 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/tts/presets", require_key=False)
 
     async def tts_preset(self, character_id: str):
-        return await self.get("/api/v1/df/tts/preset", params={"characterId": character_id}, require_key=False)
+        return await self.get("/api/v1/df/tts/preset", params={"character": character_id}, require_key=False)
 
     async def tts_synthesize(self, params: Dict[str, Any]):
         return await self.post("/api/v1/df/tts/synthesize", json_data=params)
