@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import types
 import unittest
@@ -449,6 +450,121 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("fixture-error", error[0]["text"])
         self.assertEqual(plugin.subscriptions.saved[2]["subscription_id"], "fixture-sub")
 
+    async def test_record_subscription_cancel_and_switch_handle_empty_and_errors(self):
+        class Bindings:
+            async def get_primary_binding(self, _user_id):
+                return {"binding_id": "fixture-binding", "framework_token": "fixture-token"}
+
+        store = SimpleNamespace(remove=Mock(), upsert=Mock())
+        current = {
+            "id": "fixture-sub",
+            "binding_id": "fixture-binding",
+            "subscription_type": "sol",
+            "enabled": True,
+        }
+        client = SimpleNamespace(
+            list_record_subscriptions=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 0, "data": {"list": [current]}},
+                    {"code": 0, "data": {"list": [current]}},
+                    {"code": 0, "data": {"list": [current]}},
+                ]
+            ),
+            delete_record_subscription=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "删除订阅失败"},
+                    {"code": 0},
+                    {"code": 500, "message": "旧订阅无法删除"},
+                ]
+            ),
+            create_record_subscription=AsyncMock(),
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = store
+        plugin._ws_wakeup = asyncio.Event()
+
+        empty = await _collect(plugin._record_subscription(_Event(), "取消订阅 战绩"))
+        delete_error = await _collect(plugin._record_subscription(_Event(), "取消订阅 战绩"))
+        deleted = await _collect(plugin._record_subscription(_Event(), "取消订阅 战绩"))
+        switch_error = await _collect(plugin._record_subscription(_Event(), "订阅 战绩 mp"))
+
+        self.assertIn("没有可取消", empty[0]["text"])
+        self.assertIn("删除订阅失败", delete_error[0]["text"])
+        self.assertIn("已取消", deleted[0]["text"])
+        self.assertIn("旧订阅无法删除", switch_error[0]["text"])
+        store.remove.assert_called_once_with("fixture-user", "fixture-binding")
+        client.create_record_subscription.assert_not_awaited()
+
+    async def test_record_subscription_rejects_missing_created_subscription_id(self):
+        class Bindings:
+            async def get_primary_binding(self, _user_id):
+                return {"binding_id": "fixture-binding", "framework_token": "fixture-token"}
+
+        client = SimpleNamespace(
+            list_record_subscriptions=AsyncMock(return_value={"code": 0, "data": {"list": []}}),
+            create_record_subscription=AsyncMock(return_value={"code": 0, "data": {}}),
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = SimpleNamespace(upsert=Mock())
+
+        result = await _collect(plugin._record_subscription(_Event(), "订阅 战绩 both"))
+
+        self.assertIn("未返回订阅 ID", result[0]["text"])
+        plugin.subscriptions.upsert.assert_not_called()
+
+    async def test_subscription_target_handles_context_api_empty_and_disable(self):
+        class Bindings:
+            async def get_primary_binding(self, _user_id):
+                return {"binding_id": "fixture-binding", "framework_token": "fixture-token"}
+
+        class Store:
+            def __init__(self):
+                self.enabled = True
+                self.targets = []
+
+            def upsert(self, *_args):
+                return None
+
+            def set_target(self, _user_id, _binding_id, umo, kind, enabled):
+                self.targets.append((umo, kind, enabled))
+                self.enabled = enabled
+
+            def enabled_targets(self):
+                return ["target"] if self.enabled else []
+
+        current = {"id": "fixture-sub", "binding_id": "fixture-binding"}
+        client = SimpleNamespace(
+            list_record_subscriptions=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "订阅服务异常"},
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 0, "data": {"list": [current]}},
+                    {"code": 0, "data": {"list": [current]}},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = Store()
+        plugin._ws_wakeup = asyncio.Event()
+        plugin._ws_connection = SimpleNamespace(close=AsyncMock())
+
+        wrong_context = await _collect(plugin._subscription_target(_Event(), "private", True))
+        api_error = await _collect(plugin._subscription_target(_Event(), "group", True))
+        empty = await _collect(plugin._subscription_target(_Event(), "group", True))
+        enabled = await _collect(plugin._subscription_target(_Event(), "group", True))
+        disabled = await _collect(plugin._subscription_target(_Event(), "group", False))
+
+        self.assertIn("私聊中设置", wrong_context[0]["text"])
+        self.assertIn("订阅服务异常", api_error[0]["text"])
+        self.assertIn("没有战绩订阅", empty[0]["text"])
+        self.assertIn("已开启本群", enabled[0]["text"])
+        self.assertIn("已关闭本群", disabled[0]["text"])
+        plugin._ws_connection.close.assert_awaited_once()
+
     async def test_solution_list_detail_and_upload_use_latest_fields(self):
         client = SimpleNamespace(
             community_solutions=AsyncMock(
@@ -637,6 +753,132 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(uri.startswith("wss://delta-test-api.shallow.ink/ws?"))
         self.assertEqual(origin, "https://delta-test-api.shallow.ink")
 
+    async def test_ws_run_once_sends_protocol_envelope_and_dispatches_record_event(self):
+        event_data = {"subscription_id": "fixture-sub", "record_id": "fixture-record"}
+
+        class Connection:
+            def __init__(self):
+                self.sent = []
+
+            async def send(self, value):
+                self.sent.append(value)
+
+            def __aiter__(self):
+                async def messages():
+                    yield "非 JSON 消息"
+                    yield json.dumps({"type": "connection.ready", "kind": "event", "data": {}})
+                    yield json.dumps({"type": "record.new", "kind": "event", "data": event_data})
+
+                return messages()
+
+        class ConnectionContext:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *_args):
+                return False
+
+        connection = Connection()
+        connect = Mock(return_value=ConnectionContext())
+        plugin = self._plugin()
+        plugin.client = SimpleNamespace(
+            api_key="fixture-key",
+            _base_urls=lambda: ["https://delta-test-api.shallow.ink"],
+        )
+        plugin.config = {"client_id": "fixture-bot"}
+        plugin._ws_stop = asyncio.Event()
+        plugin._push_record_event = AsyncMock()
+
+        with patch("astrbot_plugin_sanjiaozhou.main.websockets", SimpleNamespace(connect=connect)):
+            await plugin._ws_run_once()
+
+        envelope = json.loads(connection.sent[0])
+        self.assertEqual(envelope["type"], "record.client.subscribe")
+        self.assertEqual(envelope["kind"], "request")
+        self.assertEqual(envelope["data"], {"client_id": "fixture-bot"})
+        self.assertEqual(connect.call_args.kwargs["origin"], "https://delta-test-api.shallow.ink")
+        plugin._push_record_event.assert_awaited_once_with(event_data)
+        self.assertIsNone(plugin._ws_connection)
+
+    async def test_ws_run_once_clears_stale_connection_after_consumer_error(self):
+        class BrokenConnection:
+            async def send(self, _value):
+                return None
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise RuntimeError("连接读取失败")
+
+        class ConnectionContext:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *_args):
+                return False
+
+        connection = BrokenConnection()
+        plugin = self._plugin()
+        plugin.client = SimpleNamespace(
+            api_key="fixture-key",
+            _base_urls=lambda: ["https://delta-test-api.shallow.ink"],
+        )
+        plugin.config = {"client_id": "fixture-bot"}
+
+        with patch(
+            "astrbot_plugin_sanjiaozhou.main.websockets",
+            SimpleNamespace(connect=Mock(return_value=ConnectionContext())),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "连接读取失败"):
+                await plugin._ws_run_once()
+
+        self.assertIsNone(plugin._ws_connection)
+
+    async def test_websocket_commands_control_request_and_report_state(self):
+        plugin = self._plugin()
+        plugin._ws_wakeup = asyncio.Event()
+        plugin._ws_requested = False
+        plugin._ws_connection = SimpleNamespace(close=AsyncMock())
+
+        status = await _collect(plugin._dispatch(_Event(), "ws状态"))
+        stopped = await _collect(plugin._dispatch(_Event(), "ws断开"))
+        started = await _collect(plugin._dispatch(_Event(), "ws连接"))
+
+        self.assertIn("已连接", status[0]["text"])
+        self.assertIn("已停止", stopped[0]["text"])
+        self.assertIn("已请求连接", started[0]["text"])
+        plugin._ws_connection.close.assert_awaited_once()
+        self.assertTrue(plugin._ws_requested)
+
+    async def test_record_event_continues_after_one_target_send_fails(self):
+        plugin = self._plugin()
+        plugin.context = SimpleNamespace(send_message=AsyncMock(side_effect=[RuntimeError("发送失败"), True]))
+        plugin.subscriptions = SimpleNamespace(
+            all=lambda: [
+                {
+                    "subscription_id": "fixture-sub",
+                    "targets": {
+                        "aiocqhttp:GroupMessage:1": {"group": True},
+                        "aiocqhttp:GroupMessage:2": {"group": True},
+                    },
+                }
+            ]
+        )
+        plugin._seen_record_events = {}
+
+        await plugin._push_record_event(
+            {
+                "subscription_id": "fixture-sub",
+                "record_id": "fixture-record",
+                "event_time": "2026-08-14T12:00:00Z",
+                "record_type": "mp",
+                "record": {"mapName": "烬区"},
+            }
+        )
+
+        self.assertEqual(plugin.context.send_message.await_count, 2)
+
     def test_scheduled_run_keys_follow_configured_times(self):
         plugin = self._plugin()
         plugin.config.update(
@@ -755,6 +997,132 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         plugin._send_scheduled_message.assert_awaited_once()
         self.assertIn("高级零件", plugin._send_scheduled_message.await_args.args[1])
 
+    async def test_place_status_formats_success_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            place_status=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "places": [
+                                {
+                                    "placeName": "工作台",
+                                    "level": 3,
+                                    "status": "生产中",
+                                    "leftTime": 600,
+                                    "objectDetail": {"objectName": "高级零件"},
+                                }
+                            ],
+                            "stats": {"total": 1, "producing": 1, "idle": 0},
+                        },
+                    },
+                    {"code": 0, "data": {"places": [], "stats": {"total": 0}}},
+                    {"code": 500, "message": "特勤处状态服务异常"},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        success = await _collect(plugin._place_status(_Event()))
+        empty = await _collect(plugin._place_status(_Event()))
+        error = await _collect(plugin._place_status(_Event()))
+
+        self.assertIn("设施 1 个｜生产中 1 个", success[0]["text"])
+        self.assertIn("工作台 Lv.3：生产中，生产 高级零件，剩余 10分钟", success[0]["text"])
+        self.assertIn("没有可显示", empty[0]["text"])
+        self.assertIn("特勤处状态服务异常", error[0]["text"])
+
+    async def test_report_pushes_retry_api_errors_and_accept_empty_data(self):
+        class Bindings:
+            async def get_user_bindings(self, _user_id):
+                return [{"binding_id": "fixture-binding", "framework_token": "fixture-token"}]
+
+        client = SimpleNamespace(
+            daily_record=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "日报服务异常"},
+                    {"code": 0, "data": {}},
+                ]
+            ),
+            weekly_record=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "周报服务异常"},
+                    {"code": 0, "data": {}},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin._render_identity = AsyncMock(return_value={"userName": "测试玩家"})
+        item = {
+            "umo": "aiocqhttp:GroupMessage:123",
+            "user_id": "fixture-user",
+            "binding_id": "fixture-binding",
+        }
+
+        daily_error = await plugin._run_fixed_push(item, "daily")
+        daily_empty = await plugin._run_fixed_push(item, "daily")
+        weekly_error = await plugin._run_fixed_push(item, "weekly")
+        weekly_empty = await plugin._run_fixed_push(item, "weekly")
+
+        self.assertFalse(daily_error)
+        self.assertTrue(daily_empty)
+        self.assertFalse(weekly_error)
+        self.assertTrue(weekly_empty)
+
+    async def test_place_push_preserves_pending_job_after_api_or_delivery_failure(self):
+        class Bindings:
+            async def get_user_bindings(self, _user_id):
+                return [{"binding_id": "fixture-binding", "framework_token": "fixture-token"}]
+
+        class Store:
+            def __init__(self):
+                self.updated = []
+
+            def update_scheduled_push(self, key, values):
+                self.updated.append((key, values))
+
+        client = SimpleNamespace(
+            place_status=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "特勤处服务异常"},
+                    {
+                        "code": 0,
+                        "data": {
+                            "places": [
+                                {
+                                    "id": "workbench",
+                                    "placeName": "工作台",
+                                    "pushTime": 1_700_000_000,
+                                    "objectId": 1001,
+                                    "objectDetail": {"objectName": "高级零件"},
+                                }
+                            ]
+                        },
+                    },
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = Store()
+        plugin._send_scheduled_message = AsyncMock(return_value=False)
+        item = {
+            "key": "fixture-place",
+            "umo": "aiocqhttp:GroupMessage:123",
+            "user_id": "fixture-user",
+            "binding_id": "fixture-binding",
+        }
+        now = __import__("datetime").datetime.fromtimestamp(1_700_000_001)
+
+        await plugin._run_place_push(item, now)
+        await plugin._run_place_push(item, now)
+
+        self.assertEqual(len(plugin.subscriptions.updated), 1)
+        jobs = plugin.subscriptions.updated[0][1]["place_jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertFalse(next(iter(jobs.values()))["notified"])
+
     async def test_toggle_daily_push_uses_current_group_umo(self):
         class Bindings:
             async def get_primary_binding(self, _user_id):
@@ -799,6 +1167,52 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await plugin._run_scheduled_pushes(__import__("datetime").datetime(2026, 8, 14, 10, 0, 0))
 
         self.assertEqual(plugin.subscriptions.updated, [("ok", {"last_run_key": "2026-08-14"})])
+
+    async def test_scheduler_isolates_one_subscription_exception(self):
+        class Store:
+            def __init__(self):
+                self.updated = []
+
+            def scheduled_pushes(self):
+                return [
+                    {"key": "broken", "kind": "daily", "enabled": True},
+                    {"key": "healthy", "kind": "keyword", "enabled": True},
+                ]
+
+            def update_scheduled_push(self, key, values):
+                self.updated.append((key, values))
+
+        plugin = self._plugin()
+        plugin.subscriptions = Store()
+        plugin.config.update({"daily_push_hour": 10, "keyword_push_hour": 8})
+        plugin._run_fixed_push = AsyncMock(side_effect=[RuntimeError("渲染失败"), True])
+
+        await plugin._run_scheduled_pushes(__import__("datetime").datetime(2026, 8, 14, 10, 0, 0))
+
+        self.assertEqual(plugin._run_fixed_push.await_count, 2)
+        self.assertEqual(plugin.subscriptions.updated, [("healthy", {"last_run_key": "2026-08-14"})])
+
+    async def test_fixed_push_retries_api_and_delivery_failures_but_accepts_empty_data(self):
+        keyword_client = SimpleNamespace(
+            daily_keyword=AsyncMock(
+                side_effect=[
+                    {"code": 500, "message": "每日密码服务异常"},
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 0, "data": {"list": [{"mapName": "零号大坝", "secret": "1234"}]}},
+                ]
+            )
+        )
+        plugin = self._plugin(keyword_client)
+        plugin._send_scheduled_message = AsyncMock(return_value=False)
+        item = {"umo": "aiocqhttp:GroupMessage:123", "user_id": "fixture-user"}
+
+        api_error = await plugin._run_fixed_push(item, "keyword")
+        empty = await plugin._run_fixed_push(item, "keyword")
+        delivery_error = await plugin._run_fixed_push(item, "keyword")
+
+        self.assertFalse(api_error)
+        self.assertTrue(empty)
+        self.assertFalse(delivery_error)
 
     async def test_terminate_cancels_all_background_tasks_and_closes_resources(self):
         plugin = self._plugin()

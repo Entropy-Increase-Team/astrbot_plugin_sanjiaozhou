@@ -667,26 +667,28 @@ class DeltaForcePlugin(Star):
 
     async def _ws_run_once(self) -> None:
         uri, origin = self._ws_uri()
-        async with websockets.connect(uri, origin=origin, ping_interval=20, ping_timeout=60, close_timeout=5) as connection:
-            self._ws_connection = connection
-            envelope = {
-                "id": f"astrbot-{int(dt.datetime.now().timestamp() * 1000)}",
-                "type": "record.client.subscribe",
-                "kind": "request",
-                "data": {"client_id": self._ws_client_id()},
-                "ts": int(dt.datetime.now().timestamp() * 1000),
-            }
-            await connection.send(json.dumps(envelope, ensure_ascii=False))
-            async for raw in connection:
-                if self._ws_stop.is_set():
-                    break
-                try:
-                    message = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(message, dict) and message.get("kind") == "event" and message.get("type") == "record.new":
-                    await self._push_record_event(message.get("data") or {})
-        self._ws_connection = None
+        try:
+            async with websockets.connect(uri, origin=origin, ping_interval=20, ping_timeout=60, close_timeout=5) as connection:
+                self._ws_connection = connection
+                envelope = {
+                    "id": f"astrbot-{int(dt.datetime.now().timestamp() * 1000)}",
+                    "type": "record.client.subscribe",
+                    "kind": "request",
+                    "data": {"client_id": self._ws_client_id()},
+                    "ts": int(dt.datetime.now().timestamp() * 1000),
+                }
+                await connection.send(json.dumps(envelope, ensure_ascii=False))
+                async for raw in connection:
+                    if self._ws_stop.is_set():
+                        break
+                    try:
+                        message = json.loads(raw)
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(message, dict) and message.get("kind") == "event" and message.get("type") == "record.new":
+                        await self._push_record_event(message.get("data") or {})
+        finally:
+            self._ws_connection = None
 
     async def _push_record_event(self, data: Dict[str, Any]) -> None:
         sub_id = str(data.get("subscription_id") or "")
@@ -775,16 +777,23 @@ class DeltaForcePlugin(Star):
 
     async def _run_scheduled_pushes(self, now: dt.datetime) -> None:
         for item in self.subscriptions.scheduled_pushes():
-            kind = str(item.get("kind") or "")
-            if kind == "place":
-                await self._run_place_push(item, now)
-                continue
-            run_key = self._scheduled_run_key(kind, now)
-            if not run_key or item.get("last_run_key") == run_key:
-                continue
-            success = await self._run_fixed_push(item, kind)
-            if success:
-                self.subscriptions.update_scheduled_push(item["key"], {"last_run_key": run_key})
+            try:
+                kind = str(item.get("kind") or "")
+                if kind == "place":
+                    await self._run_place_push(item, now)
+                    continue
+                run_key = self._scheduled_run_key(kind, now)
+                if not run_key or item.get("last_run_key") == run_key:
+                    continue
+                success = await self._run_fixed_push(item, kind)
+                if success:
+                    self.subscriptions.update_scheduled_push(item["key"], {"last_run_key": run_key})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    f"[三角洲定时推送] 任务 {item.get('key') or '未知'} 执行失败：{type(exc).__name__}"
+                )
 
     def _scheduled_run_key(self, kind: str, now: dt.datetime) -> str:
         hour = {
@@ -3064,7 +3073,31 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("您尚未绑定账号。")
             return
         res = await self.client.place_status(token)
-        yield event.plain_result(self._summary_or_error("特勤处状态", res))
+        if not self._ok(res):
+            yield event.plain_result(f"特勤处状态查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        places = [item for item in self._first_list(data, ("places", "list", "items", "data")) if isinstance(item, dict)]
+        if not places:
+            yield event.plain_result("当前没有可显示的特勤处设施状态。")
+            return
+        stats = data.get("stats") if isinstance(data, dict) and isinstance(data.get("stats"), dict) else {}
+        lines = [
+            "【特勤处状态】",
+            f"设施 {stats.get('total', len(places))} 个｜生产中 {stats.get('producing', 0)} 个｜闲置 {stats.get('idle', 0)} 个",
+        ]
+        for place in places:
+            name = place.get("placeName") or place.get("name") or place.get("placeType") or "未知设施"
+            status = place.get("status") or "未知状态"
+            level = int(self._number(place.get("level"), 0))
+            detail = place.get("objectDetail") if isinstance(place.get("objectDetail"), dict) else {}
+            item_name = detail.get("objectName") or detail.get("name") or ""
+            left_time = int(self._number(place.get("leftTime"), 0))
+            suffix = f"，生产 {item_name}" if item_name else ""
+            if left_time > 0:
+                suffix += f"，剩余 {self._fmt_duration(left_time)}"
+            lines.append(f"{name} Lv.{level}：{status}{suffix}")
+        yield event.plain_result("\n".join(lines))
 
     async def _place_info(self, event: AstrMessageEvent, place: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
@@ -4867,6 +4900,16 @@ class DeltaForcePlugin(Star):
             return "未知"
         if seconds > 365 * 9 * 24 * 3600:
             return "永久"
+        return DeltaForcePlugin._fmt_duration(seconds)
+
+    @staticmethod
+    def _fmt_duration(value: Any) -> str:
+        try:
+            seconds = int(float(value))
+        except (TypeError, ValueError):
+            return "未知"
+        if seconds < 0:
+            return "未知"
         days, remainder = divmod(seconds, 24 * 3600)
         hours, remainder = divmod(remainder, 3600)
         minutes = remainder // 60
