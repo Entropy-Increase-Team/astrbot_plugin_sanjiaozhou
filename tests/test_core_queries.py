@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 import sys
 import types
@@ -11,6 +12,7 @@ from urllib.parse import unquote
 
 import httpx
 import yaml
+from PIL import Image as PillowImage
 
 
 class _Logger:
@@ -477,9 +479,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.5", "0.4.4"],
+            ["0.4.6", "0.4.5"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "修复")
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()
@@ -3130,7 +3132,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["firstUnlockMap"], "零号大坝-常规")
         client.red_one.assert_awaited_once_with("fixture-token", "1001")
 
-    async def test_core_templates_compile_with_adapted_fixture(self):
+    async def test_core_templates_compile_and_optionally_render(self):
         renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))
         fixtures = {
             "Template/personalData/personalData.html": {
@@ -3151,6 +3153,33 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "type": "sol",
                 "mapStatsList": [],
                 "totalMaps": 0,
+            },
+            "Template/userInfo/userInfo.html": {
+                "backgroundImage": "imgs/map/烽火-零号大坝-常规.png",
+                "userName": "测试玩家昵称很长但不应遮挡其他信息",
+                "userAvatar": "",
+                "qqAvatarUrl": "",
+                "registerTime": "2026-08-01 12:00:00",
+                "lastLoginTime": "2026-08-14 12:00:00",
+                "accountStatus": "账号封禁: 正常 | 禁言: 正常",
+                "solLevel": "60",
+                "solRankName": "三角洲巅峰",
+                "solRankImage": "",
+                "solTotalFight": "1,234",
+                "solTotalEscape": "987",
+                "solEscapeRatio": "79.98%",
+                "solTotalKill": "12,345",
+                "solDuration": "321小时15分钟",
+                "tdmLevel": "60",
+                "tdmRankName": "统帅",
+                "tdmRankImage": "",
+                "tdmTotalFight": "2,345",
+                "tdmTotalWin": "1,234",
+                "tdmWinRatio": "52.62%",
+                "tdmTotalKill": "23,456",
+                "tdmDuration": "456小时30分钟",
+                "hafCoin": "123,456,789",
+                "totalAssets": "987,654,321",
             },
             "Template/record/record.html": {"modeName": "烽火地带", "page": 1, "records": []},
             "Template/recordPush/recordPush.html": {
@@ -3191,6 +3220,29 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "Template/flows/flows.html": {"typeName": "货币", "typeValue": 3, "page": 1, "moneyColumns": []},
             "Template/collection/collection.html": {"typeName": "所有藏品", "totalCount": 0, "qualityStats": [], "categories": []},
             "Template/placeInfo/placeInfo.html": {"places": []},
+            "Template/musicList/musicList.html": {
+                "listTitle": "鼠鼠音乐排行榜",
+                "subtitle": "第 1 页",
+                "totalCount": 2,
+                "musicList": [
+                    {
+                        "index": 1,
+                        "name": "一首名称很长但不应破坏音乐列表布局的测试歌曲",
+                        "artist": "测试歌手",
+                        "cover": "",
+                        "playlist": "三角洲精选",
+                        "hot": "9999",
+                    },
+                    {
+                        "index": 2,
+                        "name": "短歌名",
+                        "artist": "另一位测试歌手",
+                        "cover": "",
+                        "playlist": "",
+                        "hot": "",
+                    },
+                ],
+            },
             "Template/operator/operator.html": {
                 "operatorName": "乌鲁鲁",
                 "fullName": "大卫·费莱尔",
@@ -3284,7 +3336,10 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "fonts/p-bold.ttf",
         ):
             self.assertTrue((PLUGIN_DIR / "resources" / asset).is_file(), asset)
+        visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
         try:
+            if visual_enabled:
+                await renderer._ensure_browser()
             for name, data in fixtures.items():
                 with self.subTest(template=name):
                     source = renderer._read(name)
@@ -3297,8 +3352,50 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                         self.fail(f"{name} 第 {line} 行无法编译：{exc}\n{context}")
                     html = template.render(_res_path="file:///fixture/", **data)
                     self.assertIn("<html", html, name)
+                    if not visual_enabled:
+                        continue
+
+                    rendered = await renderer.render_html(name, data)
+                    self.assertTrue(rendered, f"{name} 未生成截图")
+                    if not rendered:
+                        continue
+                    image_path = Path(rendered)
+                    try:
+                        self.assertGreater(image_path.stat().st_size, 5 * 1024, name)
+                        with PillowImage.open(image_path) as image:
+                            image.verify()
+                        with PillowImage.open(image_path) as image:
+                            self.assertEqual(image.format, "PNG", name)
+                            width, height = image.size
+                            self.assertGreaterEqual(width, 480, name)
+                            self.assertGreaterEqual(height, 240, name)
+                            self.assertLessEqual(width, 10000, name)
+                            self.assertLessEqual(height, 20000, name)
+
+                            sample = image.convert("RGBA")
+                            sample.thumbnail((128, 128))
+                            raw_pixels = sample.tobytes()
+                            pixels = [
+                                tuple(raw_pixels[index:index + 4])
+                                for index in range(0, len(raw_pixels), 4)
+                            ]
+                            visible = [pixel for pixel in pixels if pixel[3] > 16]
+                            non_white = [
+                                pixel
+                                for pixel in visible
+                                if pixel[0] < 245 or pixel[1] < 245 or pixel[2] < 245
+                            ]
+                            self.assertGreater(len(visible) / len(pixels), 0.25, name)
+                            self.assertGreater(len(non_white) / len(pixels), 0.02, name)
+                    finally:
+                        image_path.unlink(missing_ok=True)
+
+            if visual_enabled:
+                self.assertFalse(list(renderer.output_dir.glob("tmp_*.html")))
         finally:
             await renderer.close()
+        self.assertIsNone(renderer._browser)
+        self.assertIsNone(renderer._playwright)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-- 当前版本：`0.4.5`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.6`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -192,6 +192,21 @@ playwright install chromium
 | `tts上传` / `tts重播` | 发送最近五分钟内合成的文件或语音 | `tts上传` |
 
 </details>
+
+## 开发验证
+
+快速回归会编译全部业务模板和版本卡片：
+
+```powershell
+python -m pytest -q -p no:cacheprovider
+```
+
+发布前可启用全模板 Playwright 视觉验收；该模式会真实渲染 18 张 PNG，检查尺寸、文件体积、透明度和非白像素，并在检查后删除截图：
+
+```powershell
+$env:DELTA_VISUAL_TESTS = "1"
+python -m pytest -q -p no:cacheprovider tests/test_core_queries.py -k core_templates
+```
 
 ## 与 Yunzai 版的关系
 
