@@ -18,7 +18,10 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
     def test_real_import_and_command_registration(self):
         script = textwrap.dedent(
             """
+            import asyncio
             from collections import Counter
+            from types import SimpleNamespace
+            from unittest.mock import patch
 
             from astrbot_plugin_sanjiaozhou.core.version import PLUGIN_VERSION
             from astrbot_plugin_sanjiaozhou.main import (
@@ -29,6 +32,8 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             from astrbot.core.star.filter.regex import RegexFilter
             from astrbot.core.star.star import star_registry
             from astrbot.core.star.star_handler import star_handlers_registry
+            from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
+            from astrbot.core.star.session_plugin_manager import SessionPluginManager
 
 
             class Event:
@@ -89,7 +94,95 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             assert len(metadata) == 1
             assert metadata[0].version == PLUGIN_VERSION
             assert metadata[0].star_cls_type is DeltaForcePlugin
+
+
+            class PipelineEvent(Event):
+                def __init__(self, message):
+                    super().__init__(message)
+                    self.message_str = message
+                    self._extras = self.extra
+                    self.is_at_or_wake_command = False
+                    self.is_wake = False
+                    self.role = "member"
+                    self.plugins_name = None
+                    self.unified_msg_origin = "fixture:private:prefix"
+                    self.stopped = False
+
+                def get_message_str(self):
+                    return self.message_str
+
+                def get_messages(self):
+                    return []
+
+                def get_sender_id(self):
+                    return "fixture-user"
+
+                def get_self_id(self):
+                    return "fixture-bot"
+
+                def is_private_chat(self):
+                    return True
+
+                def get_extra(self, key=None, default=None):
+                    if key is None:
+                        return self._extras if self._extras else default
+                    return self._extras.get(key, default)
+
+                async def send(self, _result):
+                    return None
+
+                def stop_event(self):
+                    self.stopped = True
+
+
+            async def verify_wake_prefix():
+                context = SimpleNamespace(
+                    astrbot_config={
+                        "admins_id": [],
+                        "wake_prefix": ["!!"],
+                        "plugin_set": ["sanjiaozhou"],
+                        "disable_builtin_commands": False,
+                        "platform_settings": {
+                            "no_permission_reply": True,
+                            "friend_message_needs_wake_prefix": True,
+                            "ignore_bot_self_message": False,
+                            "ignore_at_all": False,
+                            "unique_session": False,
+                        },
+                    }
+                )
+                stage = WakingCheckStage()
+                await stage.initialize(context)
+                event = PipelineEvent("!!数据 烽火 2")
+
+                async def passthrough(_event, handlers):
+                    return handlers
+
+                with patch.object(
+                    SessionPluginManager,
+                    "filter_handlers_by_session",
+                    new=passthrough,
+                ):
+                    await stage.process(event)
+
+                activated = event.get_extra("activated_handlers", [])
+                parsed = event.get_extra("handlers_parsed_params", {})
+                assert event.is_at_or_wake_command
+                assert event.message_str == "数据 烽火 2"
+                assert DeltaForcePlugin._message(None, event) == "数据 烽火 2"
+                assert len(activated) == 1
+                assert len(parsed) == 1
+                active_commands = [
+                    item.command_name
+                    for item in activated[0].event_filters
+                    if isinstance(item, CommandFilter)
+                ]
+                assert active_commands == ["数据"]
+
+
+            asyncio.run(verify_wake_prefix())
             print("REAL_ASTRBOT_REGISTRATION_OK")
+            print("REAL_ASTRBOT_WAKE_PREFIX_OK")
             """
         )
         env = os.environ.copy()
@@ -115,6 +208,7 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             f"真实 AstrBot 注册测试失败。\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}",
         )
         self.assertIn("REAL_ASTRBOT_REGISTRATION_OK", result.stdout)
+        self.assertIn("REAL_ASTRBOT_WAKE_PREFIX_OK", result.stdout)
 
 
 if __name__ == "__main__":

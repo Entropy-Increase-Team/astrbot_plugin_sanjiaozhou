@@ -479,7 +479,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.10", "0.4.9"],
+            ["0.4.11", "0.4.10"],
         )
         self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
