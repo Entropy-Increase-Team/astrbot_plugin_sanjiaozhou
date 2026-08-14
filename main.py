@@ -21,10 +21,11 @@ except Exception:
     Comp = None
 
 try:
-    from astrbot.api.event import MessageChain, Plain
+    from astrbot.api.event import MessageChain
 except Exception:
     MessageChain = None
-    Plain = None
+
+Plain = getattr(Comp, "Plain", None) if Comp is not None else None
 
 from .core.client import DeltaForceClient
 from .core.calculator import DeltaCalculator
@@ -43,6 +44,17 @@ SOL_ALIASES = {"sol", "烽火", "烽火地带", "摸金", "4"}
 MP_ALIASES = {"mp", "tdm", "全面", "全面战场", "战场", "大战场", "5"}
 ESCAPE_REASONS = {"1": "撤离成功", "2": "被玩家击杀", "3": "被人机击杀", "10": "撤离失败"}
 MP_RESULTS = {"1": "胜利", "2": "失败", "3": "中途退出"}
+
+
+class _ScheduledEvent:
+    """仅为复用现有日报、周报字段适配器提供最小事件信息。"""
+
+    def __init__(self, user_id: str):
+        self._user_id = str(user_id)
+        self.sender = None
+
+    def get_sender_id(self) -> str:
+        return self._user_id
 
 
 DELTA_COMMAND_SPECS = [
@@ -149,6 +161,7 @@ class DeltaForcePlugin(Star):
         )
         self._static_task: Optional[asyncio.Task] = None
         self._ws_task: Optional[asyncio.Task] = None
+        self._push_task: Optional[asyncio.Task] = None
         self._ws_stop = asyncio.Event()
         self._ws_wakeup = asyncio.Event()
         self._ws_requested = False
@@ -163,6 +176,7 @@ class DeltaForcePlugin(Star):
         self._ws_stop.clear()
         self._ws_requested = bool(self.subscriptions.enabled_targets())
         self._ws_task = asyncio.create_task(self._ws_supervisor())
+        self._push_task = asyncio.create_task(self._scheduled_push_loop())
 
     async def terminate(self):
         if self._static_task and not self._static_task.done():
@@ -174,7 +188,11 @@ class DeltaForcePlugin(Star):
                 await self._ws_connection.close()
             except Exception:
                 pass
-        tasks = [task for task in (self._static_task, self._ws_task) if task and not task.done()]
+        if self._ws_task and not self._ws_task.done():
+            self._ws_task.cancel()
+        if self._push_task and not self._push_task.done():
+            self._push_task.cancel()
+        tasks = [task for task in (self._static_task, self._ws_task, self._push_task) if task and not task.done()]
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         await self.client.close()
@@ -690,6 +708,207 @@ class DeltaForcePlugin(Star):
                 except Exception as exc:
                     logger.warning(f"[三角洲订阅] 推送到 {umo} 失败：{type(exc).__name__}")
 
+    async def _toggle_scheduled_push(self, event: AstrMessageEvent, kind: str, enabled: bool) -> AsyncGenerator[Any, None]:
+        """在当前群聊中开启或关闭一类定时推送。"""
+        if not str(event.get_group_id() or "").strip():
+            yield event.plain_result("该命令只能在群聊中使用。")
+            return
+        actor_user_id = str(event.get_sender_id())
+        user_id = "" if kind == "keyword" else actor_user_id
+        binding_id = ""
+        if kind != "keyword":
+            binding = await self.bindings.get_primary_binding(actor_user_id)
+            if not binding or not binding.get("framework_token"):
+                yield event.plain_result("您尚未绑定账号，请先完成登录。")
+                return
+            binding_id = str(binding.get("binding_id") or "")
+        if kind == "keyword" and not event.is_admin():
+            yield event.plain_result("只有群管理员可以设置每日密码推送。")
+            return
+        if kind == "place" and enabled:
+            response = await self.client.place_status(str(binding.get("framework_token") or ""))
+            if not self._ok(response):
+                yield event.plain_result(f"当前账号无法查询特勤处状态：{self._message_of(response)}")
+                return
+
+        umo = event.unified_msg_origin
+        if not enabled:
+            changed = False
+            for item in self.subscriptions.scheduled_pushes(kind, enabled_only=False):
+                if str(item.get("user_id")) == user_id and str(item.get("umo")) == umo and item.get("enabled"):
+                    self.subscriptions.update_scheduled_push(item["key"], {"enabled": False})
+                    changed = True
+            yield event.plain_result("已关闭本群推送。" if changed else "本群尚未开启该推送。")
+            return
+
+        self.subscriptions.set_scheduled_push(kind, user_id, binding_id, umo, True)
+        names = {"daily": "日报", "weekly": "周报", "place": "特勤处生产完成", "keyword": "每日密码"}
+        yield event.plain_result(f"已为本群开启{names[kind]}推送。")
+
+    async def _scheduled_push_loop(self) -> None:
+        interval = max(30, int(self.config.get("push_check_interval", 60) or 60))
+        while True:
+            try:
+                await self._run_scheduled_pushes(dt.datetime.now())
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"[三角洲定时推送] 本轮执行失败：{type(exc).__name__}")
+            await asyncio.sleep(interval)
+
+    async def _run_scheduled_pushes(self, now: dt.datetime) -> None:
+        for item in self.subscriptions.scheduled_pushes():
+            kind = str(item.get("kind") or "")
+            if kind == "place":
+                await self._run_place_push(item, now)
+                continue
+            run_key = self._scheduled_run_key(kind, now)
+            if not run_key or item.get("last_run_key") == run_key:
+                continue
+            success = await self._run_fixed_push(item, kind)
+            if success:
+                self.subscriptions.update_scheduled_push(item["key"], {"last_run_key": run_key})
+
+    def _scheduled_run_key(self, kind: str, now: dt.datetime) -> str:
+        hour = {
+            "daily": self._config_int("daily_push_hour", 10),
+            "weekly": self._config_int("weekly_push_hour", 10),
+            "keyword": self._config_int("keyword_push_hour", 8),
+        }.get(kind)
+        if hour is None or now.hour < min(max(hour, 0), 23):
+            return ""
+        if kind == "weekly":
+            weekday = min(max(self._config_int("weekly_push_weekday", 0), 0), 6)
+            if now.weekday() != weekday:
+                return ""
+            return now.strftime("%G-W%V")
+        return now.strftime("%Y-%m-%d")
+
+    def _config_int(self, key: str, default: int) -> int:
+        try:
+            return int(self.config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    async def _binding_for_push(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        rows = await self.bindings.get_user_bindings(item.get("user_id"))
+        binding_id = str(item.get("binding_id") or "")
+        return next((row for row in rows if str(row.get("binding_id") or "") == binding_id), None)
+
+    async def _run_fixed_push(self, item: Dict[str, Any], kind: str) -> bool:
+        if kind == "keyword":
+            response = await self.client.daily_keyword()
+            if not self._ok(response):
+                return False
+            data = self._data(response, {}) or {}
+            rows = self._first_list(data, ("list", "items", "data"))
+            if not rows:
+                return True
+            lines = ["【每日密码】"]
+            for row in rows:
+                if isinstance(row, dict):
+                    lines.append(f"{row.get('mapName') or row.get('map') or '未知地图'}：{row.get('secret') or row.get('password') or '-'}")
+            return await self._send_scheduled_message(item["umo"], "\n".join(lines))
+
+        binding = await self._binding_for_push(item)
+        token = str((binding or {}).get("framework_token") or "")
+        if not token:
+            logger.warning(f"[三角洲定时推送] 用户 {item.get('user_id')} 的绑定已失效")
+            return False
+        event = _ScheduledEvent(str(item.get("user_id") or ""))
+        identity = await self._render_identity(event, token)
+        if kind == "daily":
+            response = await self.client.daily_record(token, "")
+            if not self._ok(response):
+                return False
+            raw = self._payload(response, {}) or {}
+            sol, mp = self._daily_details(raw, None)
+            if not sol and not mp:
+                return True
+            data = self._build_daily(event, sol, mp, None, dt.datetime.now().strftime("%Y-%m-%d"), False, identity)
+            image = await self.renderer.render_html(
+                "Template/dailyReport/dailyReport.html", data, {"viewport_width": 1000, "viewport_height": 900}
+            ) if self.config.get("enable_image_render", True) else None
+            return await self._send_scheduled_message(item["umo"], self._summary_dict("三角洲日报", raw), image)
+        if kind == "weekly":
+            response = await self.client.weekly_record(token, "", "", True)
+            if not self._ok(response):
+                return False
+            raw = self._payload(response, {}) or {}
+            sol, mp, report_dm = self._weekly_details(raw, None)
+            if not sol and not mp:
+                return True
+            data = self._build_weekly(event, sol, mp, report_dm, None, self._last_sunday(), identity)
+            image = await self.renderer.render_html(
+                "Template/weeklyReport/weeklyReport.html", data, {"viewport_width": 1100, "viewport_height": 1800}
+            ) if self.config.get("enable_image_render", True) else None
+            return await self._send_scheduled_message(item["umo"], self._summary_dict("三角洲周报", raw), image)
+        return True
+
+    async def _run_place_push(self, item: Dict[str, Any], now: dt.datetime) -> None:
+        binding = await self._binding_for_push(item)
+        token = str((binding or {}).get("framework_token") or "")
+        if not token:
+            return
+        response = await self.client.place_status(token)
+        if not self._ok(response):
+            return
+        data = self._data(response, {}) or {}
+        places = self._first_list(data, ("places", "list", "items", "data"))
+        old_jobs = item.get("place_jobs") if isinstance(item.get("place_jobs"), dict) else {}
+        jobs = dict(old_jobs)
+        now_ts = int(now.timestamp())
+        active_ids = set()
+        for place in places:
+            if not isinstance(place, dict) or not isinstance(place.get("objectDetail"), dict):
+                continue
+            place_id = str(place.get("id") or place.get("placeId") or place.get("placeType") or "")
+            if not place_id:
+                continue
+            finish_at = int(self._number(place.get("pushTime")))
+            if finish_at > 10_000_000_000:
+                finish_at //= 1000
+            if finish_at <= 0:
+                finish_at = now_ts + max(0, int(self._number(place.get("leftTime"))))
+            job_id = f"{place_id}:{finish_at}:{place.get('objectId') or ''}"
+            active_ids.add(job_id)
+            if job_id not in jobs:
+                detail = place["objectDetail"]
+                jobs[job_id] = {
+                    "finish_at": finish_at,
+                    "place_name": place.get("placeName") or place.get("name") or place_id,
+                    "object_name": detail.get("objectName") or detail.get("name") or "未知物品",
+                    "notified": False,
+                }
+        due = [job for job in jobs.values() if not job.get("notified") and int(job.get("finish_at") or 0) <= now_ts]
+        if due:
+            lines = ["【特勤处生产完成】"]
+            lines.extend(f"{job.get('place_name')}：{job.get('object_name')}" for job in due)
+            if await self._send_scheduled_message(item["umo"], "\n".join(lines)):
+                for job in due:
+                    job["notified"] = True
+        jobs = {
+            key: value
+            for key, value in jobs.items()
+            if key in active_ids or not value.get("notified") or now_ts - int(value.get("finish_at") or 0) < 86400
+        }
+        self.subscriptions.update_scheduled_push(item["key"], {"place_jobs": jobs, "last_poll_at": now_ts})
+
+    async def _send_scheduled_message(self, umo: str, text: str, image_path: Optional[str] = None) -> bool:
+        if MessageChain is None or Plain is None:
+            return False
+        chain = MessageChain()
+        if image_path and Comp is not None:
+            chain.chain.append(Plain("三角洲定时推送\n"))
+            chain.chain.append(Comp.Image.fromFileSystem(image_path))
+        else:
+            chain.chain.append(Plain(text))
+        try:
+            return bool(await self.context.send_message(umo, chain))
+        except Exception as exc:
+            logger.warning(f"[三角洲定时推送] 发送到 {umo} 失败：{type(exc).__name__}")
+            return False
+
     async def _dispatch(self, event: AstrMessageEvent, msg: str) -> AsyncGenerator[Any, None]:
         body = self._body(msg)
         lowered = body.lower()
@@ -987,8 +1206,15 @@ class DeltaForcePlugin(Star):
         if "广播" in body or "通知" in body:
             yield event.plain_result("最新版后端未提供通用通知广播协议，该功能当前无法接入；战绩实时推送不受影响。")
             return
-        if re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body):
-            yield event.plain_result("该命令在 AstrBot 版已保留入口，定时推送/订阅需要在 AstrBot 任务体系中单独配置。")
+        if match := re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body):
+            kind = {
+                "日报推送": "daily",
+                "周报推送": "weekly",
+                "特勤处推送": "place",
+                "每日密码推送": "keyword",
+            }[match.group(2)]
+            async for result in self._toggle_scheduled_push(event, kind, match.group(1) == "开启"):
+                yield result
             return
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
             yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")

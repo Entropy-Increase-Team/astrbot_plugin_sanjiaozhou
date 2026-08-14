@@ -72,5 +72,30 @@
     "description": "创建战绩订阅时同步开启排位判断。",
     "type": "bool",
     "default": false
+  },
+  "push_check_interval": {
+    "description": "定时推送任务检查间隔，单位秒，最小 30 秒。",
+    "type": "int",
+    "default": 60
+  },
+  "daily_push_hour": {
+    "description": "日报推送小时，使用服务器本地时区，范围 0 至 23。",
+    "type": "int",
+    "default": 10
+  },
+  "weekly_push_weekday": {
+    "description": "周报推送星期，0 为周一、6 为周日。",
+    "type": "int",
+    "default": 0
+  },
+  "weekly_push_hour": {
+    "description": "周报推送小时，使用服务器本地时区，范围 0 至 23。",
+    "type": "int",
+    "default": 10
+  },
+  "keyword_push_hour": {
+    "description": "每日密码推送小时，使用服务器本地时区，范围 0 至 23。",
+    "type": "int",
+    "default": 8
   }
 }

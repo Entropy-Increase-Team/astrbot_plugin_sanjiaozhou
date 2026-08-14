@@ -18,7 +18,7 @@ class SubscriptionStore:
     def __init__(self, data_dir: str):
         self.path = Path(data_dir).resolve() / "deltaforce_subscriptions.json"
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._data: Dict[str, Any] = {"subscriptions": {}}
+        self._data: Dict[str, Any] = {"subscriptions": {}, "scheduled_pushes": {}}
         self._load()
 
     def _load(self) -> None:
@@ -28,6 +28,7 @@ class SubscriptionStore:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(raw, dict) and isinstance(raw.get("subscriptions"), dict):
                 self._data = raw
+                self._data.setdefault("scheduled_pushes", {})
         except Exception as exc:
             logger.warning(f"[三角洲订阅] 读取本地订阅失败：{type(exc).__name__}")
 
@@ -88,3 +89,57 @@ class SubscriptionStore:
                 if flags.get("group") or flags.get("private"):
                     result.append({"umo": str(umo), "binding_id": str(item.get("binding_id") or "")})
         return result
+
+    @staticmethod
+    def _schedule_key(kind: str, user_id: Any, binding_id: Any, umo: str) -> str:
+        return "::".join((str(kind), str(user_id or ""), str(binding_id or ""), str(umo or "")))
+
+    def set_scheduled_push(
+        self,
+        kind: str,
+        user_id: Any,
+        binding_id: Any,
+        umo: str,
+        enabled: bool,
+    ) -> Dict[str, Any]:
+        key = self._schedule_key(kind, user_id, binding_id, umo)
+        pushes = self._data.setdefault("scheduled_pushes", {})
+        old = pushes.get(key)
+        item = dict(old) if isinstance(old, dict) else {}
+        item.update(
+            {
+                "key": key,
+                "kind": str(kind),
+                "user_id": str(user_id or ""),
+                "binding_id": str(binding_id or ""),
+                "umo": str(umo or ""),
+                "enabled": bool(enabled),
+                "updated_at": int(time.time()),
+            }
+        )
+        pushes[key] = item
+        self._save()
+        return dict(item)
+
+    def scheduled_pushes(self, kind: str = "", enabled_only: bool = True) -> List[Dict[str, Any]]:
+        pushes = self._data.setdefault("scheduled_pushes", {})
+        result = []
+        for item in pushes.values():
+            if not isinstance(item, dict):
+                continue
+            if kind and item.get("kind") != kind:
+                continue
+            if enabled_only and not item.get("enabled"):
+                continue
+            result.append(dict(item))
+        return result
+
+    def update_scheduled_push(self, key: str, values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        pushes = self._data.setdefault("scheduled_pushes", {})
+        item = pushes.get(key)
+        if not isinstance(item, dict):
+            return None
+        item.update(values or {})
+        item["updated_at"] = int(time.time())
+        self._save()
+        return dict(item)

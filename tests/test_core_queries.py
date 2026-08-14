@@ -4,7 +4,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 class _Logger:
@@ -120,8 +120,16 @@ from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
 
 
 class _Event:
+    unified_msg_origin = "aiocqhttp:GroupMessage:123"
+
     def get_sender_id(self):
         return "fixture-user"
+
+    def get_group_id(self):
+        return "123"
+
+    def is_admin(self):
+        return True
 
     def plain_result(self, text):
         return {"type": "plain", "text": text}
@@ -295,6 +303,20 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(write_text.call_args.kwargs["encoding"], "utf-8")
         replace.assert_called_once_with(store.path)
 
+    def test_subscription_store_persists_scheduled_pushes(self):
+        store = object.__new__(SubscriptionStore)
+        store.path = PLUGIN_DIR / "fixture-subscriptions.json"
+        store._data = {"subscriptions": {}, "scheduled_pushes": {}}
+        with patch.object(store, "_save"):
+            item = store.set_scheduled_push(
+                "daily", "fixture-user", "fixture-binding", "aiocqhttp:GroupMessage:123", True
+            )
+            store.update_scheduled_push(item["key"], {"last_run_key": "2026-08-14"})
+
+        rows = store.scheduled_pushes("daily")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["last_run_key"], "2026-08-14")
+
     async def test_record_subscription_success_empty_and_error(self):
         class Bindings:
             async def get_primary_binding(self, _user_id):
@@ -381,6 +403,192 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("client_id=fixture-bot", uri)
         self.assertTrue(uri.startswith("wss://delta-test-api.shallow.ink/ws?"))
         self.assertEqual(origin, "https://delta-test-api.shallow.ink")
+
+    def test_scheduled_run_keys_follow_configured_times(self):
+        plugin = self._plugin()
+        plugin.config.update(
+            {
+                "daily_push_hour": 10,
+                "weekly_push_hour": 10,
+                "weekly_push_weekday": 0,
+                "keyword_push_hour": 8,
+            }
+        )
+        monday = __import__("datetime").datetime(2026, 8, 10, 10, 0, 0)
+
+        self.assertEqual(plugin._scheduled_run_key("daily", monday), "2026-08-10")
+        self.assertEqual(plugin._scheduled_run_key("weekly", monday), "2026-W33")
+        self.assertEqual(plugin._scheduled_run_key("keyword", monday), "2026-08-10")
+        self.assertEqual(plugin._scheduled_run_key("daily", monday.replace(hour=9)), "")
+
+    async def test_keyword_scheduled_push_uses_native_message_chain(self):
+        plugin = self._plugin(
+            SimpleNamespace(
+                daily_keyword=AsyncMock(
+                    return_value={
+                        "code": 0,
+                        "data": {"list": [{"mapName": "零号大坝", "secret": "1234"}]},
+                    }
+                )
+            )
+        )
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+
+        success = await plugin._run_fixed_push(
+            {"umo": "aiocqhttp:GroupMessage:123", "user_id": "fixture-user"}, "keyword"
+        )
+
+        self.assertTrue(success)
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertIn("零号大坝：1234", chain.chain[0].text)
+
+    async def test_daily_scheduled_push_renders_existing_template(self):
+        class Bindings:
+            async def get_user_bindings(self, _user_id):
+                return [{"binding_id": "fixture-binding", "framework_token": "fixture-token"}]
+
+        raw = {
+            "sol": {"data": {"data": {"solDetail": {"recentGainDate": "20260814", "recentGain": 1000}}}},
+            "mp": {"data": {"data": {"mpDetail": {"recentDate": "20260814", "totalFightNum": 1}}}},
+        }
+        plugin = self._plugin(SimpleNamespace(daily_record=AsyncMock(return_value={"code": 0, "data": raw})))
+        plugin.bindings = Bindings()
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.renderer = SimpleNamespace(render_html=AsyncMock(return_value="D:/fixture-daily.png"))
+        plugin.config["enable_image_render"] = True
+        plugin._render_identity = AsyncMock(return_value={"userName": "测试玩家"})
+
+        success = await plugin._run_fixed_push(
+            {
+                "umo": "aiocqhttp:GroupMessage:123",
+                "user_id": "fixture-user",
+                "binding_id": "fixture-binding",
+            },
+            "daily",
+        )
+
+        self.assertTrue(success)
+        plugin.renderer.render_html.assert_awaited_once()
+        self.assertEqual(plugin.renderer.render_html.await_args.args[0], "Template/dailyReport/dailyReport.html")
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertEqual(chain.chain[1].file, "file:///D:/fixture-daily.png")
+
+    async def test_place_push_keeps_job_until_due_and_only_sends_once(self):
+        class Bindings:
+            async def get_user_bindings(self, _user_id):
+                return [{"binding_id": "fixture-binding", "framework_token": "fixture-token"}]
+
+        store = object.__new__(SubscriptionStore)
+        store.path = PLUGIN_DIR / "fixture-subscriptions.json"
+        store._data = {"subscriptions": {}, "scheduled_pushes": {}}
+        with patch.object(store, "_save"):
+            item = store.set_scheduled_push(
+                "place", "fixture-user", "fixture-binding", "aiocqhttp:GroupMessage:123", True
+            )
+        client = SimpleNamespace(
+            place_status=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "places": [
+                                {
+                                    "id": "workbench",
+                                    "placeName": "工作台",
+                                    "pushTime": 1700000100,
+                                    "objectId": 1001,
+                                    "objectDetail": {"objectName": "高级零件"},
+                                }
+                            ]
+                        },
+                    },
+                    {"code": 0, "data": {"places": []}},
+                    {"code": 0, "data": {"places": []}},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = store
+        plugin._send_scheduled_message = AsyncMock(return_value=True)
+
+        with patch.object(store, "_save"):
+            await plugin._run_place_push(item, __import__("datetime").datetime.fromtimestamp(1700000000))
+            updated = store.scheduled_pushes("place")[0]
+            await plugin._run_place_push(updated, __import__("datetime").datetime.fromtimestamp(1700000101))
+            updated = store.scheduled_pushes("place")[0]
+            await plugin._run_place_push(updated, __import__("datetime").datetime.fromtimestamp(1700000102))
+
+        plugin._send_scheduled_message.assert_awaited_once()
+        self.assertIn("高级零件", plugin._send_scheduled_message.await_args.args[1])
+
+    async def test_toggle_daily_push_uses_current_group_umo(self):
+        class Bindings:
+            async def get_primary_binding(self, _user_id):
+                return {"binding_id": "fixture-binding", "framework_token": "fixture-token"}
+
+        store = SimpleNamespace(set_scheduled_push=Mock())
+        plugin = self._plugin()
+        plugin.bindings = Bindings()
+        plugin.subscriptions = store
+
+        result = await _collect(plugin._toggle_scheduled_push(_Event(), "daily", True))
+
+        self.assertIn("已为本群开启日报推送", result[0]["text"])
+        store.set_scheduled_push.assert_called_once_with(
+            "daily",
+            "fixture-user",
+            "fixture-binding",
+            "aiocqhttp:GroupMessage:123",
+            True,
+        )
+
+    async def test_scheduler_marks_successful_run_and_retries_failure(self):
+        class Store:
+            def __init__(self):
+                self.rows = [
+                    {"key": "ok", "kind": "daily", "enabled": True},
+                    {"key": "retry", "kind": "keyword", "enabled": True},
+                ]
+                self.updated = []
+
+            def scheduled_pushes(self):
+                return list(self.rows)
+
+            def update_scheduled_push(self, key, values):
+                self.updated.append((key, values))
+
+        plugin = self._plugin()
+        plugin.subscriptions = Store()
+        plugin.config.update({"daily_push_hour": 10, "keyword_push_hour": 8})
+        plugin._run_fixed_push = AsyncMock(side_effect=[True, False])
+
+        await plugin._run_scheduled_pushes(__import__("datetime").datetime(2026, 8, 14, 10, 0, 0))
+
+        self.assertEqual(plugin.subscriptions.updated, [("ok", {"last_run_key": "2026-08-14"})])
+
+    async def test_terminate_cancels_all_background_tasks_and_closes_resources(self):
+        plugin = self._plugin()
+
+        async def pending():
+            await asyncio.Event().wait()
+
+        plugin._static_task = asyncio.create_task(pending())
+        plugin._ws_task = asyncio.create_task(pending())
+        plugin._push_task = asyncio.create_task(pending())
+        plugin._ws_stop = asyncio.Event()
+        plugin._ws_wakeup = asyncio.Event()
+        plugin._ws_connection = SimpleNamespace(close=AsyncMock())
+        plugin.client = SimpleNamespace(close=AsyncMock())
+        plugin.renderer = SimpleNamespace(close=AsyncMock())
+
+        await plugin.terminate()
+
+        self.assertTrue(plugin._ws_stop.is_set())
+        self.assertTrue(all(task.done() for task in (plugin._static_task, plugin._ws_task, plugin._push_task)))
+        plugin._ws_connection.close.assert_awaited_once()
+        plugin.client.close.assert_awaited_once()
+        plugin.renderer.close.assert_awaited_once()
 
     async def test_user_info_success_missing_role_and_error_branches(self):
         success_payload = {
