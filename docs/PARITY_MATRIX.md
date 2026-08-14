@@ -16,7 +16,7 @@
 | 分类 | Yunzai 源文件 | Yunzai fnc | 原命令/别名摘要 | AstrBot 注册命令 | AstrBot 实现函数 | API 方法与路径 | 渲染模板 | 文本兜底 | 成功测试 | 空数据测试 | 错误测试 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 账户 | `apps/account/Account.js` | `showAccounts`、`bindToken`、`unbindToken`、`deleteToken`、`switchAccount`、`refreshWechat`、`refreshQq` | 账号、绑定、解绑、删除、切换、刷新 | 账号、绑定、解绑、账号切换、微信刷新及别名 | `_account_list`、`_bind_token`、`_delete_account`、`_switch_account`、`_refresh_account` | `GET/POST/DELETE /api/v1/user/bindings` 及主绑定子路由；`GET /api/v1/login/{qq,wechat}/refresh`；`DELETE /api/v1/login/{qq,wechat}/token` | 无 | 有 | 绑定、切换、解绑、登录删除和刷新 fixture 通过 | 空账号列表 fixture 通过 | 远端失败不改本地、类型不匹配 fixture 通过 | 已验证 |
-| 登录 | `apps/account/Login.js` | `login`、`loginWithCookie`、`qqOAuthLogin`、`wechatOAuthLogin`、`webLogin`、`bindCharacter` | 扫码登录、CK 登录、QQ/微信 OAuth、网页登录、角色绑定 | 登录、ck登录、qq授权登录、微信授权登录、网页登录、角色绑定及别名 | `_login`、`_cookie_login`、`_oauth_login`、`_bind_character` | `GET /api/v1/login/{platform}/qr`；`GET /api/v1/login/{platform}/status`；`POST /api/v1/login/qq/ck`；`GET/POST /api/v1/login/{qq,wechat}/oauth`；`GET /api/v1/df/person/bind?method=bind` | 无 | 有 | 二维码组件、动态有效期、状态机、OAuth 回调、账号与角色自动绑定 fixture 通过 | 缺少二维码与未绑定账号 fixture 通过 | 过期二维码、API 错误、state 不匹配、远端绑定失败和凭证失效 fixture 通过 | 部分（仍需真实扫码复验） |
+| 登录 | `apps/account/Login.js` | `login`、`loginWithCookie`、`qqOAuthLogin`、`wechatOAuthLogin`、`webLogin`、`bindCharacter` | 扫码登录、CK 登录、QQ/微信 OAuth、网页登录、角色绑定 | 登录、ck登录、qq授权登录、微信授权登录、网页登录、角色绑定及别名 | `_login`、`_cookie_login`、`_oauth_login`、`_web_login`、`_bind_character` | `GET /api/v1/login/{platform}/qr`；`GET /api/v1/login/{platform}/status`；`POST /api/v1/login/qq/ck`；`GET/POST /api/v1/login/{qq,wechat}/oauth`；`POST/GET /api/v1/authorization/requests` 及状态子路由；`GET /api/v1/df/person/bind?method=bind` | 无 | 有 | 二维码组件、动态有效期、OAuth 回调、网页授权领取、账号与角色自动绑定 fixture 通过 | 缺少二维码与未绑定账号 fixture 通过 | 过期二维码、授权拒绝/过期/重复领取、API 错误、state 不匹配、远端绑定失败和凭证失效 fixture 通过 | 部分（仍需真实扫码与网页授权复验） |
 | 娱乐 | `apps/entertainment/Music.js` | `getLyrics`、`sendShushuVoice`、`getMusicCacheStats`、`cleanMusicCache`、`getShushuMusicRank`、`getShushuPlaylist`、`selectMusicByNumber`、`sendShushuMusic` | 歌词、鼠鼠语音、音乐缓存、排行、歌单、点歌、鼠鼠音乐 | 歌词、鼠鼠音乐列表、鼠鼠歌单、点歌、鼠鼠音乐、音乐缓存状态、清理音乐缓存 | `_music`、`_music_list`、`_music_playlist`、`_music_select`、`_music_lyrics`、`_music_replay`、`_music_cache_status`、`_music_cache_clear` | `GET /api/v1/df/audio/shushu`；`GET /api/v1/df/audio/shushu/list`；音乐缓存位于 AstrBot 插件数据目录 | `musicList` | 有 | 搜索、歌单、点歌、远程 LRC、缓存统计/清理 fixture 与 Playwright 通过 | 空歌曲、无歌词和无最近播放 fixture 通过 | API、下载、过期列表、越界选择和管理员权限 fixture 通过 | 已验证 |
 | 娱乐 | `apps/entertainment/TTS.js` | `getTtsHealth`、`getTtsPresets`、`getTtsPresetDetail`、`downloadLastTts`、`synthesize` | TTS 状态、角色列表、角色详情、下载、合成 | tts状态、tts角色列表、tts角色详情、tts、tts上传、tts重播 | `_tts_status`、`_tts_presets`、`_tts_preset`、`_tts`、`_tts_recent` | `GET /api/v1/df/tts/health`；`GET /api/v1/df/tts/presets`；`GET /api/v1/df/tts/preset?character=`；`POST /api/v1/df/tts/synthesize`；`GET /api/v1/df/tts/task`；音频签名下载地址由任务结果提供 | 无 | 有 | 元数据、异步任务轮询、语音与文件组件 fixture 通过 | 空状态、空预设和空详情 fixture 通过 | 查询、提交、任务失败和最近记录缺失 fixture 通过 | 已验证 |
 | 娱乐 | `apps/entertainment/Voice.js` | `getCharacterList`、`getTagList`、`getCategoryList`、`getAudioStats`、`sendVoice` | 角色、标签、分类、统计、语音 | 语音列表、语音及别名 | `_voice_meta`、`_voice` | `GET /api/v1/df/audio/random`；`GET /api/v1/df/audio/categories`；`GET /api/v1/df/audio/characters`；`GET /api/v1/df/audio/stats`；`GET /api/v1/df/audio/tags` | 无 | 有 | 权威路由、元数据字段、嵌套下载地址与语音组件 fixture 通过 | 五类空数据 fixture 通过 | 五类 API 错误 fixture 通过 | 已验证 |
@@ -83,6 +83,13 @@
 - 分离字段：`frameworkToken` 与 `authCode`/`code`，微信额外支持 `wx_code`。
 - 当前 Go 请求结构不包含 Yunzai 旧客户端使用的 `authurl` 字段，因此 AstrBot 不使用该旧字段。
 
+### 网页数据授权
+
+- 创建请求：`POST /api/v1/authorization/requests`，发送 `client_id`、`client_name`、`client_type=bot`、`platform_id` 及三个权威授权范围。
+- 用户打开后端返回的 `auth_url`，在 Web 端选择已有绑定并批准；插件轮询 `GET /api/v1/authorization/requests/{request_id}/status`。
+- `used` 或携带 `framework_token` 的 `approved` 结果进入统一账号与角色绑定收尾；`pending` 继续等待，`rejected`、`expired` 和缺失凭证均明确终止。
+- 不再依赖 Yunzai 写死的 `https://df.shallow.ink/oauth-login`，也不要求用户在聊天中复制或发送 frameworkToken。
+
 ### HTTP 客户端安全边界
 
 - 默认启用系统 TLS 证书校验，不再使用 `verify=False`。
@@ -119,7 +126,8 @@
 
 ## 当前验证汇总
 
-- 2026-08-14 全量脱敏单元测试 `132/132` 通过。
+- 2026-08-14 全量脱敏单元测试 `136/136` 通过。
 - 登录专项覆盖二维码有效期的未来、已过期、缺失、非法值，以及 Unix 秒、Unix 毫秒和 ISO 时间格式。
 - 扫码、Cookie、OAuth 的收尾提示覆盖后端账号绑定成功/失败与角色绑定成功/失败组合；后端未确认时只说明本地暂存，不再误报完整绑定成功。
+- 网页授权覆盖权威请求体、相对授权链接、批准领取、拒绝、过期、重复领取缺失凭证及连续状态查询失败。
 - 使用 AstrBot v4.17.6 真实源码重新导入插件：82 个处理器均为 `CommandFilter`，`RegexFilter` 和无过滤器处理器均为 0。

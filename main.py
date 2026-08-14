@@ -1033,7 +1033,8 @@ class DeltaForcePlugin(Star):
                 yield r
             return
         if re.fullmatch(r"(网页|web|网站)(登陆|登录)", body):
-            yield event.plain_result("三角洲网页授权登录：https://df.shallow.ink/oauth-login\n登录后复制 frameworkToken，再发送 绑定 <token>。")
+            async for r in self._web_login(event):
+                yield r
             return
         if m := re.fullmatch(r"角色绑定\s*([a-zA-Z0-9-]+)?", body):
             async for r in self._bind_character(event, m.group(1) or ""):
@@ -1651,6 +1652,102 @@ class DeltaForcePlugin(Star):
         self._oauth_sessions.pop(session_key, None)
         message = await self._finish_login(event, str(final_token), pf, "OAuth 登录")
         yield event.plain_result(message)
+
+    async def _web_login(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        client_id = self._client_id(event)
+        res = await self.client.create_authorization_request(
+            client_id,
+            "AstrBot 三角洲行动",
+            self._user_identifier(event),
+        )
+        if not self._ok(res):
+            yield event.plain_result(f"创建网页登录授权请求失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if not isinstance(data, dict):
+            yield event.plain_result("网页登录授权接口返回格式异常，请稍后重试。")
+            return
+        request_id = str(data.get("request_id") or data.get("requestId") or "").strip()
+        auth_url = self.client.resolve_url(data.get("auth_url") or data.get("authUrl") or "")
+        if not re.fullmatch(r"req_[A-Za-z0-9]+", request_id) or not auth_url.startswith(
+            ("http://", "https://")
+        ):
+            yield event.plain_result("网页登录授权接口未返回有效的请求标识或授权链接。")
+            return
+
+        configured_timeout = max(
+            1, int(self.config.get("login_poll_timeout", 180) or 180)
+        )
+        expiry = data.get("expires_at") or data.get("expiresAt") or data.get("expire")
+        remaining_seconds = self._remaining_login_seconds(expiry, configured_timeout)
+        if self._expiry_millis(expiry) and remaining_seconds <= 0:
+            yield event.plain_result("网页登录授权请求生成后已过期，请重新发起。")
+            return
+        wait_seconds = min(configured_timeout, remaining_seconds)
+        yield event.plain_result(
+            "请在浏览器打开以下链接，登录三角洲 API 平台后选择账号并批准授权：\n"
+            f"{auth_url}\n\n"
+            f"插件将在约 {wait_seconds} 秒内自动等待结果，无需复制 frameworkToken。"
+        )
+
+        interval = max(1, int(self.config.get("login_poll_interval", 5) or 5))
+        end_at = asyncio.get_running_loop().time() + wait_seconds
+        consecutive_errors = 0
+        while asyncio.get_running_loop().time() < end_at:
+            await asyncio.sleep(interval)
+            status_res = await self.client.authorization_request_status(request_id)
+            if not self._ok(status_res):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    yield event.plain_result(
+                        f"查询网页登录授权状态失败：{self._message_of(status_res)}"
+                    )
+                    return
+                continue
+            consecutive_errors = 0
+            status_data = self._data(status_res, {}) or {}
+            if not isinstance(status_data, dict):
+                yield event.plain_result("网页登录授权状态返回格式异常，请重新发起。")
+                return
+            status = str(status_data.get("status") or "").strip().lower()
+            final_token = str(
+                status_data.get("framework_token")
+                or status_data.get("frameworkToken")
+                or ""
+            ).strip()
+            if status in {"approved", "used"} and final_token:
+                binding_info = status_data.get("binding_info") or status_data.get(
+                    "bindingInfo"
+                )
+                login_type = (
+                    str(binding_info.get("token_type") or binding_info.get("tokenType") or "")
+                    if isinstance(binding_info, dict)
+                    else ""
+                ).lower()
+                message = await self._finish_login(
+                    event,
+                    final_token,
+                    login_type,
+                    "网页登录",
+                )
+                yield event.plain_result(message)
+                return
+            if status == "pending" or status == "approved":
+                continue
+            if status == "rejected":
+                yield event.plain_result("你已拒绝本次网页登录授权，未保存任何凭证。")
+                return
+            if status == "expired":
+                yield event.plain_result("网页登录授权请求已过期，请重新发起。")
+                return
+            if status == "used":
+                yield event.plain_result(
+                    "网页登录授权结果已被领取，但接口未返回凭证，请重新发起授权。"
+                )
+                return
+            yield event.plain_result(f"网页登录授权状态异常：{status or '未知状态'}。")
+            return
+        yield event.plain_result("网页登录等待超时，请重新发起授权。")
 
     async def _save_binding(
         self,

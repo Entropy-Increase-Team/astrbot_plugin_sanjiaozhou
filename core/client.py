@@ -1,6 +1,6 @@
 import json
 from typing import Any, Dict, Optional
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import httpx
 
@@ -289,6 +289,29 @@ class DeltaForceClient:
 
     async def oauth_status(self, platform: str, framework_token: str):
         return await self.get(f"/api/v1/login/{platform}/oauth/status", framework_token=framework_token)
+
+    async def create_authorization_request(
+        self,
+        client_id: str,
+        client_name: str,
+        platform_id: str,
+    ):
+        return await self.post(
+            "/api/v1/authorization/requests",
+            json_data={
+                "client_id": client_id,
+                "client_name": client_name,
+                "client_type": "bot",
+                "platform_id": platform_id,
+                "scopes": ["user_info", "binding_info", "game_data"],
+            },
+        )
+
+    async def authorization_request_status(self, request_id: str):
+        safe_request_id = quote(str(request_id or "").strip(), safe="")
+        return await self.get(
+            f"/api/v1/authorization/requests/{safe_request_id}/status"
+        )
 
     async def bind_character(self, framework_token: str):
         return await self.get("/api/v1/df/person/bind", params={"method": "bind"}, framework_token=framework_token)

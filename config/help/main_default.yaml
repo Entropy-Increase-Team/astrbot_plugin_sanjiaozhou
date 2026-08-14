@@ -91,7 +91,7 @@ helpList:
           desc: "授权后提交浏览器最终停留的完整回调URL"
         - icon: 52
           title: "网页登陆"
-          desc: "通过网页方式登录"
+          desc: "在授权页选择已有账号，批准后自动绑定"
         - icon: 80
           title: "ck登陆 [cookies]"
           desc: "通过cookie登录（ck登陆查看帮助）"

@@ -4,7 +4,7 @@
 
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
-- 支持 QQ/微信扫码登录、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
+- 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
 - 使用插件内 Playwright 渲染 HTML 模板，帮助菜单和数据面板以图片形式返回。
 
 > [!TIP]
@@ -41,8 +41,8 @@ playwright install chromium
 - `enable_image_render`: 开启后使用 Playwright 渲染 HTML 模板；关闭后使用文本摘要兜底。
 - `request_timeout`: API 请求超时时间，单位秒。
 - `render_timeout`: Playwright 渲染超时时间，单位毫秒。
-- `login_poll_timeout`: 扫码登录轮询超时时间，单位秒。
-- `login_poll_interval`: 扫码登录轮询间隔，单位秒。
+- `login_poll_timeout`: 扫码登录和网页登录授权的轮询超时时间，单位秒。
+- `login_poll_interval`: 扫码登录和网页登录授权的轮询间隔，单位秒。
 - `tts_max_length`: TTS 文本最大长度。
 - `tts_poll_timeout`: TTS 合成任务最长等待时间，默认 450 秒。
 - `tts_poll_interval`: TTS 合成任务状态轮询间隔，默认 5 秒。
@@ -62,6 +62,7 @@ playwright install chromium
 
 - [x] QQ/微信扫码登录
 - [x] QQ/微信授权登录
+- [x] 网页数据授权登录（授权页选择已有账号，批准后自动绑定）
 - [x] QQ/微信 Token 刷新
 - [x] WeGame 登录入口
 - [x] CK 登录入口
@@ -129,6 +130,7 @@ playwright install chromium
 | `娱乐帮助` | 查看娱乐功能菜单 | `娱乐帮助` |
 | `计算帮助` | 查看计算器菜单 | `计算帮助` |
 | `登录` | QQ/微信扫码登录 | `登录` |
+| `网页登录` | 打开网页授权页，选择已有账号并在批准后自动绑定 | `网页登录` |
 | `绑定 <token>` | 手动绑定 frameworkToken | `绑定 eyJ...` |
 | `账号` | 查看已绑定账号 | `账号` |
 | `账号切换 <序号>` | 切换当前账号并同步后端主绑定 | `账号切换 2` |

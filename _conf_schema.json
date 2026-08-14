@@ -39,12 +39,12 @@
     "default": 30000
   },
   "login_poll_timeout": {
-    "description": "扫码登录轮询超时时间，单位秒。",
+    "description": "扫码登录和网页登录授权的轮询超时时间，单位秒。",
     "type": "int",
     "default": 180
   },
   "login_poll_interval": {
-    "description": "扫码登录轮询间隔，单位秒。",
+    "description": "扫码登录和网页登录授权的轮询间隔，单位秒。",
     "type": "int",
     "default": 5
   },

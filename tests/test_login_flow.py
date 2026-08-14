@@ -210,6 +210,44 @@ class _OAuthClient:
         return {"code": 0, "data": {"success": True}}
 
 
+class _WebAuthorizationClient:
+    def __init__(self, final_status=None):
+        self.created_payload = None
+        self.statuses = [
+            {"code": 0, "data": {"status": "pending"}},
+            final_status
+            or {
+                "code": 0,
+                "data": {
+                    "status": "used",
+                    "framework_token": "mock-web-token",
+                    "binding_info": {"token_type": "qq"},
+                },
+            },
+        ]
+
+    async def create_authorization_request(self, client_id, client_name, platform_id):
+        self.created_payload = (client_id, client_name, platform_id)
+        return {
+            "code": 0,
+            "data": {
+                "request_id": "req_0123456789abcdef",
+                "auth_url": "/authorize?request_id=req_0123456789abcdef",
+                "expires_at": "2099-01-01T00:00:00Z",
+            },
+        }
+
+    async def authorization_request_status(self, _request_id):
+        return self.statuses.pop(0)
+
+    @staticmethod
+    def resolve_url(value):
+        return f"https://api.example.invalid{value}"
+
+    async def bind_character(self, _token):
+        return {"code": 0, "data": {"success": True}}
+
+
 class _Response:
     status_code = 503
     reason_phrase = "Service Unavailable"
@@ -495,6 +533,87 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("state 与当前会话不匹配", results[0]["text"])
         self.assertIsNone(client.submit_payload)
+
+    async def test_web_login_creates_authorization_and_binds_approved_account(self):
+        client = _WebAuthorizationClient()
+        plugin = self._plugin(client)
+        with patch("astrbot_plugin_sanjiaozhou.main.asyncio.sleep", new=AsyncMock()):
+            results = await _collect(plugin._web_login(_Event()))
+
+        self.assertEqual(
+            client.created_payload,
+            ("mock-bot", "AstrBot 三角洲行动", "qq_mock-user"),
+        )
+        self.assertIn(
+            "https://api.example.invalid/authorize?request_id=req_0123456789abcdef",
+            results[0]["text"],
+        )
+        self.assertNotIn("mock-web-token", results[0]["text"])
+        self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
+        plugin._save_binding.assert_awaited_once()
+        self.assertEqual(
+            plugin._save_binding.await_args.args[1:], ("mock-web-token", "qq")
+        )
+
+    async def test_web_login_handles_rejected_expired_and_consumed_results(self):
+        cases = [
+            ({"code": 0, "data": {"status": "rejected"}}, "已拒绝"),
+            ({"code": 0, "data": {"status": "expired"}}, "已过期"),
+            ({"code": 0, "data": {"status": "used"}}, "未返回凭证"),
+        ]
+        for final_status, expected in cases:
+            with self.subTest(status=final_status["data"]["status"]):
+                plugin = self._plugin(_WebAuthorizationClient(final_status))
+                with patch(
+                    "astrbot_plugin_sanjiaozhou.main.asyncio.sleep", new=AsyncMock()
+                ):
+                    results = await _collect(plugin._web_login(_Event()))
+                self.assertIn(expected, results[-1]["text"])
+                plugin._save_binding.assert_not_awaited()
+
+    async def test_web_login_handles_create_and_status_errors(self):
+        client = _WebAuthorizationClient()
+        client.create_authorization_request = AsyncMock(
+            return_value={"code": 403, "message": "授权功能不可用"}
+        )
+        plugin = self._plugin(client)
+        create_failed = await _collect(plugin._web_login(_Event()))
+        self.assertIn("授权功能不可用", create_failed[0]["text"])
+
+        client = _WebAuthorizationClient()
+        client.statuses = [
+            {"code": 503, "message": "状态服务异常"},
+            {"code": 503, "message": "状态服务异常"},
+            {"code": 503, "message": "状态服务异常"},
+        ]
+        plugin = self._plugin(client)
+        with patch("astrbot_plugin_sanjiaozhou.main.asyncio.sleep", new=AsyncMock()):
+            status_failed = await _collect(plugin._web_login(_Event()))
+        self.assertIn("状态服务异常", status_failed[-1]["text"])
+
+    async def test_client_uses_authoritative_web_authorization_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.post = AsyncMock(return_value={"code": 0})
+        client.get = AsyncMock(return_value={"code": 0})
+
+        await client.create_authorization_request(
+            "mock-bot", "AstrBot 三角洲行动", "qq_mock-user"
+        )
+        await client.authorization_request_status("req_mock/path")
+
+        client.post.assert_awaited_once_with(
+            "/api/v1/authorization/requests",
+            json_data={
+                "client_id": "mock-bot",
+                "client_name": "AstrBot 三角洲行动",
+                "client_type": "bot",
+                "platform_id": "qq_mock-user",
+                "scopes": ["user_info", "binding_info", "game_data"],
+            },
+        )
+        client.get.assert_awaited_once_with(
+            "/api/v1/authorization/requests/req_mock%2Fpath/status"
+        )
 
     async def test_login_completion_reports_remote_and_role_binding_failures(self):
         client = SimpleNamespace(
