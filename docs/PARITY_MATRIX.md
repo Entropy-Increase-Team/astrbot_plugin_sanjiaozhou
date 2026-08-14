@@ -17,6 +17,8 @@
 
 2026-08-14 将插件 82 个 HTTP 路径与最新版 Go 路由逐项对照，并对 19 组无需账号授权的查询执行真实字段契约验证；公共元数据、物品、材料价格、音频、TTS、每日密码、文章、AI 预设和两套改枪方案接口均返回成功且必需字段齐全。
 
+2026-08-14 使用 AstrBot v4.17.6 真实依赖完成隔离子进程注册验证：插件类和元数据正常加载，注册器包含 82 个消息 handler、82 个 `CommandFilter`、0 个 `RegexFilter`；274 个命令与别名无重复、无空格名称，每条带参数消息只命中一个 handler。
+
 | 分类 | Yunzai 源文件 | Yunzai fnc | 原命令/别名摘要 | AstrBot 注册命令 | AstrBot 实现函数 | API 方法与路径 | 渲染模板 | 文本兜底 | 成功测试 | 空数据测试 | 错误测试 | 状态 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 账户 | `apps/account/Account.js` | `showAccounts`、`bindToken`、`unbindToken`、`deleteToken`、`switchAccount`、`refreshWechat`、`refreshQq` | 账号、绑定、解绑、删除、切换、刷新 | 账号、绑定、解绑、账号切换、微信刷新及别名 | `_account_list`、`_bind_token`、`_delete_account`、`_switch_account`、`_refresh_account` | `GET/POST/DELETE /api/v1/user/bindings` 及主绑定子路由；`GET /api/v1/login/{qq,wechat}/refresh`；`DELETE /api/v1/login/{qq,wechat}/token` | 无 | 有 | 绑定、切换、解绑、登录删除和刷新 fixture 通过 | 空账号列表 fixture 通过 | 远端失败不改本地、类型不匹配 fixture 通过 | 已验证 |
