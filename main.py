@@ -157,6 +157,10 @@ DELTA_COMMAND_SPECS = [
     "https://github.com/Entropy-Increase-Team/astrbot_plugin_sanjiaozhou",
 )
 class DeltaForcePlugin(Star):
+    _BACKGROUND_REGISTRY_KEY = "_astrbot_sanjiaozhou_background_tasks"
+    _TASK_STOP_TIMEOUT = 5.0
+    _RESOURCE_CLOSE_TIMEOUT = 10.0
+
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
@@ -191,33 +195,101 @@ class DeltaForcePlugin(Star):
         self._music_lists: Dict[str, Dict[str, Any]] = {}
         self._music_last: Dict[str, Dict[str, Any]] = {}
         self._tts_last: Dict[str, Dict[str, Any]] = {}
+        self._initialized = False
+        self._terminated = False
+
+    def _background_task_registry(self) -> Dict[str, asyncio.Task]:
+        loop = asyncio.get_running_loop()
+        registry = getattr(loop, self._BACKGROUND_REGISTRY_KEY, None)
+        if not isinstance(registry, dict):
+            registry = {}
+            setattr(loop, self._BACKGROUND_REGISTRY_KEY, registry)
+        return registry
+
+    async def _cancel_background_tasks(self, tasks: Iterable[asyncio.Task]) -> None:
+        unique_tasks = list(dict.fromkeys(task for task in tasks if isinstance(task, asyncio.Task)))
+        if not unique_tasks:
+            return
+        for task in unique_tasks:
+            if not task.done():
+                task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*unique_tasks, return_exceptions=True),
+                timeout=self._TASK_STOP_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("[三角洲生命周期] 后台任务未在限定时间内结束。")
+
+    async def _cancel_stale_background_tasks(self) -> None:
+        registry = self._background_task_registry()
+        await self._cancel_background_tasks(registry.values())
+        registry.clear()
+
+    def _register_background_task(self, name: str, coroutine: Any) -> asyncio.Task:
+        task = asyncio.create_task(
+            coroutine,
+            name=f"sanjiaozhou:{name}:{id(self):x}",
+        )
+        self._background_task_registry()[name] = task
+        return task
+
+    def _unregister_background_task(self, name: str, task: Optional[asyncio.Task]) -> None:
+        registry = self._background_task_registry()
+        if registry.get(name) is task:
+            registry.pop(name, None)
+
+    async def _close_resource(self, name: str, closer: Any) -> None:
+        try:
+            await asyncio.wait_for(closer(), timeout=self._RESOURCE_CLOSE_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning(f"[三角洲生命周期] {name} 关闭超时。")
+        except Exception as exc:
+            logger.warning(f"[三角洲生命周期] {name} 关闭失败：{type(exc).__name__}")
 
     async def initialize(self):
-        self._static_task = asyncio.create_task(self.data_mgr.refresh_static(self.client))
+        if getattr(self, "_terminated", False):
+            logger.warning("[三角洲生命周期] 已终止的插件实例不能再次初始化。")
+            return
+        await self._cancel_stale_background_tasks()
         self._ws_stop.clear()
         self._ws_requested = bool(self.subscriptions.enabled_targets())
-        self._ws_task = asyncio.create_task(self._ws_supervisor())
-        self._push_task = asyncio.create_task(self._scheduled_push_loop())
+        self._static_task = self._register_background_task(
+            "static_refresh", self.data_mgr.refresh_static(self.client)
+        )
+        self._ws_task = self._register_background_task(
+            "websocket", self._ws_supervisor()
+        )
+        self._push_task = self._register_background_task(
+            "scheduled_push", self._scheduled_push_loop()
+        )
+        self._initialized = True
 
     async def terminate(self):
-        if self._static_task and not self._static_task.done():
-            self._static_task.cancel()
+        if getattr(self, "_terminated", False):
+            return
+        self._terminated = True
         self._ws_stop.set()
         self._ws_wakeup.set()
-        if self._ws_connection is not None:
-            try:
-                await self._ws_connection.close()
-            except Exception:
-                pass
-        if self._ws_task and not self._ws_task.done():
-            self._ws_task.cancel()
-        if self._push_task and not self._push_task.done():
-            self._push_task.cancel()
-        tasks = [task for task in (self._static_task, self._ws_task, self._push_task) if task and not task.done()]
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-        await self.client.close()
-        await self.renderer.close()
+        task_items = (
+            ("static_refresh", self._static_task),
+            ("websocket", self._ws_task),
+            ("scheduled_push", self._push_task),
+        )
+        await self._cancel_background_tasks(task for _name, task in task_items if task)
+        for name, task in task_items:
+            self._unregister_background_task(name, task)
+        self._static_task = None
+        self._ws_task = None
+        self._push_task = None
+
+        connection = self._ws_connection
+        self._ws_connection = None
+        if connection is not None:
+            await self._close_resource("WebSocket", connection.close)
+        await self._close_resource("HTTP 客户端", self.client.close)
+        await self._close_resource("渲染器", self.renderer.close)
+        self._initialized = False
 
     async def _handle_astr_command(self, event: AstrMessageEvent):
         msg = self._message(event)

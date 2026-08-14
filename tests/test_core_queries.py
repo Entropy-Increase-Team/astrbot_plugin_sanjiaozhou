@@ -479,9 +479,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.6", "0.4.5"],
+            ["0.4.7", "0.4.6"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "修复")
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()
@@ -1802,14 +1802,109 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         plugin._ws_connection = SimpleNamespace(close=AsyncMock())
         plugin.client = SimpleNamespace(close=AsyncMock())
         plugin.renderer = SimpleNamespace(close=AsyncMock())
+        plugin._terminated = False
+        tasks = (plugin._static_task, plugin._ws_task, plugin._push_task)
+        connection = plugin._ws_connection
 
         await plugin.terminate()
 
         self.assertTrue(plugin._ws_stop.is_set())
-        self.assertTrue(all(task.done() for task in (plugin._static_task, plugin._ws_task, plugin._push_task)))
-        plugin._ws_connection.close.assert_awaited_once()
+        self.assertTrue(all(task.done() for task in tasks))
+        self.assertIsNone(plugin._static_task)
+        self.assertIsNone(plugin._ws_task)
+        self.assertIsNone(plugin._push_task)
+        self.assertIsNone(plugin._ws_connection)
+        connection.close.assert_awaited_once()
         plugin.client.close.assert_awaited_once()
         plugin.renderer.close.assert_awaited_once()
+
+    async def test_initialize_replaces_stale_and_duplicate_background_tasks(self):
+        plugin = self._plugin(SimpleNamespace(close=AsyncMock()))
+
+        async def pending():
+            await asyncio.Event().wait()
+
+        plugin.data_mgr = SimpleNamespace(refresh_static=lambda _client: pending())
+        plugin.subscriptions = SimpleNamespace(
+            enabled_targets=Mock(return_value=["aiocqhttp:GroupMessage:123"])
+        )
+        plugin.renderer = SimpleNamespace(close=AsyncMock())
+        plugin._ws_supervisor = lambda: pending()
+        plugin._scheduled_push_loop = lambda: pending()
+        plugin._static_task = None
+        plugin._ws_task = None
+        plugin._push_task = None
+        plugin._ws_stop = asyncio.Event()
+        plugin._ws_wakeup = asyncio.Event()
+        plugin._ws_connection = None
+        plugin._initialized = False
+        plugin._terminated = False
+
+        stale_task = asyncio.create_task(pending())
+        await asyncio.sleep(0)
+        setattr(
+            asyncio.get_running_loop(),
+            plugin._BACKGROUND_REGISTRY_KEY,
+            {"stale": stale_task},
+        )
+
+        await plugin.initialize()
+
+        first_tasks = (plugin._static_task, plugin._ws_task, plugin._push_task)
+        registry = plugin._background_task_registry()
+        self.assertTrue(stale_task.done())
+        self.assertTrue(plugin._initialized)
+        self.assertTrue(plugin._ws_requested)
+        self.assertEqual(
+            set(registry), {"static_refresh", "websocket", "scheduled_push"}
+        )
+        self.assertTrue(
+            all(task.get_name().startswith("sanjiaozhou:") for task in first_tasks)
+        )
+
+        await plugin.initialize()
+
+        second_tasks = (plugin._static_task, plugin._ws_task, plugin._push_task)
+        self.assertTrue(all(task.done() for task in first_tasks))
+        self.assertTrue(
+            all(first is not second for first, second in zip(first_tasks, second_tasks))
+        )
+
+        await plugin.terminate()
+        await plugin.initialize()
+
+        self.assertFalse(plugin._initialized)
+        self.assertFalse(plugin._background_task_registry())
+        plugin.client.close.assert_awaited_once()
+        plugin.renderer.close.assert_awaited_once()
+
+    async def test_terminate_is_idempotent_and_isolates_close_failures(self):
+        plugin = self._plugin()
+
+        async def pending():
+            await asyncio.Event().wait()
+
+        ws_close = AsyncMock(side_effect=pending)
+        client_close = AsyncMock(side_effect=RuntimeError("HTTP 关闭失败"))
+        renderer_close = AsyncMock()
+        plugin._static_task = asyncio.create_task(pending())
+        plugin._ws_task = asyncio.create_task(pending())
+        plugin._push_task = asyncio.create_task(pending())
+        plugin._ws_stop = asyncio.Event()
+        plugin._ws_wakeup = asyncio.Event()
+        plugin._ws_connection = SimpleNamespace(close=ws_close)
+        plugin.client = SimpleNamespace(close=client_close)
+        plugin.renderer = SimpleNamespace(close=renderer_close)
+        plugin._RESOURCE_CLOSE_TIMEOUT = 0.01
+        plugin._terminated = False
+
+        await plugin.terminate()
+        await plugin.terminate()
+
+        self.assertTrue(plugin._terminated)
+        ws_close.assert_awaited_once()
+        client_close.assert_awaited_once()
+        renderer_close.assert_awaited_once()
 
     async def test_user_info_success_missing_role_and_error_branches(self):
         success_payload = {
