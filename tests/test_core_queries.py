@@ -339,7 +339,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.2", "0.4.1"],
+            ["0.4.3", "0.4.2"],
         )
         self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
@@ -917,11 +917,28 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_record_event_push_is_deduplicated(self):
         plugin = self._plugin()
+        plugin.config["enable_image_render"] = True
         plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-record-push.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+        plugin.bindings = SimpleNamespace(
+            get_user_bindings=AsyncMock(
+                return_value=[
+                    {
+                        "binding_id": "fixture-binding",
+                        "nickname": "%E6%B5%8B%E8%AF%95%E7%8E%A9%E5%AE%B6",
+                    }
+                ]
+            )
+        )
         plugin.subscriptions = SimpleNamespace(
             all=lambda: [
                 {
                     "subscription_id": "fixture-sub",
+                    "user_id": "fixture-user",
+                    "binding_id": "fixture-binding",
                     "targets": {"aiocqhttp:GroupMessage:123": {"group": True}},
                 }
             ]
@@ -932,16 +949,150 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "record_id": "fixture-record",
             "record_type": "sol",
             "event_time": "2026-08-14T12:00:00Z",
-            "record": {"MapName": "零号大坝", "KillNum": 3, "Gainedprice": 100000},
+            "is_recent": True,
+            "record": {
+                "MapId": "100",
+                "ArmedForceId": "10",
+                "EscapeFailReason": 1,
+                "DurationS": 125,
+                "FinalPrice": 250000,
+                "flowCalGainedPrice": 100000,
+                "KillCount": 3,
+                "KillPlayerAICount": 2,
+                "KillAICount": 1,
+                "Rescue": 1,
+            },
         }
 
         await plugin._push_record_event(event_data)
         await plugin._push_record_event(event_data)
 
         plugin.context.send_message.assert_awaited_once()
+        plugin.renderer.render_html.assert_awaited_once()
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "Template/recordPush/recordPush.html")
+        self.assertEqual(render_call.args[1]["displayName"], "测试玩家")
+        self.assertEqual(render_call.args[1]["map"], "零号大坝-常规")
+        self.assertEqual(render_call.args[1]["operator"], "红狼")
+        self.assertEqual(render_call.args[1]["status"], "撤离成功")
+        self.assertEqual(render_call.args[1]["value"], "250,000")
+        self.assertEqual(render_call.args[1]["income"], "100,000")
+        self.assertIn("玩家 3", render_call.args[1]["killsHtml"])
+        self.assertIn("AI玩家 2", render_call.args[1]["killsHtml"])
+        self.assertIn("AI 1", render_call.args[1]["killsHtml"])
         chain = plugin.context.send_message.await_args.args[1]
         self.assertIn("零号大坝", chain.chain[0].text)
-        self.assertIn("收益：100000", chain.chain[0].text)
+        self.assertIn("净收益：100,000", chain.chain[0].text)
+        self.assertEqual(chain.chain[1].file, "file:///D:/fixture-record-push.png")
+
+    async def test_mp_record_event_push_renders_score_card(self):
+        plugin = self._plugin()
+        plugin.config["enable_image_render"] = True
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-record-push-mp.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+        plugin.subscriptions = SimpleNamespace(
+            all=lambda: [
+                {
+                    "subscription_id": "fixture-sub",
+                    "targets": {"aiocqhttp:GroupMessage:123": {"group": True}},
+                }
+            ]
+        )
+        plugin._seen_record_events = {}
+
+        await plugin._push_record_event(
+            {
+                "subscription_id": "fixture-sub",
+                "record_id": "fixture-mp-record",
+                "record_type": "mp",
+                "event_time": "2026-08-14T12:00:00Z",
+                "display_name": "全面玩家",
+                "record": {
+                    "MapId": "200",
+                    "ArmedForceId": "20",
+                    "MatchResult": 1,
+                    "gametime": 600,
+                    "KillNum": 12,
+                    "Death": 3,
+                    "Assist": 8,
+                    "TotalScore": 45678,
+                    "RescueTeammateCount": 2,
+                },
+            }
+        )
+
+        render_data = plugin.renderer.render_html.await_args.args[1]
+        self.assertEqual(render_data["status"], "胜利")
+        self.assertEqual(render_data["kda"], "12/3/8")
+        self.assertEqual(render_data["score"], "45,678")
+        self.assertEqual(render_data["rescue"], 2)
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertIn("K/D/A：12/3/8", chain.chain[0].text)
+        self.assertEqual(len(chain.chain), 2)
+
+    async def test_record_event_render_failure_falls_back_to_text(self):
+        plugin = self._plugin()
+        plugin.config["enable_image_render"] = True
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(side_effect=RuntimeError("fixture-render-error")),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+        plugin.subscriptions = SimpleNamespace(
+            all=lambda: [
+                {
+                    "subscription_id": "fixture-sub",
+                    "targets": {"aiocqhttp:GroupMessage:123": {"group": True}},
+                }
+            ]
+        )
+        plugin._seen_record_events = {}
+
+        await plugin._push_record_event(
+            {
+                "subscription_id": "fixture-sub",
+                "record_id": "fixture-render-error",
+                "record_type": "sol",
+                "record": {"MapName": "零号大坝", "EscapeFailReason": 2},
+            }
+        )
+
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertEqual(len(chain.chain), 1)
+        self.assertIn("被玩家击杀", chain.chain[0].text)
+
+    async def test_record_event_skips_renderer_when_images_are_disabled(self):
+        plugin = self._plugin()
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/should-not-render.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+        plugin.subscriptions = SimpleNamespace(
+            all=lambda: [
+                {
+                    "subscription_id": "fixture-sub",
+                    "targets": {"aiocqhttp:GroupMessage:123": {"group": True}},
+                }
+            ]
+        )
+        plugin._seen_record_events = {}
+
+        await plugin._push_record_event(
+            {
+                "subscription_id": "fixture-sub",
+                "record_id": "fixture-text-only",
+                "record_type": "mp",
+                "record": {"MapName": "烬区", "MatchResult": 2},
+            }
+        )
+
+        plugin.renderer.render_html.assert_not_awaited()
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertEqual(len(chain.chain), 1)
 
     def test_ws_uri_reuses_subscription_client_id(self):
         plugin = self._plugin()
@@ -1130,7 +1281,12 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_record_event_continues_after_one_target_send_fails(self):
         plugin = self._plugin()
+        plugin.config["enable_image_render"] = True
         plugin.context = SimpleNamespace(send_message=AsyncMock(side_effect=[RuntimeError("发送失败"), True]))
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-shared-record-push.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
         plugin.subscriptions = SimpleNamespace(
             all=lambda: [
                 {
@@ -1155,6 +1311,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(plugin.context.send_message.await_count, 2)
+        plugin.renderer.render_html.assert_awaited_once()
 
     def test_scheduled_run_keys_follow_configured_times(self):
         plugin = self._plugin()
@@ -2734,6 +2891,24 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "totalMaps": 0,
             },
             "Template/record/record.html": {"modeName": "烽火地带", "page": 1, "records": []},
+            "Template/recordPush/recordPush.html": {
+                "isRecent": True,
+                "displayName": "测试玩家",
+                "modeName": "烽火地带",
+                "time": "2026-08-14 12:00:00",
+                "map": "零号大坝-常规",
+                "operator": "红狼",
+                "mapBg": "imgs/map/烽火-零号大坝-常规.png",
+                "operatorImg": "imgs/operator/红狼.png",
+                "status": "撤离成功",
+                "statusClass": "success",
+                "duration": "2分5秒",
+                "value": "250,000",
+                "income": "100,000",
+                "incomeClass": "income-positive",
+                "killsHtml": '<span class="kill-item kill-player">玩家 3</span>',
+                "rescue": 1,
+            },
             "Template/flows/flows.html": {"typeName": "货币", "typeValue": 3, "page": 1, "moneyColumns": []},
             "Template/collection/collection.html": {"typeName": "所有藏品", "totalCount": 0, "qualityStats": [], "categories": []},
             "Template/placeInfo/placeInfo.html": {"places": []},
@@ -2821,6 +2996,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "imgs/redCollection/red_bg2.png",
             "imgs/redCollection/red_tit.webp",
             "imgs/others/logo.png",
+            "imgs/map/烽火-零号大坝-常规.png",
+            "imgs/map/全面-烬区.jpg",
+            "imgs/operator/红狼.png",
             "help/version-bg.jpg",
             "fonts/p-med.ttf",
             "fonts/p-bold.ttf",

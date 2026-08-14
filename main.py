@@ -771,30 +771,200 @@ class DeltaForcePlugin(Star):
             oldest = sorted(self._seen_record_events, key=self._seen_record_events.get)[:128]
             for key in oldest:
                 self._seen_record_events.pop(key, None)
+
+        subscriptions = [
+            item
+            for item in self.subscriptions.all()
+            if str(item.get("subscription_id") or "") == sub_id
+        ]
+        targets: List[str] = []
+        for item in subscriptions:
+            item_targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
+            for umo, flags in item_targets.items():
+                if isinstance(flags, dict) and (flags.get("group") or flags.get("private")):
+                    target = str(umo or "").strip()
+                    if target and target not in targets:
+                        targets.append(target)
+        if not targets:
+            return
+
         record = data.get("record") if isinstance(data.get("record"), dict) else {}
-        record_type = str(data.get("record_type") or "未知")
-        map_name = record.get("MapName") or record.get("mapName") or record.get("MapId") or "未知地图"
-        title = "烽火地带" if record_type == "sol" else "全面战场" if record_type == "mp" else record_type
-        lines = [f"【三角洲战绩推送｜{title}】", f"地图：{map_name}"]
-        for key, label in (("KillNum", "击杀"), ("killNum", "击杀"), ("Gainedprice", "收益"), ("gainedPrice", "收益"), ("Result", "结果"), ("dtEventTime", "时间")):
-            if key in record and record[key] not in (None, ""):
-                lines.append(f"{label}：{record[key]}")
-        lines.append(f"记录 ID：{data.get('record_id') or '未知'}")
         if MessageChain is None or Plain is None:
             logger.warning("[三角洲订阅] 当前 AstrBot 版本缺少 MessageChain，无法发送主动推送。")
             return
-        text = "\n".join(lines)
-        for item in self.subscriptions.all():
-            if str(item.get("subscription_id") or "") != sub_id:
-                continue
-            targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
-            for umo, flags in targets.items():
-                if not isinstance(flags, dict) or not (flags.get("group") or flags.get("private")):
-                    continue
-                try:
-                    await self.context.send_message(umo, MessageChain([Plain(text)]))
-                except Exception as exc:
-                    logger.warning(f"[三角洲订阅] 推送到 {umo} 失败：{type(exc).__name__}")
+
+        display_name = await self._record_push_display_name(subscriptions[0], data, record)
+        template_data, text = self._record_push_data(data, record, display_name)
+        image_path = None
+        image_type = getattr(Comp, "Image", None) if Comp is not None else None
+        if self.config.get("enable_image_render", True) and image_type is not None:
+            try:
+                image_path = await self.renderer.render_html(
+                    "Template/recordPush/recordPush.html",
+                    template_data,
+                    {"viewport_width": 600, "viewport_height": 500},
+                )
+            except Exception as exc:
+                logger.warning(f"[三角洲订阅] 战绩卡片渲染失败：{type(exc).__name__}")
+
+        for umo in targets:
+            try:
+                components = [Plain(text)]
+                if image_path:
+                    try:
+                        components.append(image_type.fromFileSystem(str(image_path)))
+                    except Exception as exc:
+                        image_path = None
+                        logger.warning(f"[三角洲订阅] 创建战绩图片消息失败：{type(exc).__name__}")
+                await self.context.send_message(umo, MessageChain(components))
+            except Exception as exc:
+                logger.warning(f"[三角洲订阅] 推送到 {umo} 失败：{type(exc).__name__}")
+
+    async def _record_push_display_name(
+        self,
+        subscription: Dict[str, Any],
+        data: Dict[str, Any],
+        record: Dict[str, Any],
+    ) -> str:
+        manager = getattr(self, "bindings", None)
+        if manager is not None and hasattr(manager, "get_user_bindings"):
+            try:
+                bindings = await manager.get_user_bindings(subscription.get("user_id"))
+                binding_id = str(subscription.get("binding_id") or data.get("binding_id") or "")
+                if binding_id:
+                    binding = next(
+                        (item for item in bindings if str(item.get("binding_id") or "") == binding_id),
+                        {},
+                    )
+                else:
+                    binding = bindings[0] if bindings else {}
+                name = binding.get("nickname") or binding.get("delta_uid")
+                if name:
+                    return self.data_mgr.decode_text(name)
+            except Exception as exc:
+                logger.debug(f"[三角洲订阅] 读取本地角色名称失败：{type(exc).__name__}")
+
+        name = (
+            data.get("display_name")
+            or data.get("displayName")
+            or record.get("charac_name")
+            or record.get("nickname")
+            or "玩家"
+        )
+        return self.data_mgr.decode_text(name)
+
+    def _record_push_data(
+        self,
+        data: Dict[str, Any],
+        record: Dict[str, Any],
+        display_name: str,
+    ) -> Tuple[Dict[str, Any], str]:
+        mode = str(data.get("record_type") or "").lower()
+        mode_name = "烽火地带" if mode == "sol" else "全面战场" if mode == "mp" else "未知模式"
+        map_name = self.data_mgr.decode_text(record.get("MapName") or record.get("mapName") or "")
+        if not map_name:
+            map_id = record.get("MapId") or record.get("MapID") or record.get("mapId") or record.get("mapID")
+            map_name = self.data_mgr.get_map_name(map_id)
+        operator_name = self.data_mgr.get_operator_name(
+            record.get("ArmedForceId")
+            or record.get("ArmedForceID")
+            or record.get("DeployArmedForceType")
+            or record.get("armedForceId")
+        )
+        time_text = str(record.get("dtEventTime") or record.get("eventTime") or data.get("event_time") or "-")
+        template_data: Dict[str, Any] = {
+            "isRecent": bool(data.get("is_recent") or data.get("isRecent")),
+            "displayName": display_name or "玩家",
+            "modeName": mode_name,
+            "time": time_text,
+            "map": map_name or "未知地图",
+            "operator": operator_name or "未知干员",
+            "mapBg": self.data_mgr.get_map_image_path(map_name, mode) or "",
+            "operatorImg": self.data_mgr.get_operator_image_path(operator_name) or "",
+        }
+
+        title_prefix = "最近战绩｜" if template_data["isRecent"] else ""
+        lines = [
+            f"【三角洲战绩推送｜{title_prefix}{mode_name}】",
+            f"玩家：{template_data['displayName']}",
+            f"地图：{template_data['map']}",
+            f"干员：{template_data['operator']}",
+            f"时间：{time_text}",
+        ]
+        if mode == "sol":
+            reason = str(record.get("EscapeFailReason") or "")
+            income_raw = record.get("flowCalGainedPrice")
+            if income_raw in (None, ""):
+                income_raw = record.get("Gainedprice")
+            if income_raw in (None, ""):
+                income_raw = record.get("gainedPrice")
+            has_income = income_raw not in (None, "")
+            income = self.data_mgr.fmt_num(income_raw, "未知")
+            kill_player = record.get("KillCount")
+            if kill_player is None:
+                kill_player = record.get("KillNum")
+            kill_player = kill_player or 0
+            kill_player_ai = record.get("KillPlayerAICount") or 0
+            kill_ai = record.get("KillAICount") or 0
+            template_data.update(
+                {
+                    "status": ESCAPE_REASONS.get(reason, "撤离失败"),
+                    "statusClass": "success" if reason == "1" else "exit" if reason == "3" else "fail",
+                    "duration": self.data_mgr.fmt_duration(record.get("DurationS") or 0),
+                    "value": self.data_mgr.fmt_num(record.get("FinalPrice") or 0),
+                    "income": income,
+                    "incomeClass": (
+                        "income-positive" if self._number(income_raw) >= 0 else "income-negative"
+                    ) if has_income else "",
+                    "killCount": kill_player,
+                    "killAI": kill_ai,
+                    "killPlayerAI": kill_player_ai,
+                    "killsHtml": (
+                        f'<span class="kill-item kill-player">玩家 {kill_player}</span>'
+                        '<span class="kill-separator">/</span>'
+                        f'<span class="kill-item kill-ai-player">AI玩家 {kill_player_ai}</span>'
+                        '<span class="kill-separator">/</span>'
+                        f'<span class="kill-item kill-ai">AI {kill_ai}</span>'
+                    ),
+                }
+            )
+            if self._number(record.get("Rescue")) > 0:
+                template_data["rescue"] = record.get("Rescue")
+            lines.extend(
+                [
+                    f"状态：{template_data['status']}",
+                    f"存活：{template_data['duration']}",
+                    f"带出价值：{template_data['value']}",
+                    f"净收益：{template_data['income']}",
+                    f"击杀：玩家({kill_player}) / AI玩家({kill_player_ai}) / AI({kill_ai})",
+                ]
+            )
+        else:
+            result = str(record.get("MatchResult") or record.get("Result") or "")
+            template_data.update(
+                {
+                    "status": MP_RESULTS.get(result, "未知结果"),
+                    "statusClass": "success" if result == "1" else "exit" if result == "3" else "fail",
+                    "duration": self.data_mgr.fmt_duration(record.get("gametime") or record.get("DurationS") or 0),
+                    "kda": f"{record.get('KillNum') or 0}/{record.get('Death') or 0}/{record.get('Assist') or 0}",
+                    "score": self.data_mgr.fmt_num(record.get("TotalScore") or record.get("score") or 0),
+                }
+            )
+            if self._number(record.get("RescueTeammateCount")) > 0:
+                template_data["rescue"] = record.get("RescueTeammateCount")
+            lines.extend(
+                [
+                    f"结果：{template_data['status']}",
+                    f"K/D/A：{template_data['kda']}",
+                    f"得分：{template_data['score']}",
+                    f"时长：{template_data['duration']}",
+                ]
+            )
+
+        if template_data.get("rescue"):
+            lines.append(f"救援：{template_data['rescue']}次")
+        lines.append(f"记录 ID：{data.get('record_id') or '未知'}")
+        return template_data, "\n".join(lines)
 
     async def _toggle_scheduled_push(self, event: AstrMessageEvent, kind: str, enabled: bool) -> AsyncGenerator[Any, None]:
         """在当前群聊中开启或关闭一类定时推送。"""
