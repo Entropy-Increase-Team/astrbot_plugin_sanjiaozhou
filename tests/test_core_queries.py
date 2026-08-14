@@ -1249,6 +1249,23 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("第 2 页", results[0]["text"])
         self.assertIn("测试藏品（1001）", results[0]["text"])
 
+    async def test_object_list_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            object_list=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": [], "total": 0, "page": 1}},
+                    {"code": 500, "message": "物品列表服务异常", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._object_list(_Event(), ""))
+        error = await _collect(plugin._object_list(_Event(), "props collection 1"))
+
+        self.assertIn("未找到符合条件的物品", empty[0]["text"])
+        self.assertIn("物品列表服务异常", error[0]["text"])
+
     async def test_price_and_material_outputs_use_current_response_fields(self):
         client = SimpleNamespace(
             object_search=AsyncMock(return_value={"code": 0, "data": {"list": [{"objectID": 1001}]}}),
@@ -1322,6 +1339,191 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         client.ai_review.assert_awaited_once_with("fixture-token", "sol", "rp")
         self.assertIn("烽火地带 AI锐评", results[0]["text"])
         self.assertIn("这是一段测试锐评", results[0]["text"])
+
+    async def test_ai_review_handles_empty_content_and_error_responses(self):
+        client = SimpleNamespace(
+            ai_review=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"content": ""}},
+                    {"code": 500, "message": "AI 服务暂不可用", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._ai_review(_Event(), "sol"))
+        error = await _collect(plugin._ai_review(_Event(), "mp"))
+
+        self.assertIn("后端未返回正文", empty[0]["text"])
+        self.assertIn("AI 服务暂不可用", error[0]["text"])
+
+    async def test_daily_keyword_formats_success_unavailable_empty_and_error(self):
+        client = SimpleNamespace(
+            daily_keyword=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {"list": [{"mapName": "零号大坝", "secret": "1234"}]},
+                    },
+                    {
+                        "code": 0,
+                        "data": {"available": False, "message": "公共账号池暂无可用凭证"},
+                    },
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "密码服务异常", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        success = await _collect(plugin._daily_keyword(_Event()))
+        unavailable = await _collect(plugin._daily_keyword(_Event()))
+        empty = await _collect(plugin._daily_keyword(_Event()))
+        error = await _collect(plugin._daily_keyword(_Event()))
+
+        self.assertIn("【零号大坝】: 1234", success[0]["text"])
+        self.assertIn("公共账号池暂无可用凭证", unavailable[0]["text"])
+        self.assertIn("暂无可用密码数据", empty[0]["text"])
+        self.assertIn("密码服务异常", error[0]["text"])
+
+    async def test_articles_format_latest_fields_and_handle_empty_and_error(self):
+        client = SimpleNamespace(
+            article_list=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "articles": {
+                                "list": {
+                                    "notice": [
+                                        {
+                                            "threadID": 1001,
+                                            "title": "测试公告",
+                                            "author": "官方",
+                                            "createdAt": "2026-08-14 12:00:00",
+                                            "viewCount": 20,
+                                            "likedCount": 3,
+                                            "summary": "公告摘要",
+                                        }
+                                    ]
+                                }
+                            }
+                        },
+                    },
+                    {"code": 0, "data": {"articles": {"list": {}}}},
+                    {"code": 503, "message": "文章公共池不可用", "data": None},
+                ]
+            ),
+            article_detail=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "article": {
+                                "id": 1001,
+                                "title": "测试公告",
+                                "author": {"nickname": "官方作者"},
+                                "createdAt": "2026-08-14 12:00:00",
+                                "viewCount": 20,
+                                "likedCount": 3,
+                                "ext": {"gicpTags": ["公告", "活动"]},
+                                "content": {"text": "<p>第一段&nbsp;正文</p>"},
+                            }
+                        },
+                    },
+                    {"code": 0, "data": {}},
+                    {"code": 404, "message": "文章不存在", "data": None},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+
+        listing = await _collect(plugin._article_list(_Event()))
+        list_empty = await _collect(plugin._article_list(_Event()))
+        list_error = await _collect(plugin._article_list(_Event()))
+        detail = await _collect(plugin._article_detail(_Event(), "1001"))
+        detail_empty = await _collect(plugin._article_detail(_Event(), "1002"))
+        detail_error = await _collect(plugin._article_detail(_Event(), "1003"))
+
+        self.assertIn("测试公告", listing[0]["text"])
+        self.assertIn("ID: 1001", listing[0]["text"])
+        self.assertIn("暂无文章数据", list_empty[0]["text"])
+        self.assertIn("文章公共池不可用", list_error[0]["text"])
+        self.assertIn("官方作者", detail[0]["text"])
+        self.assertIn("标签: 公告, 活动", detail[0]["text"])
+        self.assertIn("第一段 正文", detail[0]["text"])
+        self.assertIn("文章不存在或已删除", detail_empty[0]["text"])
+        self.assertIn("文章不存在", detail_error[0]["text"])
+
+    async def test_client_article_detail_uses_only_authoritative_thread_id(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0})
+
+        await client.article_detail("1001")
+
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/tools/article/detail")
+        self.assertEqual(client.get.await_args.kwargs["params"], {"threadID": "1001"})
+
+    async def test_ai_presets_success_empty_and_error(self):
+        client = SimpleNamespace(
+            ai_presets=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "presets": [
+                                {"code": "rp", "name": "锐评", "isDefault": True}
+                            ]
+                        },
+                    },
+                    {"code": 0, "data": {"presets": []}},
+                    {"code": 500, "message": "预设读取失败", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        success = await _collect(plugin._ai_presets(_Event()))
+        empty = await _collect(plugin._ai_presets(_Event()))
+        error = await _collect(plugin._ai_presets(_Event()))
+
+        self.assertIn("锐评 - rp（默认）", success[0]["text"])
+        self.assertIn("暂无可用", empty[0]["text"])
+        self.assertIn("预设读取失败", error[0]["text"])
+
+    async def test_object_search_and_operator_queries_handle_empty_and_error(self):
+        client = SimpleNamespace(
+            object_search=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "物品服务异常", "data": None},
+                ]
+            ),
+            operators=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": []},
+                    {"code": 500, "message": "干员服务异常", "data": None},
+                    {"code": 0, "data": []},
+                    {"code": 500, "message": "干员详情异常", "data": None},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin.data_mgr.search_local_items = Mock(return_value=[])
+
+        search_empty = await _collect(plugin._object_search(_Event(), "不存在"))
+        search_error = await _collect(plugin._object_search(_Event(), "错误物品"))
+        operator_empty = await _collect(plugin._operator_list(_Event()))
+        operator_error = await _collect(plugin._operator_list(_Event()))
+        detail_empty = await _collect(plugin._operator_info(_Event(), "不存在"))
+        detail_error = await _collect(plugin._operator_info(_Event(), "乌鲁鲁"))
+
+        self.assertIn("未搜索到", search_empty[0]["text"])
+        self.assertIn("物品服务异常", search_error[0]["text"])
+        self.assertIn("未查询到任何干员", operator_empty[0]["text"])
+        self.assertIn("干员服务异常", operator_error[0]["text"])
+        self.assertIn("未找到干员", detail_empty[0]["text"])
+        self.assertIn("干员详情异常", detail_error[0]["text"])
 
     async def test_ban_history_formats_success_empty_and_expired_credentials(self):
         client = SimpleNamespace(

@@ -366,7 +366,7 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/tools/article/list")
 
     async def article_detail(self, thread_id: str):
-        return await self.get("/api/v1/df/tools/article/detail", params={"threadID": thread_id, "thread_id": thread_id})
+        return await self.get("/api/v1/df/tools/article/detail", params={"threadID": thread_id})
 
     async def health(self):
         return await self.get(

@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import os
 import re
+from html import unescape
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
@@ -3762,15 +3763,99 @@ class DeltaForcePlugin(Star):
 
     async def _daily_keyword(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.daily_keyword()
-        yield event.plain_result(self._summary_or_error("每日密码", res))
+        if not self._ok(res):
+            yield event.plain_result(f"每日密码查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if isinstance(data, dict) and data.get("available") is False:
+            yield event.plain_result(str(data.get("message") or "暂无可用的公共登录凭证。"))
+            return
+        rows = self._first_list(data, ("list", "items", "data"))
+        if not rows:
+            yield event.plain_result("今日暂无可用密码数据。")
+            return
+        lines = ["【每日密码】"]
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            map_name = item.get("mapName") or item.get("map_name") or item.get("name") or "未知地图"
+            secret = item.get("secret") or item.get("password") or "暂无"
+            lines.append(f"【{map_name}】: {secret}")
+        yield event.plain_result("\n".join(lines))
 
     async def _article_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.article_list()
-        yield event.plain_result(self._summary_or_error("文章列表", res))
+        if not self._ok(res):
+            yield event.plain_result(f"文章列表查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        articles = data.get("articles") if isinstance(data, dict) else data
+        category_list = articles.get("list") if isinstance(articles, dict) else articles
+        rows = []
+        if isinstance(category_list, list):
+            rows = [item for item in category_list if isinstance(item, dict)]
+        elif isinstance(category_list, dict):
+            for category in category_list.values():
+                if isinstance(category, list):
+                    rows.extend(item for item in category if isinstance(item, dict))
+        rows.sort(key=lambda item: str(item.get("createdAt") or item.get("created_at") or ""), reverse=True)
+        if not rows:
+            yield event.plain_result("暂无文章数据。")
+            return
+        lines = ["【三角洲行动 - 最新文章列表】"]
+        for index, article in enumerate(rows[:20], 1):
+            author = article.get("author") or "未知作者"
+            if isinstance(author, dict):
+                author = author.get("nickname") or author.get("name") or "未知作者"
+            thread_id = article.get("threadID") or article.get("threadId") or article.get("id") or "-"
+            summary = str(article.get("summary") or "").strip()
+            lines.extend(
+                [
+                    f"\n{index}. 【{article.get('title') or '无标题'}】",
+                    f"作者: {author} | ID: {thread_id}",
+                    f"发布时间: {article.get('createdAt') or article.get('created_at') or '未知'}",
+                    f"浏览: {article.get('viewCount') or 0} | 点赞: {article.get('likedCount') or 0}",
+                ]
+            )
+            if summary:
+                lines.append(summary[:100] + ("..." if len(summary) > 100 else ""))
+        lines.append("\n发送 文章详情 <ID> 查看具体内容。")
+        yield event.plain_result("\n".join(lines))
 
     async def _article_detail(self, event: AstrMessageEvent, thread_id: str) -> AsyncGenerator[Any, None]:
         res = await self.client.article_detail(thread_id)
-        yield event.plain_result(self._summary_or_error("文章详情", res))
+        if not self._ok(res):
+            yield event.plain_result(f"文章详情查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        article = data.get("article") if isinstance(data, dict) else None
+        if not isinstance(article, dict):
+            yield event.plain_result("文章不存在或已删除。")
+            return
+        author = article.get("author") or "未知作者"
+        if isinstance(author, dict):
+            author = author.get("nickname") or author.get("name") or "未知作者"
+        content = article.get("content") or ""
+        if isinstance(content, dict):
+            content = content.get("text") or content.get("content") or ""
+        text_content = re.sub(
+            r"\s+",
+            " ",
+            unescape(re.sub(r"<[^>]+>", "", str(content))),
+        ).strip()
+        tags = article.get("ext", {}).get("gicpTags", []) if isinstance(article.get("ext"), dict) else []
+        lines = [
+            f"【{article.get('title') or '无标题'}】",
+            f"作者: {author}",
+            f"发布时间: {article.get('createdAt') or article.get('created_at') or '未知'}",
+            f"浏览: {article.get('viewCount') or 0} | 点赞: {article.get('likedCount') or 0}",
+            f"ID: {article.get('id') or article.get('threadID') or thread_id}",
+        ]
+        if tags:
+            lines.append("标签: " + ", ".join(str(tag) for tag in tags))
+        if text_content:
+            lines.extend(["", text_content[:3500]])
+        yield event.plain_result("\n".join(lines))
 
     async def _ai_presets(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.ai_presets()
