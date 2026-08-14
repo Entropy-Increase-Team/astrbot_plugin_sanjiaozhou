@@ -339,7 +339,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.3", "0.4.2"],
+            ["0.4.4", "0.4.3"],
         )
         self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
@@ -2133,6 +2133,130 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂无记录", empty[0]["text"])
         self.assertIn("流水服务异常", error[0]["text"])
 
+    async def test_money_flows_renders_trend_before_record_list(self):
+        client = SimpleNamespace(
+            flows=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [
+                            {
+                                "iMoneyArr": [
+                                    {
+                                        "dtEventTime": "2026/08/12 12:00:00",
+                                        "AddOrReduce": "-100",
+                                        "leftMoney": "900",
+                                        "Reason": "%E8%B4%AD%E4%B9%B0",
+                                    },
+                                    {
+                                        "dtEventTime": "2026/08/12 10:00:00",
+                                        "AddOrReduce": "+100",
+                                        "leftMoney": "1,000",
+                                        "Reason": "%E5%A5%96%E5%8A%B1",
+                                    },
+                                    {
+                                        "dtEventTime": "2026-08-13T10:00:00",
+                                        "AddOrReduce": "+200",
+                                        "leftMoney": "1100",
+                                        "Reason": "%E5%A5%96%E5%8A%B1",
+                                    },
+                                    {
+                                        "dtEventTime": "2026-08-14 10:00:00",
+                                        "AddOrReduce": "-50",
+                                        "leftMoney": "1050",
+                                        "Reason": "%E8%B4%AD%E4%B9%B0",
+                                    },
+                                ]
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(
+                side_effect=["D:/fixture-money-trend.png", "D:/fixture-money-flows.png"]
+            )
+        )
+
+        results = await _collect(plugin._flows(_Event(), "货币", "1"))
+
+        self.assertEqual(
+            [call.args[0] for call in plugin.renderer.render_html.await_args_list],
+            ["Template/flows/moneyTrendChart.html", "Template/flows/flows.html"],
+        )
+        trend = plugin.renderer.render_html.await_args_list[0].args[1]["moneyTrendChart"]
+        self.assertEqual(trend["dateRange"], "2026-08-12 ~ 2026-08-14")
+        self.assertEqual(trend["startBalance"], "1,000")
+        self.assertEqual(trend["endBalance"], "1,050")
+        self.assertEqual(trend["maxBalance"], "1,100")
+        self.assertEqual(trend["minBalance"], "900")
+        self.assertEqual(trend["totalChange"], "150")
+        self.assertEqual([point["date"] for point in trend["points"]], ["08-12", "08-13", "08-14"])
+        self.assertEqual([result["path"] for result in results], ["D:/fixture-money-trend.png", "D:/fixture-money-flows.png"])
+
+    async def test_money_trend_render_failure_does_not_block_flow_list(self):
+        client = SimpleNamespace(
+            flows=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [
+                            {
+                                "iMoneyArr": [
+                                    {
+                                        "dtEventTime": "2026-08-14 10:00:00",
+                                        "AddOrReduce": "+100",
+                                        "leftMoney": "1000",
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(side_effect=[RuntimeError("fixture-trend-error"), "D:/fixture-flows.png"])
+        )
+
+        results = await _collect(plugin._flows(_Event(), "货币", "1"))
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["path"], "D:/fixture-flows.png")
+        self.assertEqual(plugin.renderer.render_html.await_count, 2)
+
+    def test_money_trend_handles_single_day_and_invalid_balances(self):
+        plugin = self._plugin()
+
+        self.assertIsNone(
+            plugin._money_trend_chart(
+                [
+                    {"dtEventTime": "", "leftMoney": "100"},
+                    {"dtEventTime": "2026-08-14 10:00:00", "leftMoney": "未知"},
+                    {"dtEventTime": "2026-08-14 11:00:00", "leftMoney": None},
+                ]
+            )
+        )
+        chart = plugin._money_trend_chart(
+            [
+                {
+                    "dtEventTime": "2026-08-14 10:00:00",
+                    "AddOrReduce": "0",
+                    "leftMoney": 0,
+                }
+            ]
+        )
+
+        self.assertIsNotNone(chart)
+        self.assertEqual(chart["startBalance"], "0")
+        self.assertEqual(chart["points"][0]["x"], "400.0")
+        self.assertEqual(chart["pathData"], "M 400.0,90.0 L 410.0,90.0")
+
     async def test_collection_merges_owned_items_with_public_mapping(self):
         client = SimpleNamespace(
             collection=AsyncMock(
@@ -2909,6 +3033,23 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "killsHtml": '<span class="kill-item kill-player">玩家 3</span>',
                 "rescue": 1,
             },
+            "Template/flows/moneyTrendChart.html": {
+                "moneyTrendChart": {
+                    "startBalance": "1,000",
+                    "endBalance": "1,050",
+                    "maxBalance": "1,100",
+                    "minBalance": "900",
+                    "totalChange": "150",
+                    "chartWidth": 800,
+                    "chartHeight": 120,
+                    "pathData": "M 10.0,90.0 L 790.0,20.0",
+                    "points": [
+                        {"x": "10.0", "y": "90.0", "xPercent": "1.25", "date": "08-12", "balance": "900"},
+                        {"x": "790.0", "y": "20.0", "xPercent": "98.75", "date": "08-14", "balance": "1,050"},
+                    ],
+                    "dateRange": "2026-08-12 ~ 2026-08-14",
+                }
+            },
             "Template/flows/flows.html": {"typeName": "货币", "typeValue": 3, "page": 1, "moneyColumns": []},
             "Template/collection/collection.html": {"typeName": "所有藏品", "totalCount": 0, "qualityStats": [], "categories": []},
             "Template/placeInfo/placeInfo.html": {"places": []},
@@ -2996,6 +3137,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "imgs/redCollection/red_bg2.png",
             "imgs/redCollection/red_tit.webp",
             "imgs/others/logo.png",
+            "imgs/others/loading13.png",
             "imgs/map/烽火-零号大坝-常规.png",
             "imgs/map/全面-烬区.jpg",
             "imgs/operator/红狼.png",

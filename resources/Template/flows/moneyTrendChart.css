@@ -145,7 +145,7 @@ body {
     white-space: nowrap;
     dominant-baseline: middle;
     text-anchor: middle;
-    letter-spacing: 0.3px;
+    letter-spacing: 0;
     filter: drop-shadow(0 0 3px rgba(0, 0, 0, 0.8)) drop-shadow(0 0 1px rgba(0, 0, 0, 0.9));
 }
 

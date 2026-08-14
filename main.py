@@ -3210,6 +3210,18 @@ class DeltaForcePlugin(Star):
                 yield event.plain_result(f"【{type_name}流水】第 {data['page']} 页暂无记录。")
                 continue
             text = self._flows_text(data)
+            trend_data = data.get("moneyTrendChart") if type_id == "3" else None
+            if trend_data and self.config.get("enable_image_render", True):
+                try:
+                    trend_image = await self.renderer.render_html(
+                        "Template/flows/moneyTrendChart.html",
+                        {"moneyTrendChart": trend_data},
+                        {"viewport_width": 1000, "viewport_height": 500},
+                    )
+                    if trend_image:
+                        yield event.image_result(trend_image)
+                except Exception as exc:
+                    logger.warning(f"[三角洲流水] 金额趋势图渲染失败：{type(exc).__name__}")
             async for result in self._render_or_text(
                 event,
                 "Template/flows/flows.html",
@@ -3300,7 +3312,108 @@ class DeltaForcePlugin(Star):
                 for index, item in enumerate(records, 1)
             ]
             result["moneyColumns"] = self._flow_columns(formatted)
+            trend_chart = self._money_trend_chart(records)
+            if trend_chart:
+                result["moneyTrendChart"] = trend_chart
         return result
+
+    def _money_trend_chart(self, records: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        date_map: Dict[str, List[Dict[str, Any]]] = {}
+        for record in records:
+            time_text = str(record.get("dtEventTime") or "").strip()
+            if not time_text:
+                continue
+            date_text = time_text.replace("/", "-").split(" ", 1)[0].split("T", 1)[0]
+            if date_text:
+                date_map.setdefault(date_text, []).append(record)
+
+        daily_data: List[Dict[str, Any]] = []
+        for date_text in sorted(date_map):
+            day_records = sorted(date_map[date_text], key=lambda item: str(item.get("dtEventTime") or ""))
+            balances: List[float] = []
+            total_change = 0.0
+            for record in day_records:
+                total_change += self._flow_number(record.get("AddOrReduce"))
+                raw_balance = record.get("leftMoney")
+                if raw_balance in (None, "", "未知"):
+                    continue
+                balance_text = str(raw_balance).replace(",", "").strip()
+                balance = self._flow_number(balance_text)
+                if balance >= 0:
+                    balances.append(balance)
+            if balances:
+                daily_data.append(
+                    {
+                        "date": date_text,
+                        "startBalance": balances[0],
+                        "endBalance": balances[-1],
+                        "totalChange": total_change,
+                        "recordCount": len(day_records),
+                    }
+                )
+        if not daily_data:
+            return None
+
+        end_balances = [item["endBalance"] for item in daily_data]
+        maximum = max(end_balances)
+        minimum = min(end_balances)
+        balance_range = maximum - minimum or 1
+        chart_width = 800
+        chart_height = 120
+        padding = {"top": 20, "right": 10, "bottom": 30, "left": 10}
+        plot_width = chart_width - padding["left"] - padding["right"]
+        plot_height = chart_height - padding["top"] - padding["bottom"]
+        points = []
+        for index, item in enumerate(daily_data):
+            x = (
+                padding["left"] + plot_width / 2
+                if len(daily_data) == 1
+                else padding["left"] + index / (len(daily_data) - 1) * plot_width
+            )
+            y = padding["top"] + plot_height - (item["endBalance"] - minimum) / balance_range * plot_height
+            date_parts = item["date"].split("-")
+            points.append(
+                {
+                    "date": "-".join(date_parts[-2:]) if len(date_parts) >= 3 else item["date"],
+                    "fullDate": item["date"],
+                    "balance": self.data_mgr.fmt_num(item["endBalance"]),
+                    "totalChange": self.data_mgr.fmt_num(item["totalChange"]),
+                    "startBalance": self.data_mgr.fmt_num(item["startBalance"]),
+                    "recordCount": item["recordCount"],
+                    "x": f"{x:.1f}",
+                    "y": f"{y:.1f}",
+                    "xPercent": f"{x / chart_width * 100:.2f}",
+                }
+            )
+        if len(points) == 1:
+            path_data = f"M {points[0]['x']},{points[0]['y']} L {float(points[0]['x']) + 10:.1f},{points[0]['y']}"
+        else:
+            path_data = " ".join(
+                ("M" if index == 0 else "L") + f" {point['x']},{point['y']}"
+                for index, point in enumerate(points)
+            )
+
+        first_day = daily_data[0]
+        last_day = daily_data[-1]
+        return {
+            "startBalance": self.data_mgr.fmt_num(first_day["startBalance"]),
+            "endBalance": self.data_mgr.fmt_num(last_day["endBalance"]),
+            "maxBalance": self.data_mgr.fmt_num(maximum),
+            "minBalance": self.data_mgr.fmt_num(minimum),
+            "totalChange": self.data_mgr.fmt_num(sum(item["totalChange"] for item in daily_data)),
+            "chartWidth": chart_width,
+            "chartHeight": chart_height,
+            "pathData": path_data,
+            "points": points,
+            "dateRange": f"{first_day['date']} ~ {last_day['date']}",
+        }
+
+    @staticmethod
+    def _flow_number(value: Any) -> float:
+        try:
+            return float(str(value or 0).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _flow_columns(records: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
