@@ -38,7 +38,7 @@ helpList:
           desc: "查看广播通知设置状态"
         - icon: 85
           title: "用户统计"
-          desc: "查看用户统计数据"
+          desc: "查看 AstrBot 本地绑定统计"
         - icon: 64
           title: "ws连接 | ws断开"
           desc: "手动连接/断开WebSocket"
@@ -50,7 +50,7 @@ helpList:
           desc: "查看更新日志"
         - icon: 92
           title: "服务器状态"
-          desc: "服务器状态"
+          desc: "查看 API、数据库和运行环境状态"
         - icon: 92
           title: "(强制)更新"
           desc: "更新三角洲插件"

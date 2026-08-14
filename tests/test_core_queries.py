@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+import httpx
+
 
 class _Logger:
     def __getattr__(self, _name):
@@ -146,6 +148,9 @@ class _Event:
 
     def plain_result(self, text):
         return {"type": "plain", "text": text}
+
+    def image_result(self, path):
+        return {"type": "image", "path": path}
 
 
 class _DataManager:
@@ -303,6 +308,29 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "/api/v1/df/gunmod/community/solutions/fixture-uuid",
         )
         self.assertEqual(client.put.await_args.kwargs["proxy_user_id"], "qq_fixture")
+
+    async def test_client_preserves_detailed_health_data_from_http_503(self):
+        def handler(request):
+            self.assertEqual(request.url.path, "/health/detailed")
+            return httpx.Response(
+                503,
+                json={
+                    "code": 0,
+                    "message": "degraded",
+                    "data": {"status": "degraded", "dependencies": {}},
+                },
+            )
+
+        client = DeltaForceClient(api_key="fixture-key", api_mode="default")
+        await client.client.aclose()
+        client.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            result = await client.health()
+        finally:
+            await client.close()
+
+        self.assertEqual(result["code"], 0)
+        self.assertEqual(result["data"]["status"], "degraded")
 
     async def test_client_uses_authoritative_record_subscription_endpoints(self):
         client = object.__new__(DeltaForceClient)
@@ -1294,6 +1322,251 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         client.ai_review.assert_awaited_once_with("fixture-token", "sol", "rp")
         self.assertIn("烽火地带 AI锐评", results[0]["text"])
         self.assertIn("这是一段测试锐评", results[0]["text"])
+
+    async def test_ban_history_formats_success_empty_and_expired_credentials(self):
+        client = SimpleNamespace(
+            ban_history=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": [
+                            {
+                                "game_name": "三角洲行动",
+                                "zone": "烽火地带",
+                                "type": "封禁",
+                                "reason": "违规行为",
+                                "strategy_desc": "安全处罚",
+                                "start_stmp": 1_700_000_000,
+                                "duration": 7200,
+                                "cheat_date": 1_699_999_000,
+                            }
+                        ],
+                    },
+                    {"code": 0, "data": []},
+                    {"code": 401, "message": "QQSafe 登录凭证无效或已失效", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        success = await _collect(plugin._ban_history(_Event()))
+        empty = await _collect(plugin._ban_history(_Event()))
+        expired = await _collect(plugin._ban_history(_Event()))
+
+        self.assertIn("三角洲行动（烽火地带）", success[0]["text"])
+        self.assertIn("持续时间: 2小时", success[0]["text"])
+        self.assertIn("作弊时间:", success[0]["text"])
+        self.assertIn("暂无违规记录", empty[0]["text"])
+        self.assertIn("凭证无效或已失效", expired[0]["text"])
+
+    async def test_server_status_displays_degraded_dependencies_and_errors(self):
+        client = SimpleNamespace(
+            health=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {
+                            "status": "healthy",
+                            "timestamp": "2026-08-14T09:00:00+08:00",
+                            "uptime": 60,
+                            "dependencies": {
+                                "mongodb": {"status": "connected", "latencyMs": 3},
+                                "redis": {"status": "connected"},
+                            },
+                            "system": {},
+                        },
+                    },
+                    {
+                        "code": 0,
+                        "message": "degraded",
+                        "data": {
+                            "status": "degraded",
+                            "timestamp": "2026-08-14T10:00:00+08:00",
+                            "uptime": 3661,
+                            "dependencies": {
+                                "mongodb": {"status": "connected", "latencyMs": 12},
+                                "redis": {"status": "disconnected"},
+                            },
+                            "system": {
+                                "goVersion": "go1.25",
+                                "platform": "windows",
+                                "arch": "amd64",
+                                "goroutines": 18,
+                                "memory": {"heapUsedMB": 20, "heapTotalMB": 40, "sysMB": 64},
+                            },
+                        },
+                    },
+                    {"code": 0, "data": []},
+                    {"code": 502, "message": "上游服务无响应", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        healthy = await _collect(plugin._server_status(_Event()))
+        degraded = await _collect(plugin._server_status(_Event()))
+        empty = await _collect(plugin._server_status(_Event()))
+        error = await _collect(plugin._server_status(_Event()))
+
+        self.assertIn("服务状态: 正常", healthy[0]["text"])
+        self.assertIn("Redis: 已连接", healthy[0]["text"])
+        self.assertIn("服务状态: 降级", degraded[0]["text"])
+        self.assertIn("MongoDB: 已连接（延迟 12 ms）", degraded[0]["text"])
+        self.assertIn("Redis: 未连接", degraded[0]["text"])
+        self.assertIn("go1.25 / windows / amd64", degraded[0]["text"])
+        self.assertIn("返回数据格式异常", empty[0]["text"])
+        self.assertIn("上游服务无响应", error[0]["text"])
+
+    async def test_health_info_renders_success_and_handles_empty_and_error(self):
+        client = SimpleNamespace(
+            object_health=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": [
+                            {
+                                "healthyDetail": {
+                                    "deBuffList": [
+                                        {
+                                            "area": "左臂",
+                                            "list": [{"name": "骨折"}, {"name": "流血"}, {"name": "疼痛"}],
+                                        }
+                                    ],
+                                    "buffList": [{"name": "止痛"}],
+                                }
+                            }
+                        ],
+                    },
+                    {"code": 0, "data": []},
+                    {"code": 401, "message": "公共凭证已失效", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-health.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+
+        success = await _collect(plugin._health_info(_Event()))
+        plugin.config["enable_image_render"] = False
+        empty = await _collect(plugin._health_info(_Event()))
+        error = await _collect(plugin._health_info(_Event()))
+
+        self.assertEqual(success[0]["type"], "image")
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "Template/healthInfo/healthInfo.html")
+        self.assertEqual(len(render_call.args[1]["deBuffList"]), 2)
+        self.assertTrue(render_call.args[1]["deBuffList"][0]["isMerged"])
+        self.assertIn("未查询到健康状态详细信息", empty[0]["text"])
+        self.assertIn("公共凭证已失效", error[0]["text"])
+
+    async def test_local_user_stats_counts_bindings_and_checks_admin(self):
+        plugin = self._plugin()
+        plugin.bindings = SimpleNamespace(
+            _data={
+                "user-1": [
+                    {"login_type": "qq", "is_valid": True},
+                    {"login_type": "wechat", "is_valid": False},
+                ],
+                "user-2": [{"token_type": "qqsafe", "is_valid": True}],
+            }
+        )
+
+        stats = await _collect(plugin._user_stats(_Event()))
+        plugin.bindings._data = {}
+        empty = await _collect(plugin._user_stats(_Event()))
+
+        class NormalEvent(_Event):
+            def is_admin(self):
+                return False
+
+        denied = await _collect(plugin._user_stats(NormalEvent()))
+
+        self.assertIn("AstrBot 本地用户统计", stats[0]["text"])
+        self.assertIn("绑定用户数: 2", stats[0]["text"])
+        self.assertIn("绑定账号数: 3", stats[0]["text"])
+        self.assertIn("有效账号数: 2", stats[0]["text"])
+        self.assertIn("绑定用户数: 0", empty[0]["text"])
+        self.assertIn("绑定账号数: 0", empty[0]["text"])
+        self.assertIn("只有管理员", denied[0]["text"])
+
+    async def test_red_list_uses_latest_records_layer_and_handles_empty_and_error(self):
+        client = SimpleNamespace(
+            personal_info=AsyncMock(return_value={"code": 0, "data": {}}),
+            red_list=AsyncMock(
+                side_effect=[
+                    {
+                        "code": 0,
+                        "data": {"records": {"list": [{"itemId": "1001", "num": 2}]}},
+                    },
+                    {"code": 0, "data": {"records": {"list": []}}},
+                    {"code": 401, "message": "登录凭证已过期", "data": None},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin._object_info_map = AsyncMock(
+            return_value={"1001": {"objectName": "非洲之心", "avgPrice": 1_000_000}}
+        )
+        plugin._uncollected_red_count = AsyncMock(return_value=5)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-red-list.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+
+        success = await _collect(plugin._red_list(_Event(), "fixture-token"))
+        plugin.config["enable_image_render"] = False
+        empty = await _collect(plugin._red_list(_Event(), "fixture-token"))
+        error = await _collect(plugin._red_list(_Event(), "fixture-token"))
+
+        self.assertEqual(success[0]["type"], "image")
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "Template/redRecordList/redRecordList.html")
+        self.assertEqual(render_call.args[1]["records"][0]["name"], "非洲之心")
+        self.assertEqual(render_call.args[1]["statistics"]["redTotalCount"], "2")
+        self.assertIn("还没有任何藏品解锁记录", empty[0]["text"])
+        self.assertIn("登录凭证已过期", error[0]["text"])
+
+    async def test_red_one_uses_item_data_layer_and_template(self):
+        client = SimpleNamespace(
+            personal_info=AsyncMock(return_value={"code": 0, "data": {}}),
+            red_one=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "objectId": "1001",
+                        "itemData": {
+                            "total": 2,
+                            "list": [
+                                {"time": "2026-08-13 12:00:00", "mapid": "100", "num": 1},
+                                {"time": "2026-08-14 12:00:00", "mapid": "200", "num": 1},
+                            ],
+                        },
+                    },
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin._object_info = AsyncMock(
+            return_value={"objectID": "1001", "objectName": "非洲之心", "objectType": "藏品"}
+        )
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-red-one.png"),
+            res_path=(PLUGIN_DIR / "resources").resolve(),
+        )
+
+        result = await _collect(plugin._red_one(_Event(), "fixture-token", "非洲之心"))
+
+        self.assertEqual(result[0]["type"], "image")
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "Template/redRecord/redRecord.html")
+        self.assertEqual(render_call.args[1]["recordCount"], 2)
+        self.assertEqual(render_call.args[1]["firstUnlockMap"], "零号大坝-常规")
+        client.red_one.assert_awaited_once_with("fixture-token", "1001")
 
     async def test_core_templates_compile_with_adapted_fixture(self):
         renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))

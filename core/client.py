@@ -150,6 +150,7 @@ class DeltaForceClient:
         client_id: str = "",
         proxy_user_id: str = "",
         require_key: bool = True,
+        accepted_status_codes: Optional[set[int]] = None,
     ) -> Dict[str, Any]:
         if require_key and (not self.api_key or self.api_key == "sk-xxxxxxx"):
             return {"code": 1000, "message": "API Key 未配置，请在插件配置中填写 api_key。", "data": None}
@@ -181,7 +182,7 @@ class DeltaForceClient:
                 except ValueError:
                     body = {"code": resp.status_code, "message": resp.text, "data": None}
 
-                if 200 <= resp.status_code < 300:
+                if 200 <= resp.status_code < 300 or resp.status_code in (accepted_status_codes or set()):
                     return body if isinstance(body, dict) else {"code": 0, "message": "成功", "data": body}
 
                 message = body.get("message") or body.get("msg") or resp.reason_phrase if isinstance(body, dict) else resp.text
@@ -368,7 +369,11 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/tools/article/detail", params={"threadID": thread_id, "thread_id": thread_id})
 
     async def health(self):
-        return await self.get("/health/detailed", require_key=False)
+        return await self.get(
+            "/health/detailed",
+            require_key=False,
+            accepted_status_codes={503},
+        )
 
     async def maps(self):
         return await self.get("/api/v1/df/object/maps", require_key=False)

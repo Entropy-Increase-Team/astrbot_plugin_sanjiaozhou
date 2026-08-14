@@ -2909,7 +2909,7 @@ class DeltaForcePlugin(Star):
         health = rows[0] if rows else raw if isinstance(raw, dict) else {}
         detail = (health.get("healthyDetail") or health.get("healthy_detail") or {}) if isinstance(health, dict) else {}
         if not detail:
-            yield event.plain_result(self._summary_dict("健康状态", raw))
+            yield event.plain_result("未查询到健康状态详细信息。")
             return
         debuffs = []
         for group in detail.get("deBuffList") or detail.get("debuffList") or []:
@@ -2957,7 +2957,40 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("您尚未绑定账号。")
             return
         res = await self.client.ban_history(token)
-        yield event.plain_result(self._summary_or_error("封号/违规记录", res))
+        if not self._ok(res):
+            yield event.plain_result(f"封号/违规记录查询失败: {self._message_of(res)}")
+            return
+
+        raw = self._data(res, [])
+        if isinstance(raw, list):
+            records = [item for item in raw if isinstance(item, dict)]
+        elif isinstance(raw, dict):
+            records = self._first_list(raw, ("list", "records", "items", "data"))
+        else:
+            yield event.plain_result("封号/违规记录返回数据格式异常。")
+            return
+        if not records:
+            yield event.plain_result("该账号暂无违规记录。")
+            return
+
+        lines = [f"【封号/违规记录】共 {len(records)} 条"]
+        for index, record in enumerate(records, 1):
+            game_name = str(record.get("game_name") or "未知游戏")
+            zone = str(record.get("zone") or "").strip()
+            lines.extend(
+                [
+                    f"\n--- 违规记录 {index} ---",
+                    f"游戏: {game_name}{f'（{zone}）' if zone else ''}",
+                    f"类型: {record.get('type') or '未知'}",
+                    f"原因: {record.get('reason') or '未知'}",
+                    f"分类: {record.get('strategy_desc') or '未知'}",
+                    f"开始时间: {self._fmt_time(record.get('start_stmp'))}",
+                    f"持续时间: {self._fmt_ban_duration(record.get('duration'))}",
+                ]
+            )
+            if record.get("cheat_date"):
+                lines.append(f"作弊时间: {self._fmt_time(record.get('cheat_date'))}")
+        yield event.plain_result("\n".join(lines))
 
     async def _place_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
@@ -3104,15 +3137,54 @@ class DeltaForcePlugin(Star):
         return sorted(result, key=lambda item: (item["displayName"], item["level"]))
 
     async def _server_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        health, object_health = await asyncio.gather(self.client.health(), self.client.object_health(), return_exceptions=True)
-        lines = ["【三角洲 API 状态】"]
-        for name, res in (("服务", health), ("游戏数据", object_health)):
-            if isinstance(res, Exception):
-                lines.append(f"{name}: {res}")
-            elif self._ok(res):
-                lines.append(f"{name}: 正常")
-            else:
-                lines.append(f"{name}: {self._message_of(res)}")
+        try:
+            res = await self.client.health()
+        except Exception as exc:
+            yield event.plain_result(f"服务器状态查询失败: {exc}")
+            return
+        if not self._ok(res):
+            yield event.plain_result(f"服务器状态查询失败: {self._message_of(res)}")
+            return
+
+        data = self._data(res, None)
+        if not isinstance(data, dict) or not data:
+            yield event.plain_result("服务器状态返回数据格式异常。")
+            return
+        status = str(data.get("status") or "unknown").lower()
+        status_names = {"healthy": "正常", "degraded": "降级", "unhealthy": "异常"}
+        dependencies = data.get("dependencies") if isinstance(data.get("dependencies"), dict) else {}
+        mongodb = dependencies.get("mongodb") if isinstance(dependencies.get("mongodb"), dict) else {}
+        redis = dependencies.get("redis") if isinstance(dependencies.get("redis"), dict) else {}
+        system = data.get("system") if isinstance(data.get("system"), dict) else {}
+        memory = system.get("memory") if isinstance(system.get("memory"), dict) else {}
+
+        mongo_text = "已连接" if mongodb.get("status") == "connected" else "未连接"
+        if mongodb.get("latencyMs") is not None:
+            mongo_text += f"（延迟 {mongodb.get('latencyMs')} ms）"
+        redis_text = "已连接" if redis.get("status") == "connected" else "未连接"
+        runtime = " / ".join(
+            str(value)
+            for value in (system.get("goVersion"), system.get("platform"), system.get("arch"))
+            if value
+        )
+        lines = [
+            "【三角洲 API 服务器状态】",
+            f"服务状态: {status_names.get(status, status or '未知')}",
+            f"运行时间: {self.data_mgr.fmt_duration(data.get('uptime') or 0)}",
+            f"检查时间: {data.get('timestamp') or '未知'}",
+            f"MongoDB: {mongo_text}",
+            f"Redis: {redis_text}",
+        ]
+        if runtime:
+            lines.append(f"运行环境: {runtime}")
+        if memory:
+            lines.append(
+                "内存: "
+                f"堆 {memory.get('heapUsedMB', 0)}/{memory.get('heapTotalMB', 0)} MB，"
+                f"系统 {memory.get('sysMB', 0)} MB"
+            )
+        if system.get("goroutines") is not None:
+            lines.append(f"协程数: {system.get('goroutines')}")
         yield event.plain_result("\n".join(lines))
 
     async def _operator_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -4535,6 +4607,28 @@ class DeltaForcePlugin(Star):
             return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
         except Exception:
             return str(value)
+
+    @staticmethod
+    def _fmt_ban_duration(value: Any) -> str:
+        try:
+            seconds = int(float(value))
+        except (TypeError, ValueError):
+            return "未知"
+        if seconds < 0:
+            return "未知"
+        if seconds > 365 * 9 * 24 * 3600:
+            return "永久"
+        days, remainder = divmod(seconds, 24 * 3600)
+        hours, remainder = divmod(remainder, 3600)
+        minutes = remainder // 60
+        parts = []
+        if days:
+            parts.append(f"{days}天")
+        if hours:
+            parts.append(f"{hours}小时")
+        if minutes or not parts:
+            parts.append(f"{minutes}分钟")
+        return "".join(parts)
 
     @staticmethod
     def _item_image(item: Dict[str, Any]) -> Dict[str, Any]:
