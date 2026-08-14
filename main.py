@@ -811,9 +811,15 @@ class DeltaForcePlugin(Star):
                     if message.get("kind") == "event" and message.get("type") == "record.new":
                         await self._push_record_event(message.get("data") or {})
                         continue
-                    if message.get("kind") != "response" or message.get("id") != request_id:
+                    if message.get("id") != request_id or message.get("kind") not in {
+                        "response",
+                        "error",
+                    }:
                         continue
-                    if message.get("code") != 0:
+                    if message.get("kind") == "error" or message.get("code", 0) not in {
+                        0,
+                        None,
+                    }:
                         raise RuntimeError("战绩订阅请求被后端拒绝")
                     payload = message.get("data") if isinstance(message.get("data"), dict) else {}
                     if not payload.get("subscribed"):

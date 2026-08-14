@@ -479,7 +479,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.7", "0.4.6"],
+            ["0.4.8", "0.4.7"],
         )
         self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "修复")
 
@@ -1286,7 +1286,6 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                         "id": request_id,
                         "type": "record.client.subscribe",
                         "kind": "response",
-                        "code": 0,
                         "data": {"subscribed": ["record:client:fixture:fixture-bot"]},
                     }
                 )
@@ -1373,7 +1372,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "id": self.request_id,
                         "type": "record.client.subscribe",
-                        "kind": "response",
+                        "kind": "error",
                         "code": 403,
                         "message": "拒绝",
                     }
