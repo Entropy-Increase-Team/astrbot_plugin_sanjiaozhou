@@ -1,8 +1,11 @@
 import asyncio
+import base64
+import binascii
 import datetime as dt
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 from astrbot.api import logger
@@ -93,7 +96,7 @@ DELTA_COMMAND_SPECS = [
     ("计算映射表", {"映射表"}),
     ("取消计算", {"取消"}),
     ("ws连接", {"WS连接", "websocket连接", "WebSocket连接", "ws启动", "WS启动", "websocket启动", "WebSocket启动", "ws开启", "WS开启", "websocket开启", "WebSocket开启", "ws断开", "WS断开", "websocket断开", "WebSocket断开", "ws关闭", "WS关闭", "websocket关闭", "WebSocket关闭", "ws停止", "WS停止", "websocket停止", "WebSocket停止", "ws状态", "WS状态", "websocket状态", "WebSocket状态", "wsstatus", "WSstatus", "websocketstatus", "WebSocketstatus"}),
-    ("订阅 战绩", {"取消订阅 战绩", "订阅状态 战绩"}),
+    ("订阅", {"取消订阅", "订阅状态"}),
     ("开启本群订阅推送", {"关闭本群订阅推送", "开启私信订阅推送", "关闭私信订阅推送"}),
     ("广播开启", {"通知开启", "广播启用", "通知启用", "广播订阅", "通知订阅", "广播关闭", "通知关闭", "广播禁用", "通知禁用", "广播取消", "通知取消", "广播状态", "通知状态", "广播设置", "通知设置"}),
     ("开启日报推送", {"关闭日报推送", "开启周报推送", "关闭周报推送", "开启特勤处推送", "关闭特勤处推送", "开启每日密码推送", "关闭每日密码推送"}),
@@ -130,6 +133,7 @@ class DeltaForcePlugin(Star):
             render_timeout=int(self.config.get("render_timeout", 30000) or 30000),
         )
         self._static_task: Optional[asyncio.Task] = None
+        self._oauth_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     async def initialize(self):
         self._static_task = asyncio.create_task(self.data_mgr.refresh_static(self.client))
@@ -174,6 +178,63 @@ class DeltaForcePlugin(Star):
         except Exception:
             pass
         return str(event.get_sender_id())
+
+    @staticmethod
+    def _image_base64(value: Any) -> Optional[str]:
+        text = str(value or "").strip()
+        payload = ""
+        if match := re.fullmatch(
+            r"data:image/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\s]+)",
+            text,
+            flags=re.I,
+        ):
+            payload = match.group(1)
+        elif text.lower().startswith("base64://"):
+            payload = text[len("base64://") :]
+        elif re.fullmatch(r"[A-Za-z0-9+/=\s]+", text):
+            payload = text
+        else:
+            return None
+
+        payload = re.sub(r"\s+", "", payload)
+        try:
+            raw = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("二维码 Base64 数据无效") from exc
+
+        is_image = (
+            raw.startswith(b"\x89PNG\r\n\x1a\n")
+            or raw.startswith((b"\xff\xd8\xff", b"GIF87a", b"GIF89a", b"BM"))
+            or (len(raw) >= 12 and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP")
+        )
+        if not is_image:
+            raise ValueError("二维码数据不是受支持的图片")
+        return payload
+
+    @staticmethod
+    def _oauth_callback_parts(callback_url: str) -> Tuple[str, str]:
+        try:
+            parsed = urlparse(callback_url.strip())
+        except ValueError:
+            return "", ""
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return "", ""
+        params = parse_qs(parsed.query)
+        if (not params.get("code") or not params.get("state")) and parsed.fragment:
+            fragment_query = parsed.fragment.split("?", 1)[-1]
+            fragment_params = parse_qs(fragment_query)
+            params.update({key: value for key, value in fragment_params.items() if key not in params})
+        code = str((params.get("code") or [""])[0]).strip()
+        state = str((params.get("state") or [""])[0]).strip()
+        return code, state
+
+    @staticmethod
+    def _expiry_millis(value: Any) -> int:
+        try:
+            timestamp = int(float(value))
+        except (TypeError, ValueError):
+            return 0
+        return timestamp * 1000 if 0 < timestamp < 100_000_000_000 else timestamp
 
     @staticmethod
     def _ok(res: Any) -> bool:
@@ -563,36 +624,84 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"获取登录二维码失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
+        if not isinstance(data, dict):
+            yield event.plain_result("登录接口返回格式异常，请稍后重试。")
+            return
         token = data.get("frameworkToken") or data.get("framework_token") or data.get("token") or ""
         qr = data.get("qr_image") or data.get("qrImage") or data.get("qrcode") or data.get("qr") or data.get("url") or ""
         msg = f"请扫码登录 {platform}，有效期约 180 秒。"
         if qr:
-            if Comp and str(qr).startswith(("http://", "https://")):
-                yield event.chain_result([Comp.Plain(msg + "\n"), Comp.Image.fromURL(qr)])
-            elif Comp and os.path.exists(str(qr)):
-                yield event.chain_result([Comp.Plain(msg + "\n"), Comp.Image.fromFileSystem(str(qr))])
-            elif str(qr).startswith(("http://", "https://")) or os.path.exists(str(qr)):
-                yield event.image_result(qr)
-            else:
-                yield event.plain_result(msg + f"\n二维码/链接: {qr}")
+            try:
+                qr_text = str(qr).strip()
+                image_base64 = self._image_base64(qr_text)
+                if Comp and image_base64:
+                    yield event.chain_result([Comp.Plain(msg + "\n"), Comp.Image.fromBase64(image_base64)])
+                elif Comp and qr_text.startswith(("http://", "https://")):
+                    yield event.chain_result([Comp.Plain(msg + "\n"), Comp.Image.fromURL(qr_text)])
+                elif Comp and os.path.isfile(qr_text):
+                    yield event.chain_result([Comp.Plain(msg + "\n"), Comp.Image.fromFileSystem(qr_text)])
+                elif qr_text.startswith(("http://", "https://")) or os.path.isfile(qr_text):
+                    yield event.image_result(qr_text)
+                elif image_base64:
+                    yield event.plain_result("当前消息适配器无法发送二维码图片，请改用 OAuth 授权登录。")
+                    return
+                else:
+                    yield event.plain_result("登录接口返回了不支持的二维码格式，请稍后重试。")
+                    return
+            except ValueError as exc:
+                yield event.plain_result(f"登录二维码解析失败: {exc}")
+                return
         else:
-            yield event.plain_result(msg + (f"\n临时 token: {token}" if token else ""))
+            yield event.plain_result("登录接口未返回可用二维码，请稍后重试。")
+            return
         if not token:
+            yield event.plain_result("登录接口未返回临时会话标识，无法继续轮询。")
             return
         timeout = int(self.config.get("login_poll_timeout", 180) or 180)
         interval = int(self.config.get("login_poll_interval", 5) or 5)
         end_at = asyncio.get_running_loop().time() + timeout
+        notified_scanned = False
         while asyncio.get_running_loop().time() < end_at:
             await asyncio.sleep(interval)
-            status = await self.client.login_status(platform, token)
-            data = self._data(status, {}) or {}
-            state = str(data.get("status") or data.get("state") or data.get("message") or "").lower()
-            new_token = data.get("frameworkToken") or data.get("framework_token") or data.get("token") or token
-            if self._ok(status) and any(x in state for x in ("success", "confirmed", "done", "ok", "已登录", "成功")):
+            status_res = await self.client.login_status(platform, token)
+            status_data = self._data(status_res, {}) or {}
+            if not isinstance(status_data, dict):
+                status_data = {}
+            root_code = status_res.get("code") if isinstance(status_res, dict) else None
+            if "code" not in status_data and root_code in {-2, -3, -4, "-2", "-3", "-4"}:
+                status_data = status_res
+            if not self._ok(status_res) and not status_data.get("code") in {-2, -3, -4, "-2", "-3", "-4"}:
+                yield event.plain_result(f"登录状态查询失败: {self._message_of(status_res)}")
+                return
+            state = str(status_data.get("status") or status_data.get("state") or "").strip().lower()
+            status_code_raw = status_data.get("code")
+            try:
+                status_code = int(status_code_raw)
+            except (TypeError, ValueError):
+                status_code = {"pending": 1, "scanned": 2, "authed": 0, "done": 0, "expired": -2, "risk_control": -3}.get(state, -4)
+            new_token = status_data.get("frameworkToken") or status_data.get("framework_token") or status_data.get("token") or token
+
+            if status_code == 0:
                 async for r in self._bind_token(event, new_token, login_type=platform, quiet=True):
                     yield r
                 yield event.plain_result("登录成功，已绑定为当前账号。")
                 return
+            if status_code == 2:
+                if not notified_scanned:
+                    notified_scanned = True
+                    yield event.plain_result("二维码已扫码，请在手机上确认登录。")
+                continue
+            if status_code == 1:
+                continue
+            if status_code == -2:
+                yield event.plain_result("登录二维码已过期，请重新发起登录。")
+                return
+            if status_code == -3:
+                yield event.plain_result("登录被安全风控拦截，请在手机上确认或改用 OAuth 授权登录。")
+                return
+            status_message = status_data.get("msg") or status_data.get("message") or "未知状态"
+            yield event.plain_result(f"登录状态异常: {status_message}")
+            return
         yield event.plain_result("登录轮询超时。如已获取 frameworkToken，可发送 绑定 <token> 手动绑定。")
 
     async def _cookie_login(self, event: AstrMessageEvent, cookie: str) -> AsyncGenerator[Any, None]:
@@ -614,13 +723,85 @@ class DeltaForcePlugin(Star):
 
     async def _oauth_login(self, event: AstrMessageEvent, platform: str, extra: str) -> AsyncGenerator[Any, None]:
         pf = "wechat" if platform.lower() in {"微信", "wx"} else "qq"
-        res = await self.client.oauth_url(pf, platform_id=self._user_identifier(event), bot_id=self._client_id(event))
+        session_key = (str(event.get_sender_id()), pf)
+        command_name = "微信授权登录" if pf == "wechat" else "qq授权登录"
+
+        if not extra:
+            res = await self.client.oauth_url(pf, platform_id=self._user_identifier(event), bot_id=self._client_id(event))
+            if not self._ok(res):
+                yield event.plain_result(f"获取 OAuth 链接失败: {self._message_of(res)}")
+                return
+            data = self._data(res, {}) or {}
+            if not isinstance(data, dict):
+                yield event.plain_result("OAuth 接口返回格式异常，请稍后重试。")
+                return
+            url = data.get("loginUrl") or data.get("login_url") or data.get("auth_url") or data.get("oauth_url") or data.get("url") or ""
+            framework_token = data.get("frameworkToken") or data.get("framework_token") or ""
+            state = str(data.get("state") or framework_token).strip()
+            expire = self._expiry_millis(data.get("expire") or data.get("expires_at"))
+            if not url or not framework_token or not state:
+                yield event.plain_result("OAuth 接口响应缺少授权链接或会话标识，请稍后重试。")
+                return
+            self._oauth_sessions[session_key] = {
+                "framework_token": str(framework_token),
+                "state": state,
+                "expire": expire,
+            }
+            yield event.plain_result(
+                f"请在对应客户端中打开以下链接完成授权：\n{url}\n\n"
+                f"授权后复制浏览器最终停留的完整回调 URL，并发送：\n"
+                f"{command_name} <完整回调URL>\n\n"
+                "回调 URL 含敏感授权信息，请勿转发给他人。"
+            )
+            return
+
+        code, state = self._oauth_callback_parts(extra)
+        if not code or not state:
+            yield event.plain_result("回调 URL 无效，必须是包含 code 和 state 的完整 http(s) 地址。")
+            return
+
+        session = self._oauth_sessions.get(session_key)
+        now_ms = int(dt.datetime.now().timestamp() * 1000)
+        if session and session.get("expire") and now_ms >= int(session["expire"]):
+            self._oauth_sessions.pop(session_key, None)
+            yield event.plain_result("OAuth 授权会话已过期，请重新获取授权链接。")
+            return
+        if session and state != session.get("state"):
+            yield event.plain_result("OAuth 回调的 state 与当前会话不匹配，请重新获取授权链接。")
+            return
+
+        framework_token = str((session or {}).get("framework_token") or state)
+        res = await self.client.oauth_submit(
+            pf,
+            {
+                "callbackUrl": extra.strip(),
+                "frameworkToken": framework_token,
+            },
+        )
         if not self._ok(res):
-            yield event.plain_result(f"获取 OAuth 链接失败: {self._message_of(res)}")
+            yield event.plain_result(f"OAuth 授权提交失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
-        url = data.get("auth_url") or data.get("url") or data.get("oauth_url") or str(data)
-        yield event.plain_result(f"请打开链接完成 {pf} 授权登录：\n{url}\n完成后如页面返回 token，请发送 绑定 <token>。")
+        if not isinstance(data, dict):
+            yield event.plain_result("OAuth 提交响应格式异常，未保存任何凭证。")
+            return
+        final_token = data.get("frameworkToken") or data.get("framework_token") or data.get("token") or framework_token
+        if not final_token:
+            yield event.plain_result("OAuth 授权成功，但接口未返回 frameworkToken。")
+            return
+
+        self._oauth_sessions.pop(session_key, None)
+        async for result in self._bind_token(event, str(final_token), login_type=pf, quiet=True):
+            yield result
+
+        role_res = await self.client.bind_character(str(final_token))
+        if self._ok(role_res):
+            yield event.plain_result("OAuth 登录成功，账号和游戏角色均已绑定。")
+        else:
+            yield event.plain_result(
+                f"OAuth 登录成功，账号已绑定；自动绑定角色失败: {self._message_of(role_res)}。"
+                "可稍后发送 角色绑定 重试。"
+            )
 
     async def _bind_token(self, event: AstrMessageEvent, token: str, login_type: str = "", quiet: bool = False) -> AsyncGenerator[Any, None]:
         user_identifier = self._user_identifier(event)

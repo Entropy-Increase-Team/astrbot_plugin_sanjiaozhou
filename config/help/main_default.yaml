@@ -87,8 +87,8 @@ helpList:
           title: "安全中心登陆"
           desc: "通过安全中心扫码登录"
         - icon: 71
-          title: "(QQ/微信)授权登陆 [code]"
-          desc: "通过授权码登录"
+          title: "(QQ/微信)授权登录 [回调URL]"
+          desc: "授权后提交浏览器最终停留的完整回调URL"
         - icon: 52
           title: "网页登陆"
           desc: "通过网页方式登录"

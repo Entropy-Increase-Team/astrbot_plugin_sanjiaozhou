@@ -23,7 +23,7 @@ class DeltaForceClient:
         self.api_key = (api_key or "").strip()
         self.api_mode = (api_mode or "auto").strip().lower()
         self.api_base_url = (api_base_url or "").strip().rstrip("/")
-        self.client = httpx.AsyncClient(timeout=timeout, verify=False)
+        self.client = httpx.AsyncClient(timeout=timeout)
 
     async def close(self):
         await self.client.aclose()
@@ -50,7 +50,8 @@ class DeltaForceClient:
             return [DEFAULT_URLS["default"]]
         if self.api_mode in ("eo", "esa"):
             return [DEFAULT_URLS[self.api_mode]]
-        return [DEFAULT_URLS["eo"], DEFAULT_URLS["esa"], DEFAULT_URLS["default"]]
+        urls = [DEFAULT_URLS["eo"], DEFAULT_URLS["esa"], DEFAULT_URLS["default"]]
+        return list(dict.fromkeys(urls))
 
     def _headers(
         self,
@@ -101,6 +102,7 @@ class DeltaForceClient:
 
         clean_path = path if path.startswith("/") else f"/{path}"
         method = method.upper()
+        retryable = method in {"GET", "HEAD", "OPTIONS"}
         last_error: Dict[str, Any] = {"code": -1, "message": "未发起请求", "data": None}
 
         for base_url in self._base_urls():
@@ -132,13 +134,16 @@ class DeltaForceClient:
                     "code": resp.status_code,
                     "message": message,
                     "data": body if isinstance(body, dict) else None,
-                    "url": url,
                 }
-                if resp.status_code < 500:
+                if resp.status_code < 500 or not retryable:
                     return last_error
             except httpx.RequestError as exc:
-                last_error = {"code": -1, "message": f"网络请求失败: {exc}", "data": None, "url": url}
-                logger.warning(f"[DeltaForce API] {method} {url} failed: {exc}")
+                last_error = {"code": -1, "message": "网络请求失败，请稍后重试。", "data": None}
+                logger.warning(
+                    f"[DeltaForce API] {method} {clean_path} 请求失败：{type(exc).__name__}"
+                )
+                if not retryable:
+                    return last_error
 
         return last_error
 
