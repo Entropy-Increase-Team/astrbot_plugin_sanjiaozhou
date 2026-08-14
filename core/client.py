@@ -3,8 +3,8 @@ from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 import httpx
-from astrbot.api import logger
 
+from astrbot.api import logger
 
 DEFAULT_URLS = {
     "default": "https://delta-test-api.shallow.ink",
