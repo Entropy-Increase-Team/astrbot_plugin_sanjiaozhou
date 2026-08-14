@@ -1,4 +1,5 @@
 import base64
+import datetime as dt
 import sys
 import types
 import unittest
@@ -126,8 +127,10 @@ _install_astrbot_stubs()
 
 from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.media_cache import MusicCache  # noqa: E402
-from astrbot_plugin_sanjiaozhou.main import DELTA_COMMAND_SPECS, DeltaForcePlugin  # noqa: E402
-
+from astrbot_plugin_sanjiaozhou.main import (  # noqa: E402
+    DELTA_COMMAND_SPECS,
+    DeltaForcePlugin,
+)
 
 PNG_BASE64 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
@@ -172,11 +175,15 @@ class _QrClient:
             "data": {
                 "frameworkToken": "mock-session-token",
                 "qr_image": f"data:image/png;base64,{PNG_BASE64}",
+                "expire": int(dt.datetime.now().timestamp() * 1000) + 120_000,
             },
         }
 
     async def login_status(self, _platform, _token):
         return self.statuses.pop(0)
+
+    async def bind_character(self, _token):
+        return {"code": 0, "data": {"success": True}}
 
 
 class _OAuthClient:
@@ -362,12 +369,13 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         plugin._tts_last = {}
         plugin.music_cache = _NoopMusicCache()
 
-        async def bind_token(_event, _token, login_type="", quiet=False):
-            del login_type, quiet
-            if False:
-                yield None
-
-        plugin._bind_token = bind_token
+        plugin._save_binding = AsyncMock(
+            return_value=(
+                {"framework_token": "fixture-token", "nickname": "测试账号"},
+                True,
+                "",
+            )
+        )
         return plugin
 
     def test_image_base64_supports_three_backend_formats(self):
@@ -385,6 +393,33 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         invalid = base64.b64encode(b"not an image").decode() * 20
         with self.assertRaisesRegex(ValueError, "图片"):
             DeltaForcePlugin._image_base64(invalid)
+
+    def test_login_expiry_supports_iso_seconds_and_milliseconds(self):
+        expected = 1_700_000_000_000
+        self.assertEqual(DeltaForcePlugin._expiry_millis(1_700_000_000), expected)
+        self.assertEqual(DeltaForcePlugin._expiry_millis(expected), expected)
+        self.assertEqual(
+            DeltaForcePlugin._expiry_millis("2023-11-14T22:13:20Z"), expected
+        )
+
+    def test_login_remaining_seconds_handles_future_expired_and_fallback_values(self):
+        now_millis = 1_700_000_000_000
+        self.assertEqual(
+            DeltaForcePlugin._remaining_login_seconds(
+                now_millis + 120_001, 180, now_millis
+            ),
+            121,
+        )
+        self.assertEqual(
+            DeltaForcePlugin._remaining_login_seconds(now_millis - 1, 180, now_millis),
+            0,
+        )
+        self.assertEqual(
+            DeltaForcePlugin._remaining_login_seconds(None, 45, now_millis), 45
+        )
+        self.assertEqual(
+            DeltaForcePlugin._remaining_login_seconds("非法时间", 45, now_millis), 45
+        )
 
     def test_command_names_do_not_contain_spaces(self):
         names = [name for name, _aliases in DELTA_COMMAND_SPECS]
@@ -404,8 +439,30 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         image = next(item for item in results[0]["chain"] if hasattr(item, "file"))
         self.assertTrue(image.file.startswith("base64://"))
         self.assertNotIn("data:image", results[0]["chain"][0].text)
+        self.assertIn("有效期约 120 秒", results[0]["chain"][0].text)
         self.assertIn("已扫码", results[1]["text"])
-        self.assertIn("登录成功", results[2]["text"])
+        self.assertIn("账号和游戏角色均已绑定", results[2]["text"])
+
+    async def test_qr_login_rejects_already_expired_image(self):
+        client = SimpleNamespace(
+            login_qr=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "frameworkToken": "fixture-token",
+                        "qr_image": f"data:image/png;base64,{PNG_BASE64}",
+                        "expire": 1,
+                    },
+                }
+            ),
+            login_status=AsyncMock(),
+        )
+        plugin = self._plugin(client)
+
+        results = await _collect(plugin._login(_Event(), "登录"))
+
+        self.assertIn("生成后已过期", results[0]["text"])
+        client.login_status.assert_not_awaited()
 
     async def test_oauth_gets_login_url_and_stores_session(self):
         plugin = self._plugin(_OAuthClient())
@@ -438,6 +495,30 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("state 与当前会话不匹配", results[0]["text"])
         self.assertIsNone(client.submit_payload)
+
+    async def test_login_completion_reports_remote_and_role_binding_failures(self):
+        client = SimpleNamespace(
+            bind_character=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"success": True}},
+                    {"code": 400, "message": "角色尚未创建"},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+        plugin._save_binding.side_effect = [
+            ({"framework_token": "fixture-token"}, False, "绑定服务暂不可用"),
+            ({"framework_token": "fixture-token"}, True, ""),
+        ]
+
+        remote_failed = await plugin._finish_login(_Event(), "fixture-token", "qq", "扫码登录")
+        role_failed = await plugin._finish_login(_Event(), "fixture-token", "qq", "扫码登录")
+
+        self.assertIn("后端账号绑定未确认", remote_failed)
+        self.assertIn("凭证已保存到 AstrBot 本地", remote_failed)
+        self.assertNotIn("账号已绑定", remote_failed)
+        self.assertIn("自动绑定游戏角色失败", role_failed)
+        self.assertIn("角色尚未创建", role_failed)
 
     async def test_non_idempotent_post_does_not_retry(self):
         client = object.__new__(DeltaForceClient)
@@ -760,7 +841,7 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         plugin = self._plugin(client)
-        del plugin._bind_token
+        del plugin._save_binding
         plugin.config["client_id"] = "mock-bot"
         plugin.bindings = bindings
         plugin._fill_binding_info = AsyncMock()

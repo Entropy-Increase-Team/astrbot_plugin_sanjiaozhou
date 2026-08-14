@@ -304,11 +304,43 @@ class DeltaForcePlugin(Star):
 
     @staticmethod
     def _expiry_millis(value: Any) -> int:
-        try:
-            timestamp = int(float(value))
-        except (TypeError, ValueError):
+        if isinstance(value, dt.datetime):
+            parsed = value
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.datetime.now().astimezone().tzinfo)
+            return int(parsed.timestamp() * 1000)
+        text = str(value or "").strip()
+        if not text:
             return 0
+        try:
+            timestamp = int(float(text))
+        except (OverflowError, TypeError, ValueError):
+            try:
+                parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+            except ValueError:
+                return 0
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=dt.datetime.now().astimezone().tzinfo)
+            return int(parsed.timestamp() * 1000)
         return timestamp * 1000 if 0 < timestamp < 100_000_000_000 else timestamp
+
+    @classmethod
+    def _remaining_login_seconds(
+        cls,
+        expiry: Any,
+        fallback_seconds: int,
+        now_millis: Optional[int] = None,
+    ) -> int:
+        expire_millis = cls._expiry_millis(expiry)
+        if not expire_millis:
+            return max(1, int(fallback_seconds))
+        current_millis = (
+            now_millis
+            if now_millis is not None
+            else int(dt.datetime.now().timestamp() * 1000)
+        )
+        remaining_millis = expire_millis - current_millis
+        return max(0, (remaining_millis + 999) // 1000)
 
     @staticmethod
     def _ok(res: Any) -> bool:
@@ -1447,7 +1479,15 @@ class DeltaForcePlugin(Star):
             return
         token = data.get("frameworkToken") or data.get("framework_token") or data.get("token") or ""
         qr = data.get("qr_image") or data.get("qrImage") or data.get("qrcode") or data.get("qr") or data.get("url") or ""
-        msg = f"请扫码登录 {platform}，有效期约 180 秒。"
+        configured_timeout = max(
+            1, int(self.config.get("login_poll_timeout", 180) or 180)
+        )
+        expiry = data.get("expire") or data.get("expires_at") or data.get("expiresAt")
+        remaining_seconds = self._remaining_login_seconds(expiry, configured_timeout)
+        if self._expiry_millis(expiry) and remaining_seconds <= 0:
+            yield event.plain_result("登录二维码生成后已过期，请重新发起登录。")
+            return
+        msg = f"请扫码登录 {platform}，有效期约 {remaining_seconds} 秒。"
         if qr:
             try:
                 qr_text = str(qr).strip()
@@ -1475,7 +1515,7 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("登录接口未返回临时会话标识，无法继续轮询。")
             return
-        timeout = int(self.config.get("login_poll_timeout", 180) or 180)
+        timeout = min(configured_timeout, remaining_seconds)
         interval = int(self.config.get("login_poll_interval", 5) or 5)
         end_at = asyncio.get_running_loop().time() + timeout
         notified_scanned = False
@@ -1500,9 +1540,8 @@ class DeltaForcePlugin(Star):
             new_token = status_data.get("frameworkToken") or status_data.get("framework_token") or status_data.get("token") or token
 
             if status_code == 0:
-                async for r in self._bind_token(event, new_token, login_type=platform, quiet=True):
-                    yield r
-                yield event.plain_result("登录成功，已绑定为当前账号。")
+                message = await self._finish_login(event, new_token, platform, "扫码登录")
+                yield event.plain_result(message)
                 return
             if status_code == 2:
                 if not notified_scanned:
@@ -1535,9 +1574,8 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("Cookie 登录成功但未返回 frameworkToken。")
             return
-        async for r in self._bind_token(event, token, login_type="qq", quiet=True):
-            yield r
-        yield event.plain_result("Cookie 登录成功，已绑定账号。")
+        message = await self._finish_login(event, str(token), "qq", "Cookie 登录")
+        yield event.plain_result(message)
 
     async def _oauth_login(self, event: AstrMessageEvent, platform: str, extra: str) -> AsyncGenerator[Any, None]:
         pf = "wechat" if platform.lower() in {"微信", "wx"} else "qq"
@@ -1556,7 +1594,9 @@ class DeltaForcePlugin(Star):
             url = data.get("loginUrl") or data.get("login_url") or data.get("auth_url") or data.get("oauth_url") or data.get("url") or ""
             framework_token = data.get("frameworkToken") or data.get("framework_token") or ""
             state = str(data.get("state") or framework_token).strip()
-            expire = self._expiry_millis(data.get("expire") or data.get("expires_at"))
+            expire = self._expiry_millis(
+                data.get("expire") or data.get("expires_at") or data.get("expiresAt")
+            )
             if not url or not framework_token or not state:
                 yield event.plain_result("OAuth 接口响应缺少授权链接或会话标识，请稍后重试。")
                 return
@@ -1609,26 +1649,21 @@ class DeltaForcePlugin(Star):
             return
 
         self._oauth_sessions.pop(session_key, None)
-        async for result in self._bind_token(event, str(final_token), login_type=pf, quiet=True):
-            yield result
+        message = await self._finish_login(event, str(final_token), pf, "OAuth 登录")
+        yield event.plain_result(message)
 
-        role_res = await self.client.bind_character(str(final_token))
-        if self._ok(role_res):
-            yield event.plain_result("OAuth 登录成功，账号和游戏角色均已绑定。")
-        else:
-            yield event.plain_result(
-                f"OAuth 登录成功，账号已绑定；自动绑定角色失败: {self._message_of(role_res)}。"
-                "可稍后发送 角色绑定 重试。"
-            )
-
-    async def _bind_token(self, event: AstrMessageEvent, token: str, login_type: str = "", quiet: bool = False) -> AsyncGenerator[Any, None]:
+    async def _save_binding(
+        self,
+        event: AstrMessageEvent,
+        token: str,
+        login_type: str = "",
+    ) -> Tuple[Dict[str, Any], bool, str]:
         user_identifier = self._user_identifier(event)
         client_id = self._client_id(event)
-        api_binding = None
         res = await self.client.create_binding(token, user_identifier, client_id, "bot")
-        if self._ok(res):
-            data = self._data(res, {}) or {}
-            api_binding = data.get("binding") if isinstance(data, dict) else None
+        remote_ok = self._ok(res)
+        data = (self._data(res, {}) or {}) if remote_ok else {}
+        api_binding = data.get("binding") if isinstance(data, dict) else None
         binding = await self.bindings.upsert_binding(
             event.get_sender_id(),
             api_binding
@@ -1640,10 +1675,50 @@ class DeltaForcePlugin(Star):
             },
         )
         await self._fill_binding_info(event, binding)
+        return binding, remote_ok, "" if remote_ok else self._message_of(res)
+
+    async def _finish_login(
+        self,
+        event: AstrMessageEvent,
+        token: str,
+        login_type: str,
+        source: str,
+    ) -> str:
+        _binding, remote_ok, remote_message = await self._save_binding(event, token, login_type)
+        role_res = None
+        if login_type in {"qq", "wechat"}:
+            role_res = await self.client.bind_character(token)
+
+        if remote_ok and (role_res is None or self._ok(role_res)):
+            suffix = "账号和游戏角色均已绑定。" if role_res is not None else "已绑定为当前账号。"
+            return f"{source}成功，{suffix}"
+        if remote_ok:
+            return (
+                f"{source}成功，账号已绑定；自动绑定游戏角色失败：{self._message_of(role_res)}。"
+                "可稍后发送 角色绑定 重试。"
+            )
+
+        local_notice = f"后端账号绑定未确认：{remote_message}；凭证已保存到 AstrBot 本地。"
+        if role_res is None:
+            return f"{source}成功，但{local_notice}"
+        if self._ok(role_res):
+            return f"{source}成功，游戏角色绑定已完成，但{local_notice}"
+        return (
+            f"{source}成功，但{local_notice}\n"
+            f"自动绑定游戏角色也失败：{self._message_of(role_res)}。可稍后发送 角色绑定 重试。"
+        )
+
+    async def _bind_token(self, event: AstrMessageEvent, token: str, login_type: str = "", quiet: bool = False) -> AsyncGenerator[Any, None]:
+        binding, remote_ok, remote_message = await self._save_binding(event, token, login_type)
         if not quiet:
             name = binding.get("nickname") or binding.get("delta_uid") or token[:8]
-            extra = "" if self._ok(res) else f"\n后端绑定接口未确认：{self._message_of(res)}\n已先保存到 AstrBot 本地绑定。"
-            yield event.plain_result(f"绑定成功：{name}{extra}")
+            if remote_ok:
+                yield event.plain_result(f"绑定成功：{name}")
+            else:
+                yield event.plain_result(
+                    f"后端绑定接口未确认：{remote_message}\n"
+                    f"已先保存到 AstrBot 本地绑定：{name}。"
+                )
 
     async def _fill_binding_info(self, event: AstrMessageEvent, binding: Dict[str, Any]):
         token = binding.get("framework_token", "")
