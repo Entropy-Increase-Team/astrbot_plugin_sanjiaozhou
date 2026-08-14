@@ -7,10 +7,12 @@ import json
 import os
 import re
 from html import unescape
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 import yaml
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
@@ -28,8 +30,8 @@ except Exception:
 
 Plain = getattr(Comp, "Plain", None) if Comp is not None else None
 
-from .core.client import DeltaForceClient
 from .core.calculator import DeltaCalculator
+from .core.client import DeltaForceClient
 from .core.data import DeltaDataManager
 from .core.media_cache import MusicCache
 from .core.render import DeltaRenderer
@@ -532,7 +534,7 @@ class DeltaForcePlugin(Star):
         if current:
             current_type = str(current.get("subscription_type") or "both")
             if current_type == sub_type:
-                local = self.subscriptions.upsert(
+                self.subscriptions.upsert(
                     event.get_sender_id(), binding_id,
                     {"subscription_id": self._subscription_id(current), "subscription_type": current_type},
                 )
@@ -1297,8 +1299,13 @@ class DeltaForcePlugin(Star):
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
             yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")
             return
-        if body in {"更新", "强制更新", "插件更新", "更新日志", "update", "update_log"}:
-            yield event.plain_result("AstrBot 插件请通过插件管理器或 Git 更新；当前版本 0.4.0。")
+        if body in {"更新日志", "update_log"}:
+            async for result in self._update_log(event):
+                yield result
+            return
+        if body in {"更新", "强制更新", "插件更新", "update"}:
+            async for result in self._update_plugin(event, force=body == "强制更新"):
+                yield result
             return
 
         yield event.plain_result("未识别的三角洲命令。发送 帮助 查看菜单。")
@@ -1345,6 +1352,42 @@ class DeltaForcePlugin(Star):
         )[:3500]
         async for r in self._render_or_text(event, "help/index.html", data, text, {"viewport_width": 1300, "viewport_height": 1600}):
             yield r
+
+    async def _update_log(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        path = Path(self.plugin_path) / "CHANGELOG.md"
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                content = file.read().strip()
+        except FileNotFoundError:
+            yield event.plain_result("当前安装包未包含更新日志。")
+            return
+        except Exception as exc:
+            yield event.plain_result(f"读取更新日志失败: {type(exc).__name__}")
+            return
+        if not content:
+            yield event.plain_result("更新日志暂无内容。")
+            return
+        suffix = "\n\n内容较长，已截取前 3500 字。" if len(content) > 3500 else ""
+        yield event.plain_result(content[:3500] + suffix)
+
+    async def _update_plugin(self, event: AstrMessageEvent, force: bool = False) -> AsyncGenerator[Any, None]:
+        if not event.is_admin():
+            yield event.plain_result("只有管理员可以更新三角洲行动插件。")
+            return
+        manager = getattr(self.context, "_star_manager", None)
+        if manager is None or not hasattr(manager, "update_plugin"):
+            yield event.plain_result("当前 AstrBot 环境未提供插件更新管理器，请在 WebUI 插件管理页更新。")
+            return
+        action = "强制更新" if force else "更新"
+        yield event.plain_result(f"正在通过 AstrBot 插件管理器{action}三角洲行动插件，请稍候。")
+        try:
+            await manager.update_plugin("sanjiaozhou")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            yield event.plain_result(f"插件{action}失败: {str(exc) or type(exc).__name__}")
+            return
+        yield event.plain_result("插件更新并重载成功。")
 
     async def _login(self, event: AstrMessageEvent, body: str) -> AsyncGenerator[Any, None]:
         platform_raw = re.sub(r"(登陆|登录)$", "", body).strip().lower()

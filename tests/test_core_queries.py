@@ -5,7 +5,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, mock_open, patch
 
 import httpx
 
@@ -128,8 +128,8 @@ PLUGIN_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PLUGIN_DIR.parent))
 _install_astrbot_stubs()
 
-from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.calculator import DeltaCalculator  # noqa: E402
+from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.render import DeltaRenderer  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.subscription import SubscriptionStore  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
@@ -268,6 +268,56 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("读取帮助配置失败", result[0]["text"])
         self.assertIn("帮助配置不可读", result[0]["text"])
+
+    async def test_update_commands_use_native_manager_and_report_errors(self):
+        manager = SimpleNamespace(
+            update_plugin=AsyncMock(side_effect=[None, RuntimeError("远端更新失败")])
+        )
+        plugin = self._plugin()
+        plugin.context = SimpleNamespace(_star_manager=manager)
+
+        success = await _collect(plugin._update_plugin(_Event()))
+        failure = await _collect(plugin._update_plugin(_Event(), force=True))
+
+        self.assertIn("正在通过 AstrBot 插件管理器更新", success[0]["text"])
+        self.assertIn("更新并重载成功", success[-1]["text"])
+        self.assertIn("正在通过 AstrBot 插件管理器强制更新", failure[0]["text"])
+        self.assertIn("远端更新失败", failure[-1]["text"])
+        self.assertEqual(manager.update_plugin.await_args_list[0].args, ("sanjiaozhou",))
+
+    async def test_update_command_requires_admin_and_native_manager(self):
+        class NonAdminEvent(_Event):
+            def is_admin(self):
+                return False
+
+        manager = SimpleNamespace(update_plugin=AsyncMock())
+        plugin = self._plugin()
+        plugin.context = SimpleNamespace(_star_manager=manager)
+
+        denied = await _collect(plugin._update_plugin(NonAdminEvent()))
+        plugin.context = SimpleNamespace()
+        unavailable = await _collect(plugin._update_plugin(_Event()))
+
+        self.assertIn("只有管理员", denied[0]["text"])
+        self.assertIn("未提供插件更新管理器", unavailable[0]["text"])
+        manager.update_plugin.assert_not_awaited()
+
+    async def test_update_log_handles_success_empty_missing_and_read_errors(self):
+        plugin = self._plugin()
+        plugin.plugin_path = str(PLUGIN_DIR)
+
+        success = await _collect(plugin._update_log(_Event()))
+        with patch("builtins.open", mock_open(read_data="")):
+            empty = await _collect(plugin._update_log(_Event()))
+        with patch("builtins.open", side_effect=FileNotFoundError):
+            missing = await _collect(plugin._update_log(_Event()))
+        with patch("builtins.open", side_effect=OSError("读取失败")):
+            error = await _collect(plugin._update_log(_Event()))
+
+        self.assertIn("0.4.0", success[0]["text"])
+        self.assertIn("暂无内容", empty[0]["text"])
+        self.assertIn("未包含更新日志", missing[0]["text"])
+        self.assertIn("读取更新日志失败", error[0]["text"])
 
     async def test_quick_repair_formats_success_and_rejects_invalid_inputs(self):
         calculator = SimpleNamespace(
