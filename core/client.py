@@ -84,7 +84,10 @@ class DeltaForceClient:
         client_id: str = "",
         json_body: bool = False,
     ) -> Dict[str, str]:
-        headers: Dict[str, str] = {"User-Agent": "astrbot-plugin-deltaforce/0.4.0"}
+        headers: Dict[str, str] = {
+            "User-Agent": "astrbot-plugin-deltaforce/0.4.0",
+            "X-Client-Type": "bot",
+        }
         if self.api_key:
             headers["X-API-Key"] = self.api_key
         if framework_token:
@@ -415,6 +418,82 @@ class DeltaForceClient:
 
     async def place_profit(self, params: Dict[str, Any]):
         return await self.get("/api/v1/df/place/profit", params=params, require_key=False)
+
+    async def list_record_subscriptions(self, user_identifier: str, client_id: str, client_type: str = "bot"):
+        """列出当前 API Key 作用域下的战绩订阅。"""
+        return await self.get(
+            "/api/v1/user/record-subscriptions",
+            params={"user_identifier": user_identifier, "client_id": client_id, "client_type": client_type},
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def create_record_subscription(
+        self,
+        binding_id: str,
+        subscription_type: str = "both",
+        poll_interval_sec: int = 300,
+        rank_detection_enabled: bool = False,
+        user_identifier: str = "",
+        client_id: str = "",
+    ):
+        return await self.post(
+            "/api/v1/user/record-subscriptions",
+            json_data={
+                "binding_id": binding_id,
+                "subscription_type": subscription_type,
+                "poll_interval_sec": poll_interval_sec,
+                "rank_detection_enabled": rank_detection_enabled,
+            },
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def get_record_subscription(self, subscription_id: str, user_identifier: str = "", client_id: str = ""):
+        return await self.get(
+            f"/api/v1/user/record-subscriptions/{subscription_id}",
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def delete_record_subscription(self, subscription_id: str, user_identifier: str = "", client_id: str = ""):
+        return await self.delete(
+            f"/api/v1/user/record-subscriptions/{subscription_id}",
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def set_record_subscription_enabled(self, subscription_id: str, enabled: bool, user_identifier: str = "", client_id: str = ""):
+        action = "enable" if enabled else "disable"
+        return await self.post(
+            f"/api/v1/user/record-subscriptions/{subscription_id}/{action}",
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def set_record_rank_detection(self, subscription_id: str, enabled: bool, user_identifier: str = "", client_id: str = ""):
+        action = "enable" if enabled else "disable"
+        return await self.post(
+            f"/api/v1/user/record-subscriptions/{subscription_id}/rank-detection/{action}",
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def list_record_events(self, subscription_id: str, page: int = 1, limit: int = 20, user_identifier: str = "", client_id: str = ""):
+        return await self.get(
+            f"/api/v1/user/record-subscriptions/{subscription_id}/events",
+            params={"page": page, "limit": limit},
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+
+    async def recent_record_subscription(self, subscription_id: str, record_type: str = "", user_identifier: str = "", client_id: str = ""):
+        return await self.get(
+            f"/api/v1/user/record-subscriptions/{subscription_id}/recent",
+            params={"record_type": record_type},
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
 
     async def ai_presets(self):
         return await self.get("/api/v1/df/tools/ai/presets")

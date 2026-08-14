@@ -2,3 +2,4 @@ httpx
 jinja2
 playwright
 PyYAML
+websockets>=12

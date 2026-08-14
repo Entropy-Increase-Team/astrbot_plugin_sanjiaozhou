@@ -7,7 +7,7 @@ import json
 import os
 import re
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 import yaml
 from astrbot.api import logger
@@ -20,11 +20,23 @@ try:
 except Exception:
     Comp = None
 
+try:
+    from astrbot.api.event import MessageChain, Plain
+except Exception:
+    MessageChain = None
+    Plain = None
+
 from .core.client import DeltaForceClient
 from .core.calculator import DeltaCalculator
 from .core.data import DeltaDataManager
 from .core.render import DeltaRenderer
+from .core.subscription import SubscriptionStore
 from .core.user import BindingManager
+
+try:
+    import websockets
+except Exception:  # 可选依赖缺失时保留 REST 查询能力
+    websockets = None
 
 
 SOL_ALIASES = {"sol", "烽火", "烽火地带", "摸金", "4"}
@@ -128,6 +140,7 @@ class DeltaForcePlugin(Star):
         )
         data_dir = str(StarTools.get_data_dir())
         self.bindings = BindingManager(data_dir)
+        self.subscriptions = SubscriptionStore(data_dir)
         self.data_mgr = DeltaDataManager(self.plugin_path, data_dir)
         self.calculator = DeltaCalculator(self.data_mgr)
         self.renderer = DeltaRenderer(
@@ -135,16 +148,35 @@ class DeltaForcePlugin(Star):
             render_timeout=int(self.config.get("render_timeout", 30000) or 30000),
         )
         self._static_task: Optional[asyncio.Task] = None
+        self._ws_task: Optional[asyncio.Task] = None
+        self._ws_stop = asyncio.Event()
+        self._ws_wakeup = asyncio.Event()
+        self._ws_requested = False
+        self._ws_connection = None
+        self._seen_record_events: Dict[str, int] = {}
         self._oauth_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._music_lists: Dict[str, Dict[str, Any]] = {}
         self._music_last: Dict[str, Dict[str, Any]] = {}
 
     async def initialize(self):
         self._static_task = asyncio.create_task(self.data_mgr.refresh_static(self.client))
+        self._ws_stop.clear()
+        self._ws_requested = bool(self.subscriptions.enabled_targets())
+        self._ws_task = asyncio.create_task(self._ws_supervisor())
 
     async def terminate(self):
         if self._static_task and not self._static_task.done():
             self._static_task.cancel()
+        self._ws_stop.set()
+        self._ws_wakeup.set()
+        if self._ws_connection is not None:
+            try:
+                await self._ws_connection.close()
+            except Exception:
+                pass
+        tasks = [task for task in (self._static_task, self._ws_task) if task and not task.done()]
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.client.close()
         await self.renderer.close()
 
@@ -375,6 +407,288 @@ class DeltaForcePlugin(Star):
                 yield event.image_result(img)
                 return
         yield event.plain_result(fallback)
+
+    @staticmethod
+    def _subscription_list(res: Any) -> List[Dict[str, Any]]:
+        payload = DeltaForceClient.data(res, {})
+        if isinstance(payload, dict):
+            payload = payload.get("list") or payload.get("subscriptions") or []
+        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+    @staticmethod
+    def _subscription_id(item: Dict[str, Any]) -> str:
+        return str(item.get("id") or item.get("subscription_id") or "").strip()
+
+    async def _subscription_binding(self, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
+        binding = await self.bindings.get_primary_binding(event.get_sender_id())
+        if not binding:
+            return None
+        binding_id = str(binding.get("binding_id") or "")
+        if not binding_id or binding_id.startswith("local-"):
+            return None
+        return binding
+
+    async def _record_subscription(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
+        """处理战绩订阅创建、取消和状态查询。"""
+        action = "create"
+        text = str(arg or "").strip()
+        if text.startswith("取消订阅") or text.startswith("取消"):
+            action = "delete"
+        elif text.startswith("订阅状态") or text in {"状态", "查询"}:
+            action = "status"
+
+        binding = await self._subscription_binding(event)
+        if not binding:
+            if action == "status":
+                yield event.plain_result("当前账号没有可用的后端绑定；本地绑定不能创建战绩订阅，请重新登录或刷新绑定。")
+            else:
+                yield event.plain_result("战绩订阅需要后端绑定 ID，请先完成登录和角色绑定。")
+            return
+
+        user_identifier = self._user_identifier(event)
+        client_id = self._client_id(event)
+        binding_id = str(binding.get("binding_id"))
+        response = await self.client.list_record_subscriptions(user_identifier, client_id)
+        if not self._ok(response):
+            yield event.plain_result(f"获取战绩订阅失败：{self._message_of(response)}")
+            return
+        items = self._subscription_list(response)
+        current = next((item for item in items if str(item.get("binding_id") or "") == binding_id), None)
+
+        if action == "status":
+            if not items:
+                yield event.plain_result("当前账号没有战绩订阅。发送“订阅 战绩 sol/mp/both”创建。")
+                return
+            lines = ["【战绩订阅】"]
+            for item in items:
+                sub_type = str(item.get("subscription_type") or "both")
+                state = "启用" if item.get("enabled", item.get("status") == "active") else "停用"
+                lines.append(
+                    f"{self._subscription_id(item) or '未知'}：{sub_type}，{state}，"
+                    f"间隔 {item.get('poll_interval_sec') or 0} 秒，失败 {item.get('consecutive_failures') or 0} 次"
+                )
+            yield event.plain_result("\n".join(lines))
+            return
+
+        if action == "delete":
+            if not current:
+                yield event.plain_result("当前账号没有可取消的战绩订阅。")
+                return
+            sub_id = self._subscription_id(current)
+            result = await self.client.delete_record_subscription(sub_id, user_identifier, client_id)
+            if not self._ok(result):
+                yield event.plain_result(f"取消战绩订阅失败：{self._message_of(result)}")
+                return
+            self.subscriptions.remove(event.get_sender_id(), binding_id)
+            self._ws_wakeup.set()
+            yield event.plain_result("战绩订阅已取消。")
+            return
+
+        parts = text.split()
+        if len(parts) > 1 and parts[1].lower() in {"战绩", "record"}:
+            type_token = parts[2] if len(parts) > 2 else "both"
+        else:
+            type_token = parts[1] if len(parts) > 1 else "both"
+        sub_type = type_token.lower()
+        sub_type = {"烽火": "sol", "烽火地带": "sol", "全面": "mp", "全面战场": "mp", "4": "sol", "5": "mp"}.get(sub_type, sub_type)
+        if sub_type not in {"sol", "mp", "both"}:
+            yield event.plain_result("订阅类型只能是 sol、mp 或 both，例如：订阅 战绩 both。")
+            return
+        if current:
+            current_type = str(current.get("subscription_type") or "both")
+            if current_type == sub_type:
+                local = self.subscriptions.upsert(
+                    event.get_sender_id(), binding_id,
+                    {"subscription_id": self._subscription_id(current), "subscription_type": current_type},
+                )
+                self._ws_requested = True
+                self._ws_wakeup.set()
+                yield event.plain_result(f"当前已存在 {current_type} 战绩订阅，已恢复本地推送配置。")
+                return
+            old_id = self._subscription_id(current)
+            deleted = await self.client.delete_record_subscription(old_id, user_identifier, client_id)
+            if not self._ok(deleted):
+                yield event.plain_result(f"切换订阅类型失败：无法删除旧订阅，{self._message_of(deleted)}")
+                return
+            self.subscriptions.remove(event.get_sender_id(), binding_id)
+
+        created = await self.client.create_record_subscription(
+            binding_id,
+            subscription_type=sub_type,
+            poll_interval_sec=int(self.config.get("record_poll_interval", 300) or 300),
+            rank_detection_enabled=bool(self.config.get("record_rank_detection", False)),
+            user_identifier=user_identifier,
+            client_id=client_id,
+        )
+        if not self._ok(created):
+            yield event.plain_result(f"创建战绩订阅失败：{self._message_of(created)}")
+            return
+        payload = DeltaForceClient.data(created, {})
+        subscription = payload.get("subscription") if isinstance(payload, dict) else payload
+        subscription = subscription if isinstance(subscription, dict) else {}
+        sub_id = self._subscription_id(subscription)
+        if not sub_id:
+            yield event.plain_result("后端未返回订阅 ID，无法启动推送；请稍后查询订阅状态。")
+            return
+        self.subscriptions.upsert(
+            event.get_sender_id(), binding_id,
+            {
+                "subscription_id": sub_id,
+                "subscription_type": sub_type,
+                "user_identifier": user_identifier,
+                "client_id": client_id,
+                "targets": {},
+            },
+        )
+        self._ws_requested = True
+        self._ws_wakeup.set()
+        yield event.plain_result(f"已创建 {sub_type} 战绩订阅（{sub_id}）。请用“开启本群订阅推送”或“开启私信订阅推送”设置接收目标。")
+
+    async def _subscription_target(self, event: AstrMessageEvent, kind: str, enabled: bool) -> AsyncGenerator[Any, None]:
+        binding = await self._subscription_binding(event)
+        if not binding:
+            yield event.plain_result("请先完成后端登录和角色绑定，再设置订阅推送目标。")
+            return
+        group_id = str(event.get_group_id() or "").strip()
+        if kind == "group" and not group_id:
+            yield event.plain_result("该命令需要在群聊中使用。")
+            return
+        if kind == "private" and group_id:
+            yield event.plain_result("私信推送目标请在私聊中设置。")
+            return
+        user_id = event.get_sender_id()
+        user_identifier = self._user_identifier(event)
+        result = await self.client.list_record_subscriptions(user_identifier, self._client_id(event))
+        if not self._ok(result):
+            yield event.plain_result(f"获取战绩订阅失败：{self._message_of(result)}")
+            return
+        current = next((item for item in self._subscription_list(result) if str(item.get("binding_id") or "") == str(binding.get("binding_id"))), None)
+        if not current:
+            yield event.plain_result("当前账号没有战绩订阅，请先发送“订阅 战绩 both”。")
+            return
+        sub_id = self._subscription_id(current)
+        self.subscriptions.upsert(user_id, binding["binding_id"], {"subscription_id": sub_id})
+        self.subscriptions.set_target(user_id, binding["binding_id"], event.unified_msg_origin, kind, enabled)
+        self._ws_requested = True
+        if not enabled and not self.subscriptions.enabled_targets():
+            self._ws_requested = False
+            if self._ws_connection is not None:
+                try:
+                    await self._ws_connection.close()
+                except Exception:
+                    pass
+        self._ws_wakeup.set()
+        status = "已开启" if enabled else "已关闭"
+        yield event.plain_result(f"{status}{'本群' if kind == 'group' else '私信'}战绩订阅推送。")
+
+    def _ws_client_id(self) -> str:
+        configured = str(self.config.get("client_id") or "").strip()
+        if configured:
+            return configured
+        for item in self.subscriptions.all():
+            client_id = str(item.get("client_id") or "").strip()
+            if client_id:
+                return client_id
+        return "astrbot"
+
+    def _ws_uri(self) -> Tuple[str, str]:
+        base = self.client._base_urls()[0]
+        parsed = urlparse(str(base))
+        scheme = "wss" if parsed.scheme == "https" else "ws"
+        query = {
+            "api_key": self.client.api_key,
+            "client_type": "bot",
+            "client_id": self._ws_client_id(),
+        }
+        uri = urlunparse((scheme, parsed.netloc, "/ws", "", urlencode(query), ""))
+        origin = f"{parsed.scheme or 'https'}://{parsed.netloc}" if parsed.netloc else "https://delta-test-api.shallow.ink"
+        return uri, origin
+
+    async def _ws_supervisor(self) -> None:
+        if websockets is None:
+            logger.warning("[三角洲订阅] 未安装 websockets，战绩实时推送不可用；REST 订阅仍可使用。")
+            return
+        backoff = 2
+        while not self._ws_stop.is_set():
+            if not self._ws_requested or not self.client.api_key:
+                try:
+                    await asyncio.wait_for(self._ws_wakeup.wait(), timeout=30)
+                except asyncio.TimeoutError:
+                    pass
+                self._ws_wakeup.clear()
+                continue
+            try:
+                await self._ws_run_once()
+                backoff = 2
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(f"[三角洲订阅] WebSocket 连接断开：{type(exc).__name__}，{backoff} 秒后重连")
+                try:
+                    await asyncio.wait_for(self._ws_stop.wait(), timeout=backoff)
+                except asyncio.TimeoutError:
+                    pass
+                backoff = min(backoff * 2, 60)
+
+    async def _ws_run_once(self) -> None:
+        uri, origin = self._ws_uri()
+        async with websockets.connect(uri, origin=origin, ping_interval=20, ping_timeout=60, close_timeout=5) as connection:
+            self._ws_connection = connection
+            envelope = {
+                "id": f"astrbot-{int(dt.datetime.now().timestamp() * 1000)}",
+                "type": "record.client.subscribe",
+                "kind": "request",
+                "data": {"client_id": self._ws_client_id()},
+                "ts": int(dt.datetime.now().timestamp() * 1000),
+            }
+            await connection.send(json.dumps(envelope, ensure_ascii=False))
+            async for raw in connection:
+                if self._ws_stop.is_set():
+                    break
+                try:
+                    message = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(message, dict) and message.get("kind") == "event" and message.get("type") == "record.new":
+                    await self._push_record_event(message.get("data") or {})
+        self._ws_connection = None
+
+    async def _push_record_event(self, data: Dict[str, Any]) -> None:
+        sub_id = str(data.get("subscription_id") or "")
+        if not sub_id:
+            return
+        event_key = f"{sub_id}:{data.get('record_id') or ''}:{data.get('event_time') or ''}"
+        if event_key in self._seen_record_events:
+            return
+        self._seen_record_events[event_key] = int(dt.datetime.now().timestamp())
+        if len(self._seen_record_events) > 512:
+            oldest = sorted(self._seen_record_events, key=self._seen_record_events.get)[:128]
+            for key in oldest:
+                self._seen_record_events.pop(key, None)
+        record = data.get("record") if isinstance(data.get("record"), dict) else {}
+        record_type = str(data.get("record_type") or "未知")
+        map_name = record.get("MapName") or record.get("mapName") or record.get("MapId") or "未知地图"
+        title = "烽火地带" if record_type == "sol" else "全面战场" if record_type == "mp" else record_type
+        lines = [f"【三角洲战绩推送｜{title}】", f"地图：{map_name}"]
+        for key, label in (("KillNum", "击杀"), ("killNum", "击杀"), ("Gainedprice", "收益"), ("gainedPrice", "收益"), ("Result", "结果"), ("dtEventTime", "时间")):
+            if key in record and record[key] not in (None, ""):
+                lines.append(f"{label}：{record[key]}")
+        lines.append(f"记录 ID：{data.get('record_id') or '未知'}")
+        if MessageChain is None or Plain is None:
+            logger.warning("[三角洲订阅] 当前 AstrBot 版本缺少 MessageChain，无法发送主动推送。")
+            return
+        text = "\n".join(lines)
+        for item in self.subscriptions.all():
+            if str(item.get("subscription_id") or "") != sub_id:
+                continue
+            targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
+            for umo, flags in targets.items():
+                if not isinstance(flags, dict) or not (flags.get("group") or flags.get("private")):
+                    continue
+                try:
+                    await self.context.send_message(umo, MessageChain([Plain(text)]))
+                except Exception as exc:
+                    logger.warning(f"[三角洲订阅] 推送到 {umo} 失败：{type(exc).__name__}")
 
     async def _dispatch(self, event: AstrMessageEvent, msg: str) -> AsyncGenerator[Any, None]:
         body = self._body(msg)
@@ -639,13 +953,45 @@ class DeltaForcePlugin(Star):
             return
 
         if re.fullmatch(r"(ws|WS|websocket|WebSocket)(连接|启动|开启|断开|关闭|停止|状态|status)", body):
-            yield event.plain_result("AstrBot 版暂未启用云崽 WebSocket 服务层；REST 查询命令可直接使用。")
+            if body.endswith(("断开", "关闭", "停止")):
+                self._ws_requested = False
+                self._ws_wakeup.set()
+                if self._ws_connection is not None:
+                    try:
+                        await self._ws_connection.close()
+                    except Exception:
+                        pass
+                yield event.plain_result("已停止三角洲 WebSocket 战绩推送。")
+            elif body.endswith(("状态", "status")):
+                state = "已连接" if self._ws_connection is not None else "等待连接"
+                if websockets is None:
+                    state = "未安装 websockets"
+                yield event.plain_result(f"WebSocket 状态：{state}。")
+            else:
+                self._ws_requested = True
+                self._ws_wakeup.set()
+                yield event.plain_result("已请求连接三角洲 WebSocket，连接成功后会自动订阅当前客户端战绩。")
             return
-        if re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body) or "订阅" in body or "广播" in body:
+        if body.startswith(("订阅", "取消订阅", "订阅状态")):
+            async for result in self._record_subscription(event, body):
+                yield result
+            return
+        if body in {"开启本群订阅推送", "关闭本群订阅推送"}:
+            async for result in self._subscription_target(event, "group", body.startswith("开启")):
+                yield result
+            return
+        if body in {"开启私信订阅推送", "关闭私信订阅推送"}:
+            async for result in self._subscription_target(event, "private", body.startswith("开启")):
+                yield result
+            return
+        if "广播" in body or "通知" in body:
+            yield event.plain_result("最新版后端未提供通用通知广播协议，该功能当前无法接入；战绩实时推送不受影响。")
+            return
+        if re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body):
             yield event.plain_result("该命令在 AstrBot 版已保留入口，定时推送/订阅需要在 AstrBot 任务体系中单独配置。")
             return
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
-            yield event.plain_result("房间功能依赖云崽专用实时服务，AstrBot 版暂未接入。")
+            yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")
             return
         if body in {"更新", "强制更新", "插件更新", "更新日志", "update", "update_log"}:
             yield event.plain_result("AstrBot 插件请通过插件管理器或 Git 更新；当前版本 0.4.0。")

@@ -1,9 +1,10 @@
+import asyncio
 import sys
 import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 class _Logger:
@@ -25,6 +26,11 @@ class _Filter:
 class _Plain:
     def __init__(self, text: str):
         self.text = text
+
+
+class _MessageChain:
+    def __init__(self, chain=None):
+        self.chain = list(chain or [])
 
 
 class _Image:
@@ -78,6 +84,8 @@ def _install_astrbot_stubs():
     components = types.ModuleType("astrbot.api.message_components")
     api.logger = _Logger()
     event.AstrMessageEvent = object
+    event.MessageChain = _MessageChain
+    event.Plain = _Plain
     event.filter = _Filter
     star.Context = object
     star.Star = _Star
@@ -107,6 +115,7 @@ _install_astrbot_stubs()
 
 from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.render import DeltaRenderer  # noqa: E402
+from astrbot_plugin_sanjiaozhou.core.subscription import SubscriptionStore  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
 
 
@@ -218,6 +227,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
         await client.object_search("1001，1002")
         self.assertEqual(client.get.await_args.kwargs["params"]["objectID"], "1001,1002")
+
         await client.material_price("测试材料")
         self.assertEqual(client.get.await_args.kwargs["params"]["objectName"], "测试材料")
         self.assertNotIn("id", client.get.await_args.kwargs["params"])
@@ -225,6 +235,152 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.ai_review("fixture-token", "sol", "rp")
         self.assertEqual(client.post.await_args.args[0], "/api/v1/df/tools/ai")
         self.assertEqual(client.post.await_args.kwargs["json_data"], {"type": "sol", "preset": "rp"})
+
+    async def test_client_uses_authoritative_record_subscription_endpoints(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+        client.post = AsyncMock(return_value={"code": 0, "data": {}})
+        client.delete = AsyncMock(return_value={"code": 0, "data": {}})
+
+        await client.list_record_subscriptions("qq_fixture", "fixture-bot")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/user/record-subscriptions")
+        self.assertEqual(client.get.await_args.kwargs["user_identifier"], "qq_fixture")
+
+        await client.create_record_subscription(
+            "fixture-binding", "both", 300, True, "qq_fixture", "fixture-bot"
+        )
+        self.assertEqual(client.post.await_args.args[0], "/api/v1/user/record-subscriptions")
+        self.assertEqual(
+            client.post.await_args.kwargs["json_data"],
+            {
+                "binding_id": "fixture-binding",
+                "subscription_type": "both",
+                "poll_interval_sec": 300,
+                "rank_detection_enabled": True,
+            },
+        )
+
+        await client.delete_record_subscription("fixture-sub", "qq_fixture", "fixture-bot")
+        self.assertEqual(
+            client.delete.await_args.args[0],
+            "/api/v1/user/record-subscriptions/fixture-sub",
+        )
+
+    def test_subscription_store_persists_targets_atomically(self):
+        store = object.__new__(SubscriptionStore)
+        store.path = PLUGIN_DIR / "fixture-subscriptions.json"
+        store._data = {"subscriptions": {}}
+        with patch.object(store, "_save"):
+            store.upsert(
+                "fixture-user",
+                "fixture-binding",
+                {"subscription_id": "fixture-sub", "subscription_type": "both"},
+            )
+            store.set_target(
+                "fixture-user",
+                "fixture-binding",
+                "aiocqhttp:GroupMessage:123",
+                "group",
+                True,
+            )
+        item = store.get("fixture-user", "fixture-binding")
+        self.assertEqual(item["subscription_id"], "fixture-sub")
+        self.assertEqual(
+            store.enabled_targets(),
+            [{"umo": "aiocqhttp:GroupMessage:123", "binding_id": "fixture-binding"}],
+        )
+        with patch.object(Path, "write_text") as write_text, patch.object(Path, "replace") as replace:
+            store._save()
+        write_text.assert_called_once()
+        self.assertEqual(write_text.call_args.kwargs["encoding"], "utf-8")
+        replace.assert_called_once_with(store.path)
+
+    async def test_record_subscription_success_empty_and_error(self):
+        class Bindings:
+            async def get_primary_binding(self, _user_id):
+                return {"binding_id": "fixture-binding", "framework_token": "fixture-token"}
+
+        class Store:
+            def __init__(self):
+                self.saved = None
+
+            def upsert(self, user_id, binding_id, values):
+                self.saved = (user_id, binding_id, values)
+                return values
+
+            def remove(self, *_args):
+                return None
+
+        client = SimpleNamespace(
+            list_record_subscriptions=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "fixture-error", "data": None},
+                ]
+            ),
+            create_record_subscription=AsyncMock(
+                return_value={"code": 0, "data": {"subscription": {"id": "fixture-sub"}}}
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+        plugin.subscriptions = Store()
+        plugin.config.update({"client_id": "fixture-bot", "record_poll_interval": 300})
+        plugin._ws_requested = False
+        plugin._ws_wakeup = asyncio.Event()
+
+        success = await _collect(plugin._record_subscription(_Event(), "订阅 战绩"))
+        empty = await _collect(plugin._record_subscription(_Event(), "订阅状态 战绩"))
+        error = await _collect(plugin._record_subscription(_Event(), "订阅状态 战绩"))
+
+        self.assertIn("已创建 both 战绩订阅", success[0]["text"])
+        self.assertIn("没有战绩订阅", empty[0]["text"])
+        self.assertIn("fixture-error", error[0]["text"])
+        self.assertEqual(plugin.subscriptions.saved[2]["subscription_id"], "fixture-sub")
+
+    async def test_record_event_push_is_deduplicated(self):
+        plugin = self._plugin()
+        plugin.context = SimpleNamespace(send_message=AsyncMock(return_value=True))
+        plugin.subscriptions = SimpleNamespace(
+            all=lambda: [
+                {
+                    "subscription_id": "fixture-sub",
+                    "targets": {"aiocqhttp:GroupMessage:123": {"group": True}},
+                }
+            ]
+        )
+        plugin._seen_record_events = {}
+        event_data = {
+            "subscription_id": "fixture-sub",
+            "record_id": "fixture-record",
+            "record_type": "sol",
+            "event_time": "2026-08-14T12:00:00Z",
+            "record": {"MapName": "零号大坝", "KillNum": 3, "Gainedprice": 100000},
+        }
+
+        await plugin._push_record_event(event_data)
+        await plugin._push_record_event(event_data)
+
+        plugin.context.send_message.assert_awaited_once()
+        chain = plugin.context.send_message.await_args.args[1]
+        self.assertIn("零号大坝", chain.chain[0].text)
+        self.assertIn("收益：100000", chain.chain[0].text)
+
+    def test_ws_uri_reuses_subscription_client_id(self):
+        plugin = self._plugin()
+        plugin.client = SimpleNamespace(
+            api_key="fixture-key",
+            _base_urls=lambda: ["https://delta-test-api.shallow.ink"],
+        )
+        plugin.config = {}
+        plugin.subscriptions = SimpleNamespace(all=lambda: [{"client_id": "fixture-bot"}])
+
+        uri, origin = plugin._ws_uri()
+
+        self.assertIn("client_id=fixture-bot", uri)
+        self.assertTrue(uri.startswith("wss://delta-test-api.shallow.ink/ws?"))
+        self.assertEqual(origin, "https://delta-test-api.shallow.ink")
 
     async def test_user_info_success_missing_role_and_error_branches(self):
         success_payload = {

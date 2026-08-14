@@ -62,5 +62,15 @@
     "description": "TTS 合成任务状态轮询间隔，单位秒。",
     "type": "int",
     "default": 5
+  },
+  "record_poll_interval": {
+    "description": "后端战绩订阅轮询间隔，单位秒；后端会限制在 60 至 3600 秒。",
+    "type": "int",
+    "default": 300
+  },
+  "record_rank_detection": {
+    "description": "创建战绩订阅时同步开启排位判断。",
+    "type": "bool",
+    "default": false
   }
 }
