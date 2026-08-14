@@ -6,6 +6,8 @@ import httpx
 
 from astrbot.api import logger
 
+from .version import PLUGIN_VERSION
+
 DEFAULT_URLS = {
     "default": "https://delta-test-api.shallow.ink",
     "eo": "https://delta-test-api.shallow.ink",
@@ -108,7 +110,7 @@ class DeltaForceClient:
         json_body: bool = False,
     ) -> Dict[str, str]:
         headers: Dict[str, str] = {
-            "User-Agent": "astrbot-plugin-deltaforce/0.4.1",
+            "User-Agent": f"astrbot-plugin-deltaforce/{PLUGIN_VERSION}",
             "X-Client-Type": "bot",
         }
         if self.api_key:

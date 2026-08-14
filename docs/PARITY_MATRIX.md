@@ -45,7 +45,7 @@
 | 报告 | `apps/report/RecordSubscription.js` | `subscribeRecord`、`unsubscribeRecord`、`getSubscriptionStatus`、`enableGroupPush`、`disableGroupPush`、`enablePrivatePush`、`disablePrivatePush` | 战绩订阅、状态、群/私聊推送开关 | 合法根命令 `订阅`、`取消订阅`、`订阅状态`，以 `战绩` 为参数 | `_record_subscription`、`_subscription_target`、`_ws_supervisor` | `GET/POST /api/v1/user/record-subscriptions`；详情、删除、启停、事件、最近战绩子路由；WS `/ws` 的 `record.client.subscribe`、`record.new` | 文本战绩推送 | 有 | 创建、取消、状态、类型切换、群目标和事件推送 fixture 通过 | 无订阅、无订阅 ID、无后端绑定 fixture 通过 | REST、删除旧订阅、目标查询和多目标发送错误 fixture 通过 | 部分（仍需部署环境真实连接复验） |
 | 报告 | `apps/report/Weekly.js` | `getWeeklyReport`、`toggleWeeklyPush` | 周报、周报推送开关 | 周报；开启/关闭周报推送 | `_weekly`、`_toggle_scheduled_push` | `GET /api/v1/df/person/weeklyrecord`；Query：`type`、`date`、`showExtra` | `weeklyReport` | 有 | 查询、推送 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 系统 | `apps/system/Help.js` | `help`、`entertainmentHelp` | 帮助、娱乐帮助 | 帮助、娱乐帮助、计算帮助及别名 | `_help`、`_calculator_help` | 无 | `help/index.html` | 有 | Playwright fixture 通过 | 不适用 | 配置读取失败 fixture 通过 | 已验证 |
-| 系统 | `apps/system/Update.js` | `update`、`update_log` | 更新、强制更新、更新日志 | 更新、强制更新、插件更新、update、更新日志、update_log | `_update_plugin`、`_update_log` | AstrBot 原生 `StarManager.update_plugin("sanjiaozhou")`；本地 `CHANGELOG.md` | 无 | 有 | 原生更新管理器调用与更新日志 fixture 通过 | 空日志与管理器缺失 fixture 通过 | 非管理员、更新失败和日志读取失败 fixture 通过 | 已验证 |
+| 系统 | `apps/system/Update.js` | `update`、`update_log` | 更新、强制更新、更新日志 | 更新、强制更新、插件更新、update、更新日志、update_log | `_update_plugin`、`_update_log`、`_parse_changelog` | AstrBot 原生 `StarManager.update_plugin("sanjiaozhou")`；本地 `CHANGELOG.md` | `help/version-info.html` | 有 | 原生更新管理器、最近两版解析、图片组件与 Playwright fixture 通过 | 空日志与管理器缺失 fixture 通过 | 非管理员、更新失败、日志读取和渲染失败 fixture 通过 | 已验证 |
 | 系统 | `apps/system/WebSocketClient.js` | `connectWebSocket`、`disconnectWebSocket`、`getWebSocketStatus` | WebSocket 连接、断开、状态 | ws连接及大量别名 | `_ws_supervisor`、`_ws_run_once`、`_push_record_event` | `/ws`；`X-API-Key` 握手；`record.client.subscribe`；`record.new` | 无 | 有 | 权威协议、订阅确认、事件分发、去重与多目标 fixture 通过 | 不适用 | 订阅拒绝、非 JSON、消费异常清理与发送失败隔离 fixture 通过 | 部分（仍需部署环境真实连接复验） |
 | 工具 | `apps/tools/AIEvaluation.js` | `getAiCommentary`、`getAiCommentaryWithPreset`、`listAiPresets` | AI 锐评、指定预设、预设列表 | ai锐评、ai评价、ai预设列表 | `_ai_review`、`_ai_presets` | `POST /api/v1/df/tools/ai`，Body：`type`、`preset`；`GET /api/v1/df/tools/ai/presets` | 无 | 有 | 正文、模式别名、预设列表与请求 Body fixture 通过 | 空正文、空预设 fixture 通过 | API 错误 fixture 通过 | 已验证 |
 | 工具 | `apps/tools/Calculator.js` | `startDamageCalculation`、`startReadinessCalculation`、`startRepairCalculation`、`quickRepairCalculation`、`quickDamageCalculation`、`showHelp`、`showMappingTable`、`cancelCalculation` | 伤害、战备、维修、修甲、帮助、映射表、取消 | 伤害计算、战备计算、维修计算、修甲、计算帮助、计算映射表、取消计算 | `_quick_damage`、`_quick_repair`、`_readiness_session`、`DeltaCalculator.calculate_readiness` | `resources/data` 静态数据与本地计算逻辑；会话使用 AstrBot `SessionWaiter` | 帮助 YAML | 有 | 快速伤害/维修、最低成本排序、交互会话与真实静态数据 fixture 通过 | 无组合 fixture 通过 | 参数错误、静态数据失败和会话超时 fixture 通过 | 已验证 |
@@ -127,7 +127,7 @@
 
 ## 当前验证汇总
 
-- 2026-08-14 全量脱敏单元测试 `136/136` 通过。
+- 2026-08-14 全量脱敏单元测试持续通过；当前准确数量以本轮测试输出为准。
 - 登录专项覆盖二维码有效期的未来、已过期、缺失、非法值，以及 Unix 秒、Unix 毫秒和 ISO 时间格式。
 - 扫码、Cookie、OAuth 的收尾提示覆盖后端账号绑定成功/失败与角色绑定成功/失败组合；后端未确认时只说明本地暂存，不再误报完整绑定成功。
 - 网页授权覆盖权威请求体、相对授权链接、批准领取、拒绝、过期、重复领取缺失凭证及连续状态查询失败。

@@ -1,37 +1,57 @@
-{{extend elemLayout}}
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="{{ _res_path }}help/version-info.css">
+  <style>
+    @font-face {
+      font-family: "ProjectD";
+      src: url("{{ _res_path }}fonts/p-med.ttf") format("truetype");
+      font-weight: 400;
+    }
+    @font-face {
+      font-family: "ProjectD";
+      src: url("{{ _res_path }}fonts/p-bold.ttf") format("truetype");
+      font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <main id="container" class="container">
+    <header class="page-header">
+      <div>
+        <p class="eyebrow">DELTA FORCE · ASTRBOT</p>
+        <h1>版本更新</h1>
+      </div>
+      <div class="version-badge">v{{ currentVersion }}</div>
+    </header>
 
-{{block 'css'}}
-<link rel="stylesheet" type="text/css" href="{{_res_path}}/help/version-info.css"/>
-{{/block}}
-
-{{block 'main'}}
-{{each changelogs ds idx}}
-<div class="hydro-bg log-cont">
-  {{set v = ds.version }}
-  {{set isDev = v[v.length-1] === 'v'}}
-  <div class="cont {{isDev ? 'dev-cont': ''}}">
-    {{if idx === 0 }}
-    <div class="cont-title current-version">当前版本 {{v}}</div>
-    {{else}}
-    <div class="cont-title">{{name || 'Delta-Force-Plugin'}} 版本 {{v}}</div>
-    {{/if}}
-    <div class="cont-body">
-      <ul class="log-ul">
-        {{each ds.logs log}}
-        <li>
-          <p>{{@log.title}}</p>
-          {{if log.logs.length > 0}}
-          <ul class="sub-log-ul">
-            {{each log.logs ls}}
-            <li>{{@ls}}</li>
-            {{/each}}
+    {% for release in changelogs %}
+    <section class="log-cont{% if loop.first %} current{% endif %}">
+      <header class="release-header">
+        <div>
+          <p class="release-label">{% if loop.first %}当前版本{% else %}历史版本{% endif %}</p>
+          <h2>{{ name }} {{ release.version }}</h2>
+        </div>
+        <time>{{ release.date }}</time>
+      </header>
+      <div class="release-body">
+        {% for section in release.sections %}
+        <section class="change-section">
+          <h3>{{ section.title }}</h3>
+          <ul>
+            {% for item in section["items"] %}
+            <li>{{ item }}</li>
+            {% endfor %}
           </ul>
-          {{/if}}
-        </li>
-        {{/each}}
-      </ul>
-    </div>
-  </div>
-</div>
-{{/each}}
-{{/block}}
+        </section>
+        {% endfor %}
+      </div>
+    </section>
+    {% endfor %}
+
+    <footer>ASTRBOT PLUGIN · SANJIAOZHOU</footer>
+  </main>
+</body>
+</html>

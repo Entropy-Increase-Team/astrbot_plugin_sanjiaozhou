@@ -38,6 +38,7 @@ from .core.media_cache import MusicCache
 from .core.render import DeltaRenderer
 from .core.subscription import SubscriptionStore
 from .core.user import BindingManager
+from .core.version import PLUGIN_VERSION
 
 try:
     import websockets
@@ -152,7 +153,7 @@ DELTA_COMMAND_SPECS = [
     "sanjiaozhou",
     "bvzrays & Entropy-Increase-Team",
     "三角洲行动 AstrBot 插件",
-    "0.4.1",
+    PLUGIN_VERSION,
     "https://github.com/Entropy-Increase-Team/astrbot_plugin_sanjiaozhou",
 )
 class DeltaForcePlugin(Star):
@@ -1428,6 +1429,44 @@ class DeltaForcePlugin(Star):
         async for r in self._render_or_text(event, "help/index.html", data, text, {"viewport_width": 1300, "viewport_height": 1600}):
             yield r
 
+    @staticmethod
+    def _parse_changelog(content: str, limit: int = 2) -> List[Dict[str, Any]]:
+        releases: List[Dict[str, Any]] = []
+        current: Optional[Dict[str, Any]] = None
+        section: Optional[Dict[str, Any]] = None
+
+        for line in str(content or "").splitlines():
+            text = line.strip()
+            version_match = re.fullmatch(r"##\s+\[([^\]]+)\]\s*-\s*(.+)", text)
+            if version_match:
+                if current and current["sections"]:
+                    releases.append(current)
+                    if len(releases) >= max(1, limit):
+                        break
+                current = {
+                    "version": version_match.group(1).strip(),
+                    "date": version_match.group(2).strip(),
+                    "sections": [],
+                }
+                section = None
+                continue
+            if not current:
+                continue
+            section_match = re.fullmatch(r"###\s+(.+)", text)
+            if section_match:
+                section = {"title": section_match.group(1).strip(), "items": []}
+                current["sections"].append(section)
+                continue
+            item_match = re.fullmatch(r"-\s+(.+)", text)
+            if item_match and section is not None:
+                section["items"].append(item_match.group(1).strip())
+
+        if current and current["sections"] and len(releases) < max(1, limit):
+            releases.append(current)
+        for release in releases:
+            release["sections"] = [item for item in release["sections"] if item["items"]]
+        return [release for release in releases if release["sections"]][: max(1, limit)]
+
     async def _update_log(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         path = Path(self.plugin_path) / "CHANGELOG.md"
         try:
@@ -1443,7 +1482,24 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("更新日志暂无内容。")
             return
         suffix = "\n\n内容较长，已截取前 3500 字。" if len(content) > 3500 else ""
-        yield event.plain_result(content[:3500] + suffix)
+        fallback = content[:3500] + suffix
+        changelogs = self._parse_changelog(content)
+        if not changelogs:
+            yield event.plain_result(fallback)
+            return
+        data = {
+            "name": "三角洲行动",
+            "currentVersion": PLUGIN_VERSION,
+            "changelogs": changelogs,
+        }
+        async for result in self._render_or_text(
+            event,
+            "help/version-info.html",
+            data,
+            fallback,
+            {"viewport_width": 760, "viewport_height": 1200},
+        ):
+            yield result
 
     async def _update_plugin(self, event: AstrMessageEvent, force: bool = False) -> AsyncGenerator[Any, None]:
         if not event.is_admin():

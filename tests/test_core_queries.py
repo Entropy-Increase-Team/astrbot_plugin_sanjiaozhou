@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sys
 import types
 import unittest
@@ -9,6 +10,7 @@ from unittest.mock import AsyncMock, Mock, mock_open, patch
 from urllib.parse import unquote
 
 import httpx
+import yaml
 
 
 class _Logger:
@@ -133,6 +135,7 @@ from astrbot_plugin_sanjiaozhou.core.calculator import DeltaCalculator  # noqa: 
 from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.render import DeltaRenderer  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.subscription import SubscriptionStore  # noqa: E402
+from astrbot_plugin_sanjiaozhou.core.version import PLUGIN_VERSION  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
 
 
@@ -315,10 +318,56 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         with patch("builtins.open", side_effect=OSError("读取失败")):
             error = await _collect(plugin._update_log(_Event()))
 
-        self.assertIn("0.4.1", success[0]["text"])
+        self.assertIn("0.4.2", success[0]["text"])
         self.assertIn("暂无内容", empty[0]["text"])
         self.assertIn("未包含更新日志", missing[0]["text"])
         self.assertIn("读取更新日志失败", error[0]["text"])
+
+    async def test_update_log_parses_recent_versions_and_renders_image(self):
+        plugin = self._plugin()
+        plugin.plugin_path = str(PLUGIN_DIR)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-version.png")
+        )
+
+        result = await _collect(plugin._update_log(_Event()))
+
+        self.assertEqual(result[0]["type"], "image")
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "help/version-info.html")
+        self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
+        self.assertEqual(
+            [item["version"] for item in render_call.args[1]["changelogs"]],
+            ["0.4.2", "0.4.1"],
+        )
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
+
+    async def test_update_log_falls_back_when_rendering_fails(self):
+        plugin = self._plugin()
+        plugin.plugin_path = str(PLUGIN_DIR)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(render_html=AsyncMock(return_value=None))
+
+        result = await _collect(plugin._update_log(_Event()))
+
+        self.assertEqual(result[0]["type"], "plain")
+        self.assertIn("0.4.2", result[0]["text"])
+
+    def test_release_version_is_consistent_across_public_files(self):
+        metadata = yaml.safe_load((PLUGIN_DIR / "metadata.yaml").read_text(encoding="utf-8"))
+        readme = (PLUGIN_DIR / "README.md").read_text(encoding="utf-8")
+        changelog = (PLUGIN_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
+        client = object.__new__(DeltaForceClient)
+        client.api_key = ""
+
+        self.assertEqual(metadata["version"], PLUGIN_VERSION)
+        self.assertIn(f"当前版本：`{PLUGIN_VERSION}`", readme)
+        self.assertRegex(changelog, rf"(?m)^## \[{re.escape(PLUGIN_VERSION)}\]")
+        self.assertEqual(
+            client._headers()["User-Agent"],
+            f"astrbot-plugin-deltaforce/{PLUGIN_VERSION}",
+        )
 
     async def test_quick_repair_formats_success_and_rejects_invalid_inputs(self):
         calculator = SimpleNamespace(
@@ -2754,6 +2803,17 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "deBuffList": [],
                 "buffList": [],
             },
+            "help/version-info.html": {
+                "name": "三角洲行动",
+                "currentVersion": PLUGIN_VERSION,
+                "changelogs": [
+                    {
+                        "version": PLUGIN_VERSION,
+                        "date": "2026-08-14",
+                        "sections": [{"title": "新增", "items": ["测试更新日志"]}],
+                    }
+                ],
+            },
         }
         for asset in (
             "imgs/redCollection/bg.webp",
@@ -2761,6 +2821,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             "imgs/redCollection/red_bg2.png",
             "imgs/redCollection/red_tit.webp",
             "imgs/others/logo.png",
+            "help/version-bg.jpg",
+            "fonts/p-med.ttf",
+            "fonts/p-bold.ttf",
         ):
             self.assertTrue((PLUGIN_DIR / "resources" / asset).is_file(), asset)
         try:
