@@ -30,13 +30,13 @@ calculatorHelpList:
           desc: "查看快捷伤害计算用法"
         - icon: 33
           title: "战备计算"
-          desc: "保留入口，AstrBot版暂未接入交互会话"
+          desc: "启动原生交互会话，计算最低成本配装"
         - icon: 51
           title: "维修计算"
           desc: "查看快捷维修计算用法"
         - icon: 48
           title: "取消计算"
-          desc: "保留入口，直接命令无需会话"
+          desc: "取消当前交互式计算会话"
     - order: 2
       group: "快捷指令"
       list:

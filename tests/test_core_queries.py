@@ -59,6 +59,17 @@ class _Record:
     def fromURL(value: str, **kwargs):
         return _Record(value, **kwargs)
 
+    @staticmethod
+    def fromFileSystem(value: str, **kwargs):
+        return _Record(f"file:///{value}", **kwargs)
+
+
+class _File:
+    def __init__(self, name: str, file: str = "", url: str = ""):
+        self.name = name
+        self.file = file
+        self.url = url
+
 
 class _Star:
     def __init__(self, context=None):
@@ -95,6 +106,7 @@ def _install_astrbot_stubs():
     components.Plain = _Plain
     components.Image = _Image
     components.Record = _Record
+    components.File = _File
     astrbot.api = api
     astrbot.core = core
     sys.modules.update(
@@ -114,6 +126,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 _install_astrbot_stubs()
 
 from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
+from astrbot_plugin_sanjiaozhou.core.calculator import DeltaCalculator  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.render import DeltaRenderer  # noqa: E402
 from astrbot_plugin_sanjiaozhou.core.subscription import SubscriptionStore  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DeltaForcePlugin  # noqa: E402
@@ -185,6 +198,35 @@ class _DataManager:
         return str(value or "")
 
 
+class _ReadinessDataManager:
+    def __init__(self):
+        self.data = {
+            "equipment.json": {
+                "equipment": {
+                    "body_armor": [{"name": "测试甲（全新）", "marketPrice": 100, "readinessValue": 120, "quality": 1}],
+                    "helmets": [{"name": "测试盔（全新）", "marketPrice": 50, "readinessValue": 60, "quality": 1}],
+                    "chest_rigs": [{"name": "测试胸挂", "marketPrice": 30, "readinessValue": 40, "quality": 1}],
+                    "backpacks": [{"name": "测试背包", "marketPrice": 20, "readinessValue": 30, "quality": 1}],
+                }
+            },
+            "armors.json": {
+                "armors": {
+                    "body_armor": [{"name": "测试甲", "protectionLevel": 1}],
+                    "helmets": [{"name": "测试盔", "protectionLevel": 1}],
+                }
+            },
+            "weapons_sol.json": {
+                "weapons": {
+                    "assault_rifles": [{"name": "测试步枪", "marketPrice": 80, "readinessValue": 100}],
+                    "pistols": [{"name": "测试手枪", "marketPrice": 10, "readinessValue": 20}],
+                }
+            },
+        }
+
+    def load_json_data(self, name):
+        return self.data.get(name)
+
+
 async def _collect(generator):
     return [item async for item in generator]
 
@@ -222,6 +264,16 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.map_stats("fixture-token", "sol", "all", "100")
         params = client.get.await_args.kwargs["params"]
         self.assertEqual(params, {"type": "sol", "serial": "all", "mapId": "100"})
+
+    def test_readiness_calculator_returns_lowest_cost_combinations(self):
+        calculator = DeltaCalculator(_ReadinessDataManager())
+        result = calculator.calculate_readiness(150)
+
+        self.assertTrue(result["success"])
+        self.assertGreater(result["totalCombinations"], 0)
+        costs = [item["totalCost"] for item in result["topCombinations"]]
+        self.assertEqual(costs, sorted(costs))
+        self.assertGreaterEqual(result["topCombinations"][0]["totalReadiness"], 150)
 
     async def test_client_uses_authoritative_tool_endpoints_and_parameters(self):
         client = object.__new__(DeltaForceClient)

@@ -79,9 +79,9 @@ entertainmentHelpList:
       - icon: 78
         title: "tts角色详情 [角色ID]"
         desc: "查看指定角色的详细信息"
-      - icon: 78
-        title: "tts帮助"
-        desc: "查看TTS功能详细使用说明"
       - icon: 64
         title: "tts上传"
         desc: "上传上次合成的语音文件"
+      - icon: 87
+        title: "tts重播"
+        desc: "重播上次合成的语音"

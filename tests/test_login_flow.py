@@ -3,7 +3,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 
 class _Logger:
@@ -42,6 +42,17 @@ class _Record:
     def fromURL(value: str, **kwargs):
         return _Record(value, **kwargs)
 
+    @staticmethod
+    def fromFileSystem(value: str, **kwargs):
+        return _Record(f"file:///{value}", **kwargs)
+
+
+class _File:
+    def __init__(self, name: str, file: str = "", url: str = ""):
+        self.name = name
+        self.file = file
+        self.url = url
+
 
 class _Filter:
     @staticmethod
@@ -76,6 +87,7 @@ def _install_astrbot_stubs():
     star = types.ModuleType("astrbot.api.star")
     core = types.ModuleType("astrbot.core")
     components = types.ModuleType("astrbot.api.message_components")
+    util = types.ModuleType("astrbot.api.util")
 
     api.logger = _Logger()
     event.AstrMessageEvent = object
@@ -88,6 +100,9 @@ def _install_astrbot_stubs():
     components.Plain = _Plain
     components.Image = _Image
     components.Record = _Record
+    components.File = _File
+    util.SessionController = object
+    util.session_waiter = lambda *_args, **_kwargs: lambda handler: handler
 
     astrbot.api = api
     astrbot.core = core
@@ -98,6 +113,7 @@ def _install_astrbot_stubs():
             "astrbot.api.event": event,
             "astrbot.api.star": star,
             "astrbot.api.message_components": components,
+            "astrbot.api.util": util,
             "astrbot.core": core,
         }
     )
@@ -108,6 +124,7 @@ sys.path.insert(0, str(PLUGIN_DIR.parent))
 _install_astrbot_stubs()
 
 from astrbot_plugin_sanjiaozhou.core.client import DeltaForceClient  # noqa: E402
+from astrbot_plugin_sanjiaozhou.core.media_cache import MusicCache  # noqa: E402
 from astrbot_plugin_sanjiaozhou.main import DELTA_COMMAND_SPECS, DeltaForcePlugin  # noqa: E402
 
 
@@ -123,6 +140,9 @@ class _Event:
 
     def get_self_id(self):
         return "mock-bot"
+
+    def is_admin(self):
+        return True
 
     def plain_result(self, text):
         return {"type": "plain", "text": text}
@@ -282,6 +302,48 @@ class _EntertainmentClient:
         return self.tts_statuses.pop(0)
 
 
+class _NoopMusicCache:
+    async def get_or_download(self, _song, _client):
+        return None
+
+    def stats(self):
+        return {"total_files": 2, "total_size": 3 * 1024 * 1024, "total_size_mb": 3.0, "metadata_count": 2}
+
+    def clear(self):
+        return {"total_files": 2, "total_size": 3 * 1024 * 1024, "total_size_mb": 3.0, "metadata_count": 2, "removed_files": 2}
+
+
+class _BinaryClient:
+    def resolve_url(self, value):
+        return str(value)
+
+    async def fetch_binary(self, _url, max_bytes):
+        return b"ID3" + b"fixture" * min(max_bytes, 10)
+
+
+class _WaiterEvent(_Event):
+    def __init__(self, message, sent):
+        self.message_str = message
+        self.sent = sent
+
+    def get_message_str(self):
+        return self.message_str
+
+    async def send(self, result):
+        self.sent.append(result)
+
+
+class _SessionController:
+    def __init__(self):
+        self.stopped = False
+
+    def keep(self, timeout=0, reset_timeout=False):
+        del timeout, reset_timeout
+
+    def stop(self):
+        self.stopped = True
+
+
 class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
     def _plugin(self, client):
         plugin = object.__new__(DeltaForcePlugin)
@@ -296,6 +358,8 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         plugin._oauth_sessions = {}
         plugin._music_lists = {}
         plugin._music_last = {}
+        plugin._tts_last = {}
+        plugin.music_cache = _NoopMusicCache()
 
         async def bind_token(_event, _token, login_type="", quiet=False):
             del login_type, quiet
@@ -522,6 +586,99 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("任务已提交", results[0]["text"])
         self.assertIn("模型不可用", results[-1]["text"])
+
+    async def test_tts_recent_supports_file_and_voice_components(self):
+        client = _EntertainmentClient()
+        plugin = self._plugin(client)
+        plugin._tts_last["qq_mock-user"] = {
+            "created_at": 1_000,
+            "audio_url": "https://media.example.invalid/tts.wav?token=mock",
+            "filename": "mock.wav",
+            "text": "测试文本",
+            "character": "麦晓雯",
+        }
+
+        with patch("astrbot_plugin_sanjiaozhou.main.dt") as mock_dt:
+            mock_dt.datetime.now.return_value.timestamp.return_value = 1_100
+            uploaded = await _collect(plugin._tts_recent(_Event(), as_file=True))
+            replayed = await _collect(plugin._tts_recent(_Event(), as_file=False))
+
+        self.assertEqual(uploaded[0]["chain"][-1].name, "mock.wav")
+        self.assertEqual(uploaded[0]["chain"][-1].url, "https://media.example.invalid/tts.wav?token=mock")
+        self.assertEqual(replayed[0]["chain"][-1].file, "https://media.example.invalid/tts.wav?token=mock")
+
+    async def test_music_cache_status_and_admin_clear(self):
+        plugin = self._plugin(_EntertainmentClient())
+        self.assertIn("3.00 MB", plugin._music_cache_status())
+
+        cleared = await _collect(plugin._music_cache_clear(_Event()))
+        self.assertIn("清理文件：2 个", cleared[0]["text"])
+
+    async def test_music_cache_persists_stats_and_clears_files(self):
+        song = {
+            "title": "缓存测试",
+            "artist": "测试歌手",
+            "download": {"url": "https://media.example.invalid/music.mp3"},
+        }
+        temporary = PLUGIN_DIR.parents[4] / ".tmp" / "music-cache-test"
+        temporary.mkdir(parents=True, exist_ok=True)
+        try:
+            cache = MusicCache(str(temporary), max_file_bytes=1024 * 1024)
+            path = await cache.get_or_download(song, _BinaryClient())
+            self.assertTrue(Path(path).is_file())
+            self.assertEqual(cache.stats()["total_files"], 1)
+
+            reloaded = MusicCache(str(temporary))
+            self.assertEqual(reloaded.stats()["metadata_count"], 1)
+            cleared = reloaded.clear()
+            self.assertEqual(cleared["removed_files"], 1)
+            self.assertFalse(Path(path).exists())
+        finally:
+            metadata = temporary / "music_cache" / "metadata.json"
+            metadata.unlink(missing_ok=True)
+            try:
+                (temporary / "music_cache").rmdir()
+                temporary.rmdir()
+            except OSError:
+                pass
+
+    async def test_readiness_session_uses_native_waiter_and_returns_result(self):
+        sent = []
+        inputs = ["500", "2", "2", "0"]
+
+        def fake_session_waiter(*_args, **_kwargs):
+            def decorator(handler):
+                async def wrapper(_event):
+                    controller = _SessionController()
+                    for message in inputs:
+                        await handler(controller, _WaiterEvent(message, sent))
+                        if controller.stopped:
+                            break
+                return wrapper
+            return decorator
+
+        calculator = Mock()
+        calculator.calculate_readiness.return_value = {
+            "success": True,
+            "targetReadiness": 500,
+            "totalCombinations": 1,
+            "topCombinations": [{
+                "totalCost": 480,
+                "totalReadiness": 520,
+                "equipment": {},
+            }],
+        }
+        plugin = self._plugin(_EntertainmentClient())
+        plugin.calculator = calculator
+        util = sys.modules["astrbot.api.util"]
+        with patch.object(util, "session_waiter", fake_session_waiter), patch.object(
+            util, "SessionController", _SessionController
+        ):
+            initial = await _collect(plugin._readiness_session(_Event()))
+
+        self.assertIn("目标战备值", initial[0]["text"])
+        self.assertIn("战备计算结果", sent[-1]["text"])
+        calculator.calculate_readiness.assert_called_once_with(500, None, None, None)
 
 
 if __name__ == "__main__":

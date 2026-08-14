@@ -1,3 +1,5 @@
+import heapq
+import itertools
 import math
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -129,6 +131,157 @@ class DeltaCalculator:
             if str(key).lower() == lower:
                 return [x for x in items if isinstance(x, dict)]
         return []
+
+    def readiness_equipment(self, category: str) -> List[Dict[str, Any]]:
+        data = self.data_mgr.load_json_data("equipment.json") or {}
+        groups = data.get("equipment") if isinstance(data, dict) else {}
+        if not isinstance(groups, dict):
+            return []
+        key = {"chest": "chest_rigs", "backpack": "backpacks"}.get(category, category)
+        return [item for item in groups.get(key, []) or [] if isinstance(item, dict)]
+
+    @staticmethod
+    def _readiness_name(value: Any) -> str:
+        return str(value or "").split("（", 1)[0].replace(" ", "").lower()
+
+    def _readiness_equipment_match(
+        self,
+        equipment_groups: Dict[str, Any],
+        name: str,
+    ) -> Optional[Dict[str, Any]]:
+        target = self._readiness_name(name)
+        for items in equipment_groups.values():
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                current = self._readiness_name(item.get("name"))
+                if current and (current in target or target in current):
+                    return item
+        return None
+
+    @staticmethod
+    def _readiness_allowed(
+        item: Dict[str, Any],
+        max_price: float,
+        target: int,
+        require_price: bool = True,
+        require_below_target: bool = False,
+    ) -> bool:
+        price = float(item.get("marketPrice") or 0)
+        readiness = float(item.get("readinessValue") or 0)
+        if require_price and price <= 0:
+            return False
+        if price > max_price:
+            return False
+        if price >= readiness + 2000:
+            return False
+        if require_below_target and price >= target:
+            return False
+        return True
+
+    def calculate_readiness(
+        self,
+        target: int,
+        specified_chest: Optional[Dict[str, Any]] = None,
+        specified_backpack: Optional[Dict[str, Any]] = None,
+        max_price: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """计算满足目标战备值的最低成本配装，保留原版前三方案语义。"""
+        if target <= 0:
+            return {"success": False, "error": "目标战备值必须为正整数"}
+        price_limit = float(max_price) if max_price and max_price > 0 else math.inf
+        equipment_data = self.data_mgr.load_json_data("equipment.json") or {}
+        equipment_groups = equipment_data.get("equipment") if isinstance(equipment_data, dict) else {}
+        armor_data = self.data_mgr.load_json_data("armors.json") or {}
+        armor_groups = armor_data.get("armors") if isinstance(armor_data, dict) else {}
+        weapon_data = self.data_mgr.load_json_data("weapons_sol.json") or {}
+        weapon_groups = weapon_data.get("weapons") if isinstance(weapon_data, dict) else {}
+        if not all(isinstance(value, dict) for value in (equipment_groups, armor_groups, weapon_groups)):
+            return {"success": False, "error": "战备计算数据加载失败"}
+
+        armors: List[Dict[str, Any]] = []
+        helmets: List[Dict[str, Any]] = []
+        for source, destination, require_price, require_below_target in (
+            (armor_groups.get("body_armor") or [], armors, True, True),
+            (armor_groups.get("helmets") or [], helmets, False, False),
+        ):
+            for armor in source:
+                if not isinstance(armor, dict):
+                    continue
+                market = self._readiness_equipment_match(equipment_groups, str(armor.get("name") or "")) or {}
+                item = {
+                    **armor,
+                    "marketPrice": market.get("marketPrice") or 0,
+                    "readinessValue": market.get("readinessValue") or 0,
+                    "quality": market.get("quality") or 1,
+                }
+                if self._readiness_allowed(item, price_limit, target, require_price, require_below_target):
+                    destination.append(item)
+
+        chests = [
+            item for item in self.readiness_equipment("chest")
+            if self._readiness_allowed(item, price_limit, target)
+        ]
+        backpacks = [
+            item for item in self.readiness_equipment("backpack")
+            if self._readiness_allowed(item, price_limit, target)
+        ]
+        weapons: List[Dict[str, Any]] = []
+        pistols: List[Dict[str, Any]] = []
+        for category, items in weapon_groups.items():
+            if not isinstance(items, list):
+                continue
+            destination = pistols if str(category).lower() in {"pistols", "手枪"} else weapons
+            destination.extend(
+                item for item in items
+                if isinstance(item, dict)
+                and self._readiness_allowed(item, price_limit, target, True, True)
+            )
+
+        none_item = {"name": "无", "marketPrice": 0, "readinessValue": 0}
+        slots = {
+            "weapon1": [none_item, *weapons],
+            "pistol": [none_item, *pistols],
+            "helmet": [none_item, *helmets],
+            "armor": [none_item, *armors],
+            "chest": [specified_chest] if specified_chest else [none_item, *chests],
+            "backpack": [specified_backpack] if specified_backpack else [none_item, *backpacks],
+        }
+        if not slots["chest"] or not slots["backpack"]:
+            return {"success": False, "error": "指定的胸挂或背包无效"}
+
+        best: List[Tuple[float, int, Dict[str, Any]]] = []
+        matched = 0
+        serial = 0
+        slot_names = tuple(slots.keys())
+        for values in itertools.product(*(slots[name] for name in slot_names)):
+            readiness = sum(float(item.get("readinessValue") or 0) for item in values)
+            if readiness < target:
+                continue
+            cost = sum(float(item.get("marketPrice") or 0) for item in values)
+            matched += 1
+            serial += 1
+            combination = {
+                "totalCost": int(cost),
+                "totalReadiness": int(readiness),
+                "equipment": dict(zip(slot_names, values)),
+            }
+            entry = (-cost, serial, combination)
+            if len(best) < 3:
+                heapq.heappush(best, entry)
+            elif cost < -best[0][0]:
+                heapq.heapreplace(best, entry)
+
+        top = [entry[2] for entry in sorted(best, key=lambda entry: -entry[0])]
+        return {
+            "success": True,
+            "targetReadiness": target,
+            "bestCombination": top[0] if top else None,
+            "topCombinations": top,
+            "totalCombinations": matched,
+        }
 
     @staticmethod
     def _flatten_groups(groups: Any) -> List[Dict[str, Any]]:

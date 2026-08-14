@@ -30,6 +30,7 @@ Plain = getattr(Comp, "Plain", None) if Comp is not None else None
 from .core.client import DeltaForceClient
 from .core.calculator import DeltaCalculator
 from .core.data import DeltaDataManager
+from .core.media_cache import MusicCache
 from .core.render import DeltaRenderer
 from .core.subscription import SubscriptionStore
 from .core.user import BindingManager
@@ -119,9 +120,13 @@ DELTA_COMMAND_SPECS = [
     ("鼠鼠歌单", set()),
     ("点歌", {"听", "听歌", "播放"}),
     ("鼠鼠音乐", set()),
+    ("音乐缓存状态", {"音乐缓存统计"}),
+    ("清理音乐缓存", set()),
     ("tts状态", set()),
     ("tts角色列表", {"tts预设列表", "tts角色", "tts预设"}),
     ("tts角色详情", set()),
+    ("tts上传", {"tts下载"}),
+    ("tts重播", {"tts语音"}),
     ("tts", set()),
     ("伤害计算", {"伤害", "dmg"}),
     ("战备计算", {"战备"}),
@@ -162,6 +167,8 @@ class DeltaForcePlugin(Star):
         self.bindings = BindingManager(data_dir)
         self.subscriptions = SubscriptionStore(data_dir)
         self.data_mgr = DeltaDataManager(self.plugin_path, data_dir)
+        self.music_cache = MusicCache(data_dir)
+        self.music_cache.clean_expired()
         self.calculator = DeltaCalculator(self.data_mgr)
         self.renderer = DeltaRenderer(
             self.resources,
@@ -178,6 +185,7 @@ class DeltaForcePlugin(Star):
         self._oauth_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._music_lists: Dict[str, Dict[str, Any]] = {}
         self._music_last: Dict[str, Dict[str, Any]] = {}
+        self._tts_last: Dict[str, Dict[str, Any]] = {}
 
     async def initialize(self):
         self._static_task = asyncio.create_task(self.data_mgr.refresh_static(self.client))
@@ -1175,6 +1183,13 @@ class DeltaForcePlugin(Star):
             async for r in self._music(event, m.group(1).strip()):
                 yield r
             return
+        if body in {"音乐缓存状态", "音乐缓存统计"}:
+            yield event.plain_result(self._music_cache_status())
+            return
+        if body == "清理音乐缓存":
+            async for r in self._music_cache_clear(event):
+                yield r
+            return
         if body == "tts状态":
             async for r in self._tts_status(event):
                 yield r
@@ -1187,12 +1202,24 @@ class DeltaForcePlugin(Star):
             async for r in self._tts_preset(event, m.group(1).strip()):
                 yield r
             return
+        if body in {"tts上传", "tts下载"}:
+            async for r in self._tts_recent(event, as_file=True):
+                yield r
+            return
+        if body in {"tts重播", "tts语音"}:
+            async for r in self._tts_recent(event, as_file=False):
+                yield r
+            return
         if m := re.fullmatch(r"tts\s+([\s\S]+)", body):
             async for r in self._tts(event, m.group(1).strip()):
                 yield r
             return
 
-        if re.fullmatch(r"(伤害计算|伤害|战备计算|战备|维修计算|维修)", body):
+        if body in {"战备计算", "战备"}:
+            async for r in self._readiness_session(event):
+                yield r
+            return
+        if re.fullmatch(r"(伤害计算|伤害|维修计算|维修)", body):
             async for r in self._calculator_help(event, body):
                 yield r
             return
@@ -1208,7 +1235,7 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(self.calculator.mapping_text())
             return
         if body in {"取消计算", "取消"}:
-            yield event.plain_result("AstrBot 版计算器当前使用直接命令，无需取消会话。")
+            yield event.plain_result("当前没有进行中的计算会话。")
             return
 
         if re.fullmatch(r"(ws|WS|websocket|WebSocket)(连接|启动|开启|断开|关闭|停止|状态|status)", body):
@@ -3713,7 +3740,7 @@ class DeltaForcePlugin(Star):
             suffix = f"：{arg}" if arg else ""
             yield event.plain_result(f"未找到鼠鼠音乐{suffix}")
             return
-        yield self._music_result(event, songs[0])
+        yield await self._music_result(event, songs[0])
 
     async def _music_list(self, event: AstrMessageEvent, page: str) -> AsyncGenerator[Any, None]:
         async for result in self._music_list_query(event, {"page": page, "limit": "20"}, "鼠鼠音乐排行榜"):
@@ -3817,12 +3844,12 @@ class DeltaForcePlugin(Star):
         if index < 1 or index > len(songs):
             yield event.plain_result(f"序号超出范围，请输入 1-{len(songs)}。")
             return
-        yield self._music_result(event, songs[index - 1])
+        yield await self._music_result(event, songs[index - 1])
 
     async def _music_replay(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         memory = self._music_last.get(self._user_identifier(event))
         if memory and dt.datetime.now().timestamp() - self._num(memory.get("created_at")) <= 600:
-            yield self._music_result(event, memory.get("song") or {})
+            yield await self._music_result(event, memory.get("song") or {})
             return
         async for result in self._music(event, ""):
             yield result
@@ -3867,7 +3894,7 @@ class DeltaForcePlugin(Star):
                 lyrics.append(text)
         return "\n".join(lyrics)
 
-    def _music_result(self, event: AstrMessageEvent, song: Dict[str, Any]) -> Any:
+    async def _music_result(self, event: AstrMessageEvent, song: Dict[str, Any]) -> Any:
         if not isinstance(song, dict):
             return event.plain_result("歌曲数据异常，请重新查询。")
         download = song.get("download") if isinstance(song.get("download"), dict) else {}
@@ -3881,7 +3908,30 @@ class DeltaForcePlugin(Star):
             "created_at": dt.datetime.now().timestamp(),
             "song": song,
         }
-        return event.chain_result([Comp.Plain(f"{title} - {artist}\n"), Comp.Record.fromURL(url)])
+        cached_path = await self.music_cache.get_or_download(song, self.client)
+        record = Comp.Record.fromFileSystem(cached_path) if cached_path else Comp.Record.fromURL(url)
+        return event.chain_result([Comp.Plain(f"{title} - {artist}\n"), record])
+
+    def _music_cache_status(self) -> str:
+        stats = self.music_cache.stats()
+        return (
+            "【鼠鼠音乐缓存统计】\n"
+            f"缓存文件数：{stats['total_files']}\n"
+            f"总缓存大小：{stats['total_size_mb']:.2f} MB\n"
+            f"元数据记录：{stats['metadata_count']}\n"
+            "发送 清理音乐缓存 可清空所有缓存。"
+        )
+
+    async def _music_cache_clear(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        if not event.is_admin():
+            yield event.plain_result("只有管理员可以清理音乐缓存。")
+            return
+        stats = self.music_cache.clear()
+        yield event.plain_result(
+            "音乐缓存已清空。\n"
+            f"清理文件：{stats['removed_files']} 个\n"
+            f"释放空间：{stats['total_size_mb']:.2f} MB"
+        )
 
     async def _tts_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.tts_health()
@@ -3972,6 +4022,14 @@ class DeltaForcePlugin(Star):
                 if not audio_url or not Comp or not hasattr(Comp, "Record"):
                     yield event.plain_result("TTS 已完成，但后端未返回可播放的音频地址。")
                     return
+                filename = str(result.get("filename") or f"{task_id}.wav")
+                self._tts_last[self._user_identifier(event)] = {
+                    "created_at": dt.datetime.now().timestamp(),
+                    "audio_url": audio_url,
+                    "filename": os.path.basename(filename) or f"{task_id}.wav",
+                    "text": text,
+                    "character": str(preset_data.get("name") or character_id),
+                }
                 yield event.chain_result([Comp.Plain(f"TTS 合成完成：{preset_data.get('name') or character_id}\n"), Comp.Record.fromURL(audio_url, text=text)])
                 return
             if status == "failed":
@@ -3982,6 +4040,34 @@ class DeltaForcePlugin(Star):
                 return
             await asyncio.sleep(interval)
         yield event.plain_result("TTS 合成超时，任务可能仍在后端处理中，请稍后重试。")
+
+    async def _tts_recent(self, event: AstrMessageEvent, as_file: bool) -> AsyncGenerator[Any, None]:
+        recent = self._tts_last.get(self._user_identifier(event))
+        if not recent:
+            yield event.plain_result("暂无最近合成的 TTS 语音，请先发送 tts 命令。")
+            return
+        if dt.datetime.now().timestamp() - self._num(recent.get("created_at")) > 300:
+            self._tts_last.pop(self._user_identifier(event), None)
+            yield event.plain_result("最近合成的 TTS 语音已过期，请重新合成。")
+            return
+        audio_url = str(recent.get("audio_url") or "")
+        if not audio_url or not Comp:
+            yield event.plain_result("最近的 TTS 记录缺少可用音频地址。")
+            return
+        if as_file:
+            if not hasattr(Comp, "File"):
+                yield event.plain_result("当前 AstrBot 版本不支持文件消息。")
+                return
+            filename = str(recent.get("filename") or "tts.wav")
+            yield event.chain_result([Comp.Plain("最近合成的 TTS 文件：\n"), Comp.File(name=filename, url=audio_url)])
+            return
+        if not hasattr(Comp, "Record"):
+            yield event.plain_result("当前 AstrBot 版本不支持语音消息。")
+            return
+        yield event.chain_result([
+            Comp.Plain(f"TTS 重播：{recent.get('character') or '未知角色'}\n"),
+            Comp.Record.fromURL(audio_url, text=str(recent.get("text") or "")),
+        ])
 
     async def _calculator_help(self, event: AstrMessageEvent, command: str) -> AsyncGenerator[Any, None]:
         if command in {"伤害计算", "伤害"}:
@@ -3995,7 +4081,178 @@ class DeltaForcePlugin(Star):
         if command in {"维修计算", "维修"}:
             yield event.plain_result("【维修计算器】\n用法：修甲 <装备名> <剩余耐久>/<当前上限> <局内|局外>\n示例：修甲 fs 0/100 局内")
             return
-        yield event.plain_result("AstrBot 版暂未接入云崽交互式战备会话；当前可用：伤害 ...、修甲 ...、计算映射表。")
+        yield event.plain_result("发送 战备 开始交互式战备计算；发送 取消 可随时退出。")
+
+    async def _readiness_session(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        from astrbot.api.util import SessionController, session_waiter
+
+        state: Dict[str, Any] = {"step": "target"}
+        yield event.plain_result("【战备计算器】\n请输入目标战备值（正整数），发送 取消 可退出：")
+
+        @session_waiter(timeout=300, record_history_chains=False)
+        async def waiter(controller: SessionController, waiter_event: AstrMessageEvent):
+            text = self._message(waiter_event).strip()
+            command = text.lstrip("/#^").strip()
+            if command in {"取消", "取消计算"}:
+                await waiter_event.send(waiter_event.plain_result("已取消战备计算。"))
+                controller.stop()
+                return
+
+            step = state["step"]
+            if step == "target":
+                try:
+                    target = int(command)
+                except ValueError:
+                    target = 0
+                if target <= 0:
+                    await waiter_event.send(waiter_event.plain_result("请输入有效的目标战备值（正整数）。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state["target"] = target
+                state["step"] = "chest_option"
+                await waiter_event.send(waiter_event.plain_result(
+                    f"目标战备值：{target:,}\n是否指定胸挂？\n1. 指定胸挂\n2. 自动选择"
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "chest_option":
+                if command == "1":
+                    items = self.calculator.readiness_equipment("chest")
+                    if not items:
+                        await waiter_event.send(waiter_event.plain_result("胸挂数据为空，将自动选择。"))
+                        state["step"] = "backpack_option"
+                        await waiter_event.send(waiter_event.plain_result("是否指定背包？\n1. 指定背包\n2. 自动选择"))
+                    else:
+                        state["chest_items"] = items
+                        state["step"] = "chest_selection"
+                        lines = ["请选择胸挂序号："] + [
+                            f"{index}. {item.get('name')}（战备 {int(self._num(item.get('readinessValue'))):,}）"
+                            for index, item in enumerate(items, 1)
+                        ]
+                        await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                elif command == "2":
+                    state["step"] = "backpack_option"
+                    await waiter_event.send(waiter_event.plain_result("已选择自动胸挂。\n是否指定背包？\n1. 指定背包\n2. 自动选择"))
+                else:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1 或 2。"))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "chest_selection":
+                items = state.get("chest_items") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(items):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(items)} 之间的序号。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state["chest"] = items[index]
+                state["step"] = "backpack_option"
+                await waiter_event.send(waiter_event.plain_result(
+                    f"已选择胸挂：{items[index].get('name')}\n是否指定背包？\n1. 指定背包\n2. 自动选择"
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "backpack_option":
+                if command == "1":
+                    items = self.calculator.readiness_equipment("backpack")
+                    if not items:
+                        state["step"] = "max_price"
+                        await waiter_event.send(waiter_event.plain_result("背包数据为空，将自动选择。\n请输入最高单件价格，发送 0 表示不限制："))
+                    else:
+                        state["backpack_items"] = items
+                        state["step"] = "backpack_selection"
+                        lines = ["请选择背包序号："] + [
+                            f"{index}. {item.get('name')}（战备 {int(self._num(item.get('readinessValue'))):,}）"
+                            for index, item in enumerate(items, 1)
+                        ]
+                        await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                elif command == "2":
+                    state["step"] = "max_price"
+                    await waiter_event.send(waiter_event.plain_result("已选择自动背包。\n请输入最高单件价格，发送 0 表示不限制："))
+                else:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1 或 2。"))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "backpack_selection":
+                items = state.get("backpack_items") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(items):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(items)} 之间的序号。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state["backpack"] = items[index]
+                state["step"] = "max_price"
+                await waiter_event.send(waiter_event.plain_result(
+                    f"已选择背包：{items[index].get('name')}\n请输入最高单件价格，发送 0 表示不限制："
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            try:
+                max_price = int(command)
+            except ValueError:
+                max_price = -1
+            if max_price < 0:
+                await waiter_event.send(waiter_event.plain_result("请输入大于等于 0 的价格。"))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+            await waiter_event.send(waiter_event.plain_result("正在计算最低成本配装，请稍候……"))
+            result = await asyncio.to_thread(
+                self.calculator.calculate_readiness,
+                int(state["target"]),
+                state.get("chest"),
+                state.get("backpack"),
+                max_price or None,
+            )
+            await waiter_event.send(waiter_event.plain_result(self._readiness_result_text(result)))
+            controller.stop()
+
+        try:
+            await waiter(event)
+        except TimeoutError:
+            yield event.plain_result("战备计算会话已超时，请重新发送 战备。")
+
+    @staticmethod
+    def _readiness_result_text(result: Dict[str, Any]) -> str:
+        if not result.get("success"):
+            return f"战备计算失败：{result.get('error') or '未知错误'}"
+        combinations = result.get("topCombinations") or []
+        if not combinations:
+            return "未找到满足条件的装备组合，请降低目标战备值或放宽价格限制。"
+        slot_names = {
+            "weapon1": "主武器",
+            "pistol": "手枪",
+            "helmet": "头盔",
+            "armor": "护甲",
+            "chest": "胸挂",
+            "backpack": "背包",
+        }
+        lines = [
+            "【战备计算结果】",
+            f"目标战备值：{int(result.get('targetReadiness') or 0):,}",
+            f"符合条件组合：{int(result.get('totalCombinations') or 0):,} 个",
+        ]
+        for index, combination in enumerate(combinations, 1):
+            lines.extend([
+                "",
+                f"方案 {index}：成本 {int(combination.get('totalCost') or 0):,}，战备 {int(combination.get('totalReadiness') or 0):,}",
+            ])
+            equipment = combination.get("equipment") or {}
+            for slot, name in slot_names.items():
+                item = equipment.get(slot) or {}
+                lines.append(
+                    f"{name}：{item.get('name') or '无'}（{int(item.get('marketPrice') or 0):,}/{int(item.get('readinessValue') or 0):,}）"
+                )
+        return "\n".join(lines)
 
     async def _quick_repair(self, event: AstrMessageEvent, equipment_name: str, remaining_text: str, current_text: str, mode_text: str) -> AsyncGenerator[Any, None]:
         try:

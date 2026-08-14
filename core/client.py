@@ -77,6 +77,28 @@ class DeltaForceClient:
         except (httpx.HTTPError, UnicodeError):
             return ""
 
+    async def fetch_binary(self, value: str, max_bytes: int = 64 * 1024 * 1024) -> bytes:
+        """流式下载媒体资源，并在超过大小限制时立即中止。"""
+        url = self.resolve_url(value)
+        if not url.startswith(("http://", "https://")):
+            return b""
+        try:
+            chunks = []
+            size = 0
+            async with self.client.stream("GET", url, follow_redirects=True) as response:
+                response.raise_for_status()
+                declared = int(response.headers.get("content-length") or 0)
+                if declared > max_bytes:
+                    return b""
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > max_bytes:
+                        return b""
+                    chunks.append(chunk)
+            return b"".join(chunks)
+        except (httpx.HTTPError, ValueError):
+            return b""
+
     def _headers(
         self,
         framework_token: str = "",
