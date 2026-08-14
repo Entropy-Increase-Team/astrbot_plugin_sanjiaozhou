@@ -152,7 +152,7 @@ DELTA_COMMAND_SPECS = [
     "sanjiaozhou",
     "bvzrays & Entropy-Increase-Team",
     "三角洲行动 AstrBot 插件",
-    "0.4.0",
+    "0.4.1",
     "https://github.com/Entropy-Increase-Team/astrbot_plugin_sanjiaozhou",
 )
 class DeltaForcePlugin(Star):

@@ -315,7 +315,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         with patch("builtins.open", side_effect=OSError("读取失败")):
             error = await _collect(plugin._update_log(_Event()))
 
-        self.assertIn("0.4.0", success[0]["text"])
+        self.assertIn("0.4.1", success[0]["text"])
         self.assertIn("暂无内容", empty[0]["text"])
         self.assertIn("未包含更新日志", missing[0]["text"])
         self.assertIn("读取更新日志失败", error[0]["text"])
