@@ -477,6 +477,30 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             require_key=False,
         )
 
+    async def test_client_uses_authoritative_voice_metadata_and_tts_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0})
+
+        await client.audio_categories()
+        await client.audio_characters()
+        await client.audio_stats()
+        await client.audio_tags()
+        await client.tts_health()
+        await client.tts_presets()
+
+        self.assertEqual(
+            [item.args[0] for item in client.get.await_args_list],
+            [
+                "/api/v1/df/audio/categories",
+                "/api/v1/df/audio/characters",
+                "/api/v1/df/audio/stats",
+                "/api/v1/df/audio/tags",
+                "/api/v1/df/tts/health",
+                "/api/v1/df/tts/presets",
+            ],
+        )
+        self.assertTrue(all(item.kwargs["require_key"] is False for item in client.get.await_args_list))
+
     async def test_client_uses_authoritative_account_and_role_routes(self):
         client = object.__new__(DeltaForceClient)
         client.get = AsyncMock(return_value={"code": 0})
@@ -818,6 +842,66 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("没有找到", empty[0]["text"])
         self.assertIn("语音服务异常", error[0]["text"])
 
+    async def test_voice_metadata_formats_authoritative_fields(self):
+        client = SimpleNamespace(
+            audio_characters=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "characters": [
+                            {
+                                "name": "麦晓雯",
+                                "profession": "侦察",
+                                "voiceId": "mai",
+                                "skins": [{"voiceId": "mai-a", "name": "麦晓雯A"}],
+                            }
+                        ],
+                        "totalCount": 1,
+                    },
+                }
+            ),
+            audio_tags=AsyncMock(
+                return_value={"code": 0, "data": {"tags": [{"tag": "鼓励", "description": "鼓励队友"}]}}
+            ),
+            audio_categories=AsyncMock(
+                return_value={"code": 0, "data": {"categories": [{"category": "干员语音", "count": 12}]}}
+            ),
+            audio_stats=AsyncMock(
+                return_value={"code": 0, "data": {"totalFiles": 12, "categories": [{"category": "干员语音", "fileCount": 12}]}}
+            ),
+        )
+        plugin = self._plugin(client)
+
+        characters = await _collect(plugin._voice_meta(_Event(), "语音列表"))
+        tags = await _collect(plugin._voice_meta(_Event(), "标签列表"))
+        categories = await _collect(plugin._voice_meta(_Event(), "语音分类"))
+        stats = await _collect(plugin._voice_meta(_Event(), "语音统计"))
+
+        self.assertIn("麦晓雯（侦察）ID: mai", characters[0]["text"])
+        self.assertIn("鼓励：鼓励队友", tags[0]["text"])
+        self.assertIn("干员语音：12 条", categories[0]["text"])
+        self.assertIn("总文件数：12", stats[0]["text"])
+
+    async def test_voice_metadata_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            audio_characters=AsyncMock(side_effect=[{"code": 0, "data": {"characters": []}}, {"code": 500, "message": "角色服务异常"}]),
+            audio_tags=AsyncMock(side_effect=[{"code": 0, "data": {"tags": []}}, {"code": 500, "message": "标签服务异常"}]),
+            audio_categories=AsyncMock(side_effect=[{"code": 0, "data": {"categories": []}}, {"code": 500, "message": "分类服务异常"}]),
+            audio_stats=AsyncMock(side_effect=[{"code": 0, "data": {"totalFiles": 0, "categories": []}}, {"code": 500, "message": "统计服务异常"}]),
+        )
+        plugin = self._plugin(client)
+
+        for command, empty_text, error_text in (
+            ("语音列表", "暂无语音角色数据", "角色服务异常"),
+            ("标签列表", "暂无语音标签数据", "标签服务异常"),
+            ("语音分类", "暂无语音分类数据", "分类服务异常"),
+            ("语音统计", "暂无音频统计数据", "统计服务异常"),
+        ):
+            empty = await _collect(plugin._voice_meta(_Event(), command))
+            error = await _collect(plugin._voice_meta(_Event(), command))
+            self.assertIn(empty_text, empty[0]["text"])
+            self.assertIn(error_text, error[0]["text"])
+
     async def test_music_list_selection_and_lyrics_form_a_closed_loop(self):
         client = _EntertainmentClient()
         plugin = self._plugin(client)
@@ -902,6 +986,73 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("任务已提交", results[0]["text"])
         self.assertIn("模型不可用", results[-1]["text"])
+
+    async def test_tts_metadata_formats_success_responses(self):
+        client = SimpleNamespace(
+            tts_health=AsyncMock(return_value={"code": 0, "data": {"tts_service": "available", "details": {"status": "ok"}}}),
+            tts_presets=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"presets": {"mai": {"name": "麦晓雯", "emotions": {"happy": {"name": "开心"}}}}},
+                }
+            ),
+            tts_preset=AsyncMock(
+                return_value={"code": 0, "data": {"name": "麦晓雯", "emotions": {"happy": {"name": "开心"}}}}
+            ),
+        )
+        plugin = self._plugin(client)
+
+        status = await _collect(plugin._tts_status(_Event()))
+        presets = await _collect(plugin._tts_presets(_Event()))
+        detail = await _collect(plugin._tts_preset(_Event(), "mai"))
+
+        self.assertIn("服务：可用", status[0]["text"])
+        self.assertIn("麦晓雯（mai），情感 1 种", presets[0]["text"])
+        self.assertIn("开心（happy）", detail[0]["text"])
+        client.tts_preset.assert_awaited_once_with("mai")
+
+    async def test_tts_metadata_handles_empty_and_error_responses(self):
+        client = SimpleNamespace(
+            tts_health=AsyncMock(side_effect=[{"code": 0, "data": {}}, {"code": 500, "message": "状态服务异常"}]),
+            tts_presets=AsyncMock(side_effect=[{"code": 0, "data": {"presets": {}}}, {"code": 500, "message": "预设服务异常"}]),
+            tts_preset=AsyncMock(side_effect=[{"code": 0, "data": {}}, {"code": 404, "message": "角色不存在"}]),
+        )
+        plugin = self._plugin(client)
+
+        status_empty = await _collect(plugin._tts_status(_Event()))
+        status_error = await _collect(plugin._tts_status(_Event()))
+        presets_empty = await _collect(plugin._tts_presets(_Event()))
+        presets_error = await _collect(plugin._tts_presets(_Event()))
+        detail_empty = await _collect(plugin._tts_preset(_Event(), "mai"))
+        detail_error = await _collect(plugin._tts_preset(_Event(), "mai"))
+
+        self.assertIn("未返回服务状态", status_empty[0]["text"])
+        self.assertIn("状态服务异常", status_error[0]["text"])
+        self.assertIn("暂无可用", presets_empty[0]["text"])
+        self.assertIn("预设服务异常", presets_error[0]["text"])
+        self.assertIn("未找到 TTS 角色", detail_empty[0]["text"])
+        self.assertIn("角色不存在", detail_error[0]["text"])
+
+    async def test_tts_synthesis_handles_empty_presets_and_submit_errors(self):
+        client = SimpleNamespace(
+            tts_presets=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"presets": {}}},
+                    {"code": 500, "message": "预设读取失败"},
+                    {"code": 0, "data": {"presets": {"mai": {"name": "麦晓雯"}}}},
+                ]
+            ),
+            tts_synthesize=AsyncMock(return_value={"code": 500, "message": "合成服务异常"}),
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._tts(_Event(), "麦晓雯 测试文本"))
+        preset_error = await _collect(plugin._tts(_Event(), "麦晓雯 测试文本"))
+        submit_error = await _collect(plugin._tts(_Event(), "麦晓雯 测试文本"))
+
+        self.assertIn("角色预设为空", empty[0]["text"])
+        self.assertIn("预设读取失败", preset_error[0]["text"])
+        self.assertIn("合成服务异常", submit_error[0]["text"])
 
     async def test_tts_recent_supports_file_and_voice_components(self):
         client = _EntertainmentClient()

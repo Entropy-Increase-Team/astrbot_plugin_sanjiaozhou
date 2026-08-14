@@ -3923,7 +3923,62 @@ class DeltaForcePlugin(Star):
             res = await self.client.audio_categories()
         else:
             res = await self.client.audio_stats()
-        yield event.plain_result(self._summary_or_error(command, res))
+        if not self._ok(res):
+            yield event.plain_result(f"{command}查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if command == "语音列表":
+            rows = self._first_list(data, ("characters", "items", "list", "data"))
+            if not rows:
+                yield event.plain_result("暂无语音角色数据。")
+                return
+            lines = [f"【语音角色列表】共 {len(rows)} 名"]
+            for index, item in enumerate(rows, 1):
+                if not isinstance(item, dict):
+                    continue
+                name = item.get("name") or "未知角色"
+                voice_id = item.get("voiceId") or item.get("voiceID") or "-"
+                profession = item.get("profession") or "未知职业"
+                skins = item.get("skins") if isinstance(item.get("skins"), list) else []
+                lines.append(f"{index}. {name}（{profession}）ID: {voice_id}，皮肤音色 {len(skins)} 个")
+            yield event.plain_result("\n".join(lines))
+            return
+        if command == "标签列表":
+            rows = self._first_list(data, ("tags", "items", "list", "data"))
+            if not rows:
+                yield event.plain_result("暂无语音标签数据。")
+                return
+            lines = [f"【语音标签列表】共 {len(rows)} 个"]
+            for index, item in enumerate(rows, 1):
+                if isinstance(item, dict):
+                    tag = item.get("tag") or item.get("name") or "未知标签"
+                    description = item.get("description") or ""
+                    lines.append(f"{index}. {tag}" + (f"：{description}" if description else ""))
+            yield event.plain_result("\n".join(lines))
+            return
+        categories = self._first_list(data, ("categories", "items", "list", "data"))
+        if command == "语音分类":
+            if not categories:
+                yield event.plain_result("暂无语音分类数据。")
+                return
+            lines = [f"【语音分类】共 {len(categories)} 类"]
+            for index, item in enumerate(categories, 1):
+                if isinstance(item, dict):
+                    name = item.get("category") or item.get("name") or "未分类"
+                    lines.append(f"{index}. {name}：{int(self._number(item.get('count'), 0))} 条")
+            yield event.plain_result("\n".join(lines))
+            return
+        total = int(self._number(data.get("totalFiles") if isinstance(data, dict) else 0, 0))
+        if not total and not categories:
+            yield event.plain_result("暂无音频统计数据。")
+            return
+        lines = [f"【语音统计】总文件数：{total}"]
+        for item in categories:
+            if isinstance(item, dict):
+                name = item.get("category") or item.get("name") or "未分类"
+                count = int(self._number(item.get("fileCount") or item.get("count"), 0))
+                lines.append(f"{name}：{count} 条")
+        yield event.plain_result("\n".join(lines))
 
     async def _voice(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         params = self._parse_key_values(arg)
@@ -4157,15 +4212,59 @@ class DeltaForcePlugin(Star):
 
     async def _tts_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.tts_health()
-        yield event.plain_result(self._summary_or_error("TTS 状态", res))
+        if not self._ok(res):
+            yield event.plain_result(f"TTS 状态查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        status = str(data.get("tts_service") or "").lower() if isinstance(data, dict) else ""
+        if not status:
+            yield event.plain_result("TTS 状态查询成功，但后端未返回服务状态。")
+            return
+        status_text = "可用" if status == "available" else "不可用" if status == "unavailable" else status
+        lines = ["【TTS 服务状态】", f"服务：{status_text}"]
+        if isinstance(data, dict) and data.get("error"):
+            lines.append(f"原因：{data['error']}")
+        yield event.plain_result("\n".join(lines))
 
     async def _tts_presets(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.tts_presets()
-        yield event.plain_result(self._summary_or_error("TTS 预设", res))
+        if not self._ok(res):
+            yield event.plain_result(f"TTS 角色列表查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        presets = data.get("presets") if isinstance(data, dict) else None
+        if not isinstance(presets, dict) or not presets:
+            yield event.plain_result("暂无可用的 TTS 角色预设。")
+            return
+        lines = [f"【TTS 角色列表】共 {len(presets)} 名"]
+        for index, (character_id, value) in enumerate(presets.items(), 1):
+            item = value if isinstance(value, dict) else {}
+            name = item.get("name") or character_id
+            emotions = item.get("emotions") if isinstance(item.get("emotions"), dict) else {}
+            lines.append(f"{index}. {name}（{character_id}），情感 {len(emotions)} 种")
+        lines.append("发送 tts角色详情 <角色ID> 查看详情。")
+        yield event.plain_result("\n".join(lines))
 
     async def _tts_preset(self, event: AstrMessageEvent, character_id: str) -> AsyncGenerator[Any, None]:
         res = await self.client.tts_preset(character_id)
-        yield event.plain_result(self._summary_or_error("TTS 角色详情", res))
+        if not self._ok(res):
+            yield event.plain_result(f"TTS 角色详情查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if not isinstance(data, dict) or not data:
+            yield event.plain_result(f"未找到 TTS 角色：{character_id}。")
+            return
+        name = data.get("name") or character_id
+        emotions = data.get("emotions") if isinstance(data.get("emotions"), dict) else {}
+        lines = [f"【TTS 角色：{name}】", f"角色 ID：{character_id}"]
+        if emotions:
+            lines.append("可用情感：")
+            for emotion_id, value in emotions.items():
+                item = value if isinstance(value, dict) else {}
+                lines.append(f"- {item.get('name') or emotion_id}（{emotion_id}）")
+        else:
+            lines.append("可用情感：默认")
+        yield event.plain_result("\n".join(lines))
 
     async def _tts(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         parts = arg.split()
