@@ -2402,7 +2402,8 @@ class DeltaForcePlugin(Star):
         }
         path = os.path.join(self.plugin_path, "config", "help", file_map[kind])
         try:
-            cfg = yaml.safe_load(open(path, "r", encoding="utf-8")) or {}
+            with open(path, "r", encoding="utf-8") as config_file:
+                cfg = yaml.safe_load(config_file) or {}
         except Exception as exc:
             yield event.plain_result(f"读取帮助配置失败: {exc}")
             return
