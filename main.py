@@ -143,8 +143,10 @@ DELTA_COMMAND_SPECS = [
     ("绑定", set()),
     ("账号", {"账号列表"}),
     ("账号切换", {"切换账号"}),
-    ("解绑", {"删除"}),
-    ("微信刷新", {"刷新微信", "qq刷新", "QQ刷新", "刷新qq", "刷新QQ"}),
+    ("解绑", set()),
+    ("删除", set()),
+    ("微信刷新", {"刷新微信"}),
+    ("qq刷新", {"QQ刷新", "刷新qq", "刷新QQ"}),
     ("信息", {"info"}),
     ("uid", {"UID"}),
     ("数据", {"data"}),
@@ -172,14 +174,19 @@ DELTA_COMMAND_SPECS = [
     ("当前价格", {"最新价格", "价格"}),
     ("价格历史", {"历史价格"}),
     ("材料价格", {"制造材料"}),
-    ("利润历史", {"历史利润", "利润排行", "利润榜", "最高利润", "利润排行v2", "利润榜v2", "特勤处利润", "特勤利润"}),
+    ("利润历史", {"历史利润"}),
+    ("利润排行", {"利润榜"}),
+    ("最高利润", {"利润排行v2", "利润榜v2"}),
+    ("特勤处利润", {"特勤利润"}),
     ("上传改枪码", {"上传改枪方案"}),
     ("改枪码列表", {"改枪方案列表"}),
     ("改枪码详情", {"改枪方案详情"}),
-    ("改枪码点赞", {"改枪方案点赞", "改枪码点踩", "改枪方案点踩"}),
+    ("改枪码点赞", {"改枪方案点赞"}),
+    ("改枪码点踩", {"改枪方案点踩"}),
     ("更新改枪码", {"更新改枪方案"}),
     ("删除改枪码", {"删除改枪方案"}),
-    ("收藏改枪码", {"收藏改枪方案", "取消收藏改枪码", "取消收藏改枪方案"}),
+    ("收藏改枪码", {"收藏改枪方案"}),
+    ("取消收藏改枪码", {"取消收藏改枪方案"}),
     ("改枪码收藏列表", {"改枪方案收藏列表"}),
     ("每日密码", {"今日密码"}),
     ("文章列表", set()),
@@ -187,9 +194,13 @@ DELTA_COMMAND_SPECS = [
     ("ai预设列表", {"AI预设列表"}),
     ("ai锐评", {"AI锐评"}),
     ("ai评价", {"AI评价"}),
-    ("语音列表", {"标签列表", "语音分类", "语音统计"}),
+    ("语音列表", set()),
+    ("标签列表", set()),
+    ("语音分类", set()),
+    ("语音统计", set()),
     ("语音", set()),
-    ("歌词", {"鼠鼠歌词", "鼠鼠音乐歌词", "鼠鼠语音"}),
+    ("歌词", {"鼠鼠歌词", "鼠鼠音乐歌词"}),
+    ("鼠鼠语音", set()),
     ("鼠鼠音乐列表", {"鼠鼠音乐排行榜"}),
     ("鼠鼠歌单", set()),
     ("点歌", {"听", "听歌", "播放"}),
@@ -208,13 +219,35 @@ DELTA_COMMAND_SPECS = [
     ("修甲", {"修理"}),
     ("计算映射表", {"映射表"}),
     ("取消计算", {"取消"}),
-    ("ws连接", {"WS连接", "websocket连接", "WebSocket连接", "ws启动", "WS启动", "websocket启动", "WebSocket启动", "ws开启", "WS开启", "websocket开启", "WebSocket开启", "ws断开", "WS断开", "websocket断开", "WebSocket断开", "ws关闭", "WS关闭", "websocket关闭", "WebSocket关闭", "ws停止", "WS停止", "websocket停止", "WebSocket停止", "ws状态", "WS状态", "websocket状态", "WebSocket状态", "wsstatus", "WSstatus", "websocketstatus", "WebSocketstatus"}),
-    ("订阅", {"取消订阅", "订阅状态"}),
-    ("开启本群订阅推送", {"关闭本群订阅推送", "开启私信订阅推送", "关闭私信订阅推送"}),
-    ("广播开启", {"通知开启", "广播启用", "通知启用", "广播订阅", "通知订阅", "广播关闭", "通知关闭", "广播禁用", "通知禁用", "广播取消", "通知取消", "广播状态", "通知状态", "广播设置", "通知设置"}),
-    ("开启日报推送", {"关闭日报推送", "开启周报推送", "关闭周报推送", "开启特勤处推送", "关闭特勤处推送", "开启每日密码推送", "关闭每日密码推送"}),
-    ("房间列表", {"创建房间", "加入房间", "退出房间", "解散房间", "踢人", "房间信息", "房间地图列表", "房间标签列表"}),
-    ("更新", {"强制更新", "插件更新", "插件强制更新", "更新日志", "插件更新日志", "update", "update_log"}),
+    ("ws连接", {"WS连接", "websocket连接", "WebSocket连接", "ws启动", "WS启动", "websocket启动", "WebSocket启动", "ws开启", "WS开启", "websocket开启", "WebSocket开启"}),
+    ("ws断开", {"WS断开", "websocket断开", "WebSocket断开", "ws关闭", "WS关闭", "websocket关闭", "WebSocket关闭", "ws停止", "WS停止", "websocket停止", "WebSocket停止"}),
+    ("ws状态", {"WS状态", "websocket状态", "WebSocket状态", "wsstatus", "WSstatus", "websocketstatus", "WebSocketstatus"}),
+    ("订阅", set()),
+    ("取消订阅", set()),
+    ("订阅状态", set()),
+    ("开启本群订阅推送", set()),
+    ("关闭本群订阅推送", set()),
+    ("开启私信订阅推送", set()),
+    ("关闭私信订阅推送", set()),
+    ("广播开启", {"通知开启", "广播启用", "通知启用", "广播订阅", "通知订阅"}),
+    ("广播关闭", {"通知关闭", "广播禁用", "通知禁用", "广播取消", "通知取消"}),
+    ("广播状态", {"通知状态", "广播设置", "通知设置"}),
+    ("开启日报推送", {"关闭日报推送"}),
+    ("开启周报推送", {"关闭周报推送"}),
+    ("开启特勤处推送", {"关闭特勤处推送"}),
+    ("开启每日密码推送", {"关闭每日密码推送"}),
+    ("房间列表", set()),
+    ("创建房间", set()),
+    ("加入房间", set()),
+    ("退出房间", set()),
+    ("解散房间", set()),
+    ("踢人", set()),
+    ("房间信息", set()),
+    ("房间地图列表", set()),
+    ("房间标签列表", set()),
+    ("对局房间", {"战绩房间", "对局房间信息", "战绩房间信息"}),
+    ("更新", {"强制更新", "插件更新", "插件强制更新", "update"}),
+    ("更新日志", {"插件更新日志", "update_log"}),
     ("活动日历", {"活动", "活动列表"}),
     (
         "微信安全中心授权登录",
@@ -2097,6 +2130,9 @@ class DeltaForcePlugin(Star):
             return
 
         if re.fullmatch(r"(ws|WS|websocket|WebSocket)(连接|启动|开启|断开|关闭|停止|状态|status)", body):
+            if not event.is_admin():
+                yield event.plain_result("只有管理员可以管理三角洲 WebSocket 连接。")
+                return
             if body.endswith(("断开", "关闭", "停止")):
                 self._ws_requested = False
                 self._ws_wakeup.set()
@@ -2129,6 +2165,9 @@ class DeltaForcePlugin(Star):
                 yield result
             return
         if "广播" in body or "通知" in body:
+            if not event.is_admin():
+                yield event.plain_result("只有管理员可以管理三角洲广播通知。")
+                return
             yield event.plain_result("最新版后端未提供通用通知广播协议，该功能当前无法接入；战绩实时推送不受影响。")
             return
         if match := re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body):
@@ -2141,13 +2180,19 @@ class DeltaForcePlugin(Star):
             async for result in self._toggle_scheduled_push(event, kind, match.group(1) == "开启"):
                 yield result
             return
-        if body.startswith("房间信息"):
+        if body.startswith(("对局房间", "战绩房间", "对局房间信息", "战绩房间信息")):
             parts = body.split()
             if len(parts) != 3:
-                yield event.plain_result("用法：房间信息 <烽火/全面> <对局房间ID>，例如：房间信息 烽火 123456。")
+                yield event.plain_result("用法：对局房间 <烽火/全面> <对局房间ID>，例如：对局房间 烽火 123456。")
                 return
             async for result in self._battle_room_info(event, parts[1], parts[2]):
                 yield result
+            return
+        if body.startswith("房间信息"):
+            yield event.plain_result(
+                "房间信息用于查询 Yunzai 原版开黑房间，但最新版后端没有对应路由，当前无法等价移植。"
+                "如需查询战绩对局成员，请使用：对局房间 <烽火/全面> <对局房间ID>。"
+            )
             return
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
             yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")
@@ -3197,7 +3242,7 @@ class DeltaForcePlugin(Star):
 
         room_id = str(room_id or "").strip()
         if not room_id or len(room_id) > 128:
-            yield event.plain_result("对局房间 ID 无效。用法：房间信息 <烽火/全面> <对局房间ID>。")
+            yield event.plain_result("对局房间 ID 无效。用法：对局房间 <烽火/全面> <对局房间ID>。")
             return
         token = await self._need_token(event)
         if not token:

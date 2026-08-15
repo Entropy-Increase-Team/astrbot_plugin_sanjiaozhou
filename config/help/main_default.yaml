@@ -198,7 +198,7 @@ helpList:
           title: "昨日收益 [模式]"
           desc: "查询昨日收益和物资统计"
     - order: 3
-      group: "对局房间"
+      group: "房间"
       list:
         - icon: 28
           title: "房间列表"
@@ -216,7 +216,10 @@ helpList:
           title: "踢人 [序号]"
           desc: "踢出开黑房间成员（后端暂不支持）"
         - icon: 64
-          title: "房间信息 [模式] [对局ID]"
+          title: "房间信息"
+          desc: "开黑房间信息（后端暂不支持）"
+        - icon: 64
+          title: "对局房间 [模式] [对局ID]"
           desc: "查询战绩对局成员详情"
         - icon: 62
           title: "房间地图列表"
