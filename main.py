@@ -443,6 +443,31 @@ class DeltaForcePlugin(Star):
         return code, state
 
     @staticmethod
+    async def _recall_oauth_callback(event: AstrMessageEvent) -> bool:
+        """在 aiocqhttp 中尽力撤回包含 OAuth code/state 的用户消息。"""
+        try:
+            if event.get_platform_name() != "aiocqhttp":
+                return False
+            bot = getattr(event, "bot", None)
+            message_obj = getattr(event, "message_obj", None)
+            message_id = str(getattr(message_obj, "message_id", "") or "").strip()
+            delete_msg = getattr(bot, "delete_msg", None)
+            if not message_id or not callable(delete_msg):
+                return False
+            await delete_msg(
+                message_id=int(message_id) if message_id.isdigit() else message_id
+            )
+            logger.info("[三角洲 OAuth] 已撤回用户提交的敏感回调消息。")
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                f"[三角洲 OAuth] 敏感回调消息撤回失败：{type(exc).__name__}"
+            )
+            return False
+
+    @staticmethod
     def _expiry_millis(value: Any) -> int:
         if isinstance(value, dt.datetime):
             parsed = value
@@ -1993,19 +2018,33 @@ class DeltaForcePlugin(Star):
             )
             return
 
+        recalled = await self._recall_oauth_callback(event)
+        privacy_notice = (
+            ""
+            if recalled
+            else "\n隐私提醒：当前平台无法自动撤回含授权信息的消息，请立即手动撤回。"
+        )
         code, state = self._oauth_callback_parts(extra)
         if not code or not state:
-            yield event.plain_result("回调 URL 无效，必须是包含 code 和 state 的完整 http(s) 地址。")
+            yield event.plain_result(
+                "回调 URL 无效，必须是包含 code 和 state 的完整 http(s) 地址。"
+                + privacy_notice
+            )
             return
 
         session = self._oauth_sessions.get(session_key)
         now_ms = int(dt.datetime.now().timestamp() * 1000)
         if session and session.get("expire") and now_ms >= int(session["expire"]):
             self._oauth_sessions.pop(session_key, None)
-            yield event.plain_result("OAuth 授权会话已过期，请重新获取授权链接。")
+            yield event.plain_result(
+                "OAuth 授权会话已过期，请重新获取授权链接。" + privacy_notice
+            )
             return
         if session and state != session.get("state"):
-            yield event.plain_result("OAuth 回调的 state 与当前会话不匹配，请重新获取授权链接。")
+            yield event.plain_result(
+                "OAuth 回调的 state 与当前会话不匹配，请重新获取授权链接。"
+                + privacy_notice
+            )
             return
 
         framework_token = str((session or {}).get("framework_token") or state)
@@ -2017,20 +2056,26 @@ class DeltaForcePlugin(Star):
             },
         )
         if not self._ok(res):
-            yield event.plain_result(f"OAuth 授权提交失败: {self._message_of(res)}")
+            yield event.plain_result(
+                f"OAuth 授权提交失败: {self._message_of(res)}{privacy_notice}"
+            )
             return
         data = self._data(res, {}) or {}
         if not isinstance(data, dict):
-            yield event.plain_result("OAuth 提交响应格式异常，未保存任何凭证。")
+            yield event.plain_result(
+                "OAuth 提交响应格式异常，未保存任何凭证。" + privacy_notice
+            )
             return
         final_token = data.get("frameworkToken") or data.get("framework_token") or data.get("token") or framework_token
         if not final_token:
-            yield event.plain_result("OAuth 授权成功，但接口未返回 frameworkToken。")
+            yield event.plain_result(
+                "OAuth 授权成功，但接口未返回 frameworkToken。" + privacy_notice
+            )
             return
 
         self._oauth_sessions.pop(session_key, None)
         message = await self._finish_login(event, str(final_token), pf, "OAuth 登录")
-        yield event.plain_result(message)
+        yield event.plain_result(message + privacy_notice)
 
     async def _web_login(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         client_id = self._client_id(event)

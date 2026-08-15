@@ -479,9 +479,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.14", "0.4.13"],
+            ["0.4.15", "0.4.14"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "修复")
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "安全")
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()

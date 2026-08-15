@@ -41,6 +41,9 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
                 AiocqhttpAdapter,
             )
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
             from astrbot.core.star.session_plugin_manager import SessionPluginManager
 
 
@@ -326,6 +329,13 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
 
 
             async def verify_record_push_platform_delivery():
+                callback_event = object.__new__(AiocqhttpMessageEvent)
+                callback_event.platform_meta = SimpleNamespace(name="aiocqhttp")
+                callback_event.message_obj = SimpleNamespace(message_id="789")
+                callback_event.bot = SimpleNamespace(delete_msg=AsyncMock())
+                assert await DeltaForcePlugin._recall_oauth_callback(callback_event)
+                callback_event.bot.delete_msg.assert_awaited_once_with(message_id=789)
+
                 adapter = AiocqhttpAdapter(
                     {
                         "id": "fixture-aiocqhttp",

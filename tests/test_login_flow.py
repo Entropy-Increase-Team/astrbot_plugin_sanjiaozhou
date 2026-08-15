@@ -158,6 +158,17 @@ class _Event:
         return {"type": "image", "value": value}
 
 
+class _RecallEvent(_Event):
+    def __init__(self, delete_error=None):
+        self.bot = SimpleNamespace(
+            delete_msg=AsyncMock(side_effect=delete_error)
+        )
+        self.message_obj = SimpleNamespace(message_id="12345")
+
+    def get_platform_name(self):
+        return "aiocqhttp"
+
+
 async def _collect(generator):
     return [item async for item in generator]
 
@@ -616,7 +627,50 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client.submit_payload["callbackUrl"], callback)
         self.assertEqual(client.submit_payload["frameworkToken"], "mock-state")
         self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
+        self.assertIn("手动撤回", results[-1]["text"])
         self.assertNotIn(("mock-user", "qq"), plugin._oauth_sessions)
+
+    async def test_oauth_recalls_sensitive_callback_on_aiocqhttp(self):
+        client = _OAuthClient()
+        plugin = self._plugin(client)
+        event = _RecallEvent()
+        await _collect(plugin._oauth_login(event, "qq", ""))
+        callback = "https://example.invalid/qccallback.html?code=mock-code&state=mock-state"
+
+        results = await _collect(plugin._oauth_login(event, "qq", callback))
+
+        event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        self.assertNotIn("手动撤回", results[-1]["text"])
+        self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
+
+    async def test_oauth_recall_failure_does_not_block_binding(self):
+        client = _OAuthClient()
+        plugin = self._plugin(client)
+        event = _RecallEvent(RuntimeError("协议端拒绝撤回"))
+        await _collect(plugin._oauth_login(event, "微信", ""))
+        callback = "https://example.invalid/callback?code=mock-code&state=mock-state"
+
+        results = await _collect(plugin._oauth_login(event, "微信", callback))
+
+        event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
+        self.assertIn("手动撤回", results[-1]["text"])
+
+    async def test_oauth_recalls_malformed_callback_before_rejecting_it(self):
+        plugin = self._plugin(_OAuthClient())
+        event = _RecallEvent()
+
+        results = await _collect(
+            plugin._oauth_login(
+                event,
+                "qq",
+                "https://example.invalid/qccallback.html?code=incomplete",
+            )
+        )
+
+        event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        self.assertIn("回调 URL 无效", results[0]["text"])
+        self.assertNotIn("incomplete", results[0]["text"])
 
     async def test_oauth_rejects_mismatched_state(self):
         client = _OAuthClient()
