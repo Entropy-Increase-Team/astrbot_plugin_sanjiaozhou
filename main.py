@@ -50,6 +50,33 @@ SOL_ALIASES = {"sol", "烽火", "烽火地带", "摸金", "4"}
 MP_ALIASES = {"mp", "tdm", "全面", "全面战场", "战场", "大战场", "5"}
 ESCAPE_REASONS = {"1": "撤离成功", "2": "被玩家击杀", "3": "被人机击杀", "10": "撤离失败"}
 MP_RESULTS = {"1": "胜利", "2": "失败", "3": "中途退出"}
+VOICE_SCENE_ALIASES = {"局内": "InGame", "ingame": "InGame", "局外": "OutGame", "outgame": "OutGame"}
+VOICE_ACTION_ALIASES = {
+    "呼吸": "Breath",
+    "breath": "Breath",
+    "战斗": "Combat",
+    "combat": "Combat",
+    "死亡": "Death",
+    "death": "Death",
+    "受伤": "Pain",
+    "pain": "Pain",
+}
+VOICE_CATEGORY_ALIASES = {
+    "角色语音": "Voice",
+    "过场动画": "CutScene",
+    "环境音效": "Amb",
+    "背景音乐": "Music",
+    "音效": "SFX",
+    "节日活动": "Festivel",
+    "介绍": "Intro",
+    "界面": "UI",
+    "单人模式": "Voice_SOL_MS",
+}
+VOICE_CATEGORY_VALUES = {value.casefold(): value for value in VOICE_CATEGORY_ALIASES.values()}
+VOICE_TAG_PATTERN = re.compile(
+    r"(?:boss-|task-|evac-|eggs-|bf-).+|BF_.+|haavk|commander|babel|Beginner",
+    re.I,
+)
 
 
 class _ScheduledEvent:
@@ -8335,10 +8362,22 @@ class DeltaForcePlugin(Star):
                 if not isinstance(item, dict):
                     continue
                 name = item.get("name") or "未知角色"
-                voice_id = item.get("voiceId") or item.get("voiceID") or "-"
+                voice_id = item.get("voiceId") or item.get("voiceID") or item.get("voiceid") or "-"
+                operator_id = item.get("operatorId") or item.get("operatorID") or item.get("operatorid") or "-"
                 profession = item.get("profession") or "未知职业"
                 skins = item.get("skins") if isinstance(item.get("skins"), list) else []
-                lines.append(f"{index}. {name}（{profession}）ID: {voice_id}，皮肤音色 {len(skins)} 个")
+                skin_names = []
+                for skin in skins[:12]:
+                    if isinstance(skin, dict):
+                        skin_names.append(
+                            str(skin.get("name") or skin.get("voiceId") or skin.get("voiceid") or "未知皮肤")
+                        )
+                    elif skin:
+                        skin_names.append(str(skin))
+                line = f"{index}. {name}（{profession}）Voice ID: {voice_id}，干员 ID: {operator_id}"
+                if skin_names:
+                    line += f"，皮肤音色：{'、'.join(skin_names)}"
+                lines.append(line)
             yield event.plain_result("\n".join(lines))
             return
         if command == "标签列表":
@@ -8378,11 +8417,71 @@ class DeltaForcePlugin(Star):
                 lines.append(f"{name}：{count} 条")
         yield event.plain_result("\n".join(lines))
 
+    @staticmethod
+    def _parse_voice_params(arg: str) -> Dict[str, str]:
+        text = str(arg or "").strip()
+        if not text:
+            return {"count": "1"}
+
+        explicit = DeltaForcePlugin._parse_key_values(text)
+        if explicit:
+            key_aliases = {
+                "分类": "category",
+                "标签": "tag",
+                "角色": "character",
+                "场景": "scene",
+                "动作": "actionType",
+                "细节": "actionDetail",
+            }
+            allowed = {"category", "tag", "character", "scene", "actionType", "actionDetail", "expiresIn"}
+            params = {
+                key_aliases.get(str(key), str(key)): str(value)
+                for key, value in explicit.items()
+                if key_aliases.get(str(key), str(key)) in allowed and str(value).strip()
+            }
+            scene = str(params.get("scene") or "").casefold()
+            action = str(params.get("actionType") or "").casefold()
+            category = str(params.get("category") or "")
+            params["scene"] = VOICE_SCENE_ALIASES.get(scene, params.get("scene", ""))
+            params["actionType"] = VOICE_ACTION_ALIASES.get(action, params.get("actionType", ""))
+            params["category"] = VOICE_CATEGORY_ALIASES.get(
+                category,
+                VOICE_CATEGORY_VALUES.get(category.casefold(), category),
+            )
+            params = {key: value for key, value in params.items() if value}
+            params["count"] = "1"
+            return params
+
+        words = text.split()
+        first = words[0]
+        lowered = first.casefold()
+        if first in VOICE_CATEGORY_ALIASES or lowered in VOICE_CATEGORY_VALUES:
+            category = VOICE_CATEGORY_ALIASES.get(first) or VOICE_CATEGORY_VALUES[lowered]
+            return {"category": category, "count": "1"}
+        if VOICE_TAG_PATTERN.fullmatch(first):
+            return {"tag": first, "count": "1"}
+
+        params: Dict[str, str] = {"count": "1"}
+        if lowered in VOICE_SCENE_ALIASES:
+            params["scene"] = VOICE_SCENE_ALIASES[lowered]
+        elif lowered in VOICE_ACTION_ALIASES:
+            params["actionType"] = VOICE_ACTION_ALIASES[lowered]
+        else:
+            params["character"] = first
+        for word in words[1:3]:
+            lowered = word.casefold()
+            if lowered in VOICE_SCENE_ALIASES:
+                params["scene"] = VOICE_SCENE_ALIASES[lowered]
+            elif lowered in VOICE_ACTION_ALIASES:
+                params["actionType"] = VOICE_ACTION_ALIASES[lowered]
+        return params
+
     async def _voice(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
-        params = self._parse_key_values(arg)
-        if arg and not params:
-            params = {"character": arg}
-        res = await self.client.audio_random(params)
+        params = self._parse_voice_params(arg)
+        if params.get("category") or params.get("tag") or len(params) == 1:
+            res = await self.client.audio_random(params)
+        else:
+            res = await self.client.audio_character(params)
         if not self._ok(res):
             yield event.plain_result(f"随机语音查询失败: {self._message_of(res)}")
             return
