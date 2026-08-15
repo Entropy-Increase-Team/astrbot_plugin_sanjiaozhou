@@ -213,6 +213,7 @@ DELTA_COMMAND_SPECS = [
     ("开启日报推送", {"关闭日报推送", "开启周报推送", "关闭周报推送", "开启特勤处推送", "关闭特勤处推送", "开启每日密码推送", "关闭每日密码推送"}),
     ("房间列表", {"创建房间", "加入房间", "退出房间", "解散房间", "踢人", "房间信息", "房间地图列表", "房间标签列表"}),
     ("更新", {"强制更新", "插件更新", "插件强制更新", "更新日志", "插件更新日志", "update", "update_log"}),
+    ("活动日历", {"活动", "活动列表"}),
 ]
 
 
@@ -1544,6 +1545,10 @@ class DeltaForcePlugin(Star):
 
         if re.fullmatch(r"(每日密码|今日密码)", body):
             async for r in self._daily_keyword(event):
+                yield r
+            return
+        if re.fullmatch(r"(活动日历|活动列表|活动)", body):
+            async for r in self._activities(event):
                 yield r
             return
         if body == "文章列表":
@@ -4758,6 +4763,187 @@ class DeltaForcePlugin(Star):
             secret = item.get("secret") or item.get("password") or "暂无"
             lines.append(f"【{map_name}】: {secret}")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _activity_datetime(value: Any) -> Optional[dt.datetime]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            return dt.datetime.strptime(text[:19], "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+
+    @classmethod
+    def _activity_status(
+        cls,
+        start_time: Any,
+        end_time: Any,
+        current_time: Any,
+    ) -> Tuple[str, str]:
+        now = cls._activity_datetime(current_time) or dt.datetime.now()
+        start = cls._activity_datetime(start_time)
+        end = cls._activity_datetime(end_time)
+        if start and now < start:
+            return "即将开始", "upcoming"
+        if end and now > end:
+            return "已结束", "ended"
+        if start or end:
+            return "进行中", "active"
+        return "时间待定", "unknown"
+
+    def _activity_groups(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        resolver = getattr(self.client, "resolve_url", None)
+
+        def media_url(value: Any) -> str:
+            raw = str(value or "").strip()
+            if not raw or not callable(resolver):
+                return raw
+            return str(resolver(raw) or raw)
+
+        current_time = data.get("currentTime") or data.get("current_time") or ""
+
+        def normalize_card(card: Any) -> Optional[Dict[str, Any]]:
+            if not isinstance(card, dict):
+                return None
+            title = str(card.get("eventTitle") or card.get("title") or "未命名活动").strip()
+            start_time = str(card.get("startTime") or card.get("start_time") or "").strip()
+            end_time = str(card.get("endTime") or card.get("end_time") or "").strip()
+            status_text, status_class = self._activity_status(
+                start_time,
+                end_time,
+                current_time,
+            )
+            illustrations = card.get("illustration") or []
+            reward_images = [
+                media_url(item.get("rewardImage") or item.get("image"))
+                for item in illustrations
+                if isinstance(item, dict) and (item.get("rewardImage") or item.get("image"))
+            ]
+            if start_time and end_time:
+                time_text = f"{start_time} 至 {end_time}"
+            elif start_time:
+                time_text = f"{start_time} 起"
+            elif end_time:
+                time_text = f"截至 {end_time}"
+            else:
+                time_text = "活动时间待公布"
+            return {
+                "id": str(card.get("id") or ""),
+                "title": title,
+                "label": str(card.get("labelCopy") or card.get("label") or "活动").strip(),
+                "timeText": time_text,
+                "statusText": status_text,
+                "statusClass": status_class,
+                "backgroundImage": media_url(
+                    card.get("backgroundImage") or card.get("background_image")
+                ),
+                "rewardImages": reward_images[:4],
+                "associationTab": str(card.get("associationTab") or ""),
+            }
+
+        groups: List[Dict[str, Any]] = []
+        raw_groups = data.get("groups") or []
+        if isinstance(raw_groups, list):
+            for group in raw_groups:
+                if not isinstance(group, dict):
+                    continue
+                raw_rows = group.get("cardRows") or group.get("cards") or []
+                raw_cards: List[Any] = []
+                for row in raw_rows if isinstance(raw_rows, list) else []:
+                    if isinstance(row, list):
+                        raw_cards.extend(row)
+                    elif isinstance(row, dict):
+                        raw_cards.append(row)
+                cards = [item for item in (normalize_card(card) for card in raw_cards) if item]
+                groups.append(
+                    {
+                        "id": str(group.get("id") or ""),
+                        "name": str(group.get("tabName") or group.get("name") or "活动").strip(),
+                        "icon": media_url(group.get("imgUrl") or group.get("image")),
+                        "cards": cards,
+                    }
+                )
+
+        if any(group["cards"] for group in groups):
+            return groups
+
+        groups = []
+        raw_cards = data.get("cards") or []
+        cards = [
+            item
+            for item in (
+                normalize_card(card) for card in raw_cards if isinstance(raw_cards, list)
+            )
+            if item
+        ]
+        tabs = data.get("tabs") or []
+        if isinstance(tabs, list):
+            for tab in tabs:
+                if not isinstance(tab, dict):
+                    continue
+                tab_id = str(tab.get("id") or "")
+                groups.append(
+                    {
+                        "id": tab_id,
+                        "name": str(tab.get("tabName") or tab.get("name") or "活动").strip(),
+                        "icon": media_url(tab.get("imgUrl") or tab.get("image")),
+                        "cards": [card for card in cards if card["associationTab"] == tab_id],
+                    }
+                )
+        if not groups and cards:
+            groups.append({"id": "all", "name": "全部活动", "icon": "", "cards": cards})
+        return groups
+
+    async def _activities(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        res = await self.client.activities()
+        if not self._ok(res):
+            yield event.plain_result(f"活动日历查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if not isinstance(data, dict):
+            yield event.plain_result("活动日历响应格式异常。")
+            return
+        groups = self._activity_groups(data)
+        total_cards = sum(len(group["cards"]) for group in groups)
+        if total_cards == 0:
+            yield event.plain_result("当前暂无活动日历数据。")
+            return
+
+        current_time = str(data.get("currentTime") or data.get("current_time") or "未知")
+        lines = [
+            "【三角洲活动日历】",
+            f"更新时间: {current_time}",
+            f"共 {len(groups)} 个分类、{total_cards} 个活动",
+        ]
+        for group in groups:
+            if not group["cards"]:
+                continue
+            lines.append(f"\n【{group['name']}】")
+            for index, card in enumerate(group["cards"], 1):
+                lines.append(f"{index}. {card['title']} [{card['statusText']}]")
+                lines.append(f"   {card['timeText']} | {card['label']}")
+        text = "\n".join(lines)
+        if len(text) > 3500:
+            text = text[:3500].rstrip() + "\n\n活动较多，文本结果已截断。"
+        render_data = {
+            "currentTime": current_time,
+            "totalGroups": len(groups),
+            "totalCards": total_cards,
+            "groups": groups,
+        }
+        async for result in self._render_or_text(
+            event,
+            "Template/activities/activities.html",
+            render_data,
+            text,
+            {
+                "viewport_width": 1200,
+                "viewport_height": 2000,
+                "selector": ".calendar-shell",
+            },
+        ):
+            yield result
 
     async def _article_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.article_list()

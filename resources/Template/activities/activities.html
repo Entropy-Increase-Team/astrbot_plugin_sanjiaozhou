@@ -1,0 +1,74 @@
+{{extend commonLayout}}
+{{block 'css'}}
+<link rel="stylesheet" type="text/css" href="{{_res_path}}Template/activities/activities.css"/>
+{{/block}}
+{{block 'main'}}
+<main class="calendar-shell">
+  <img class="page-texture" src="{{_res_path}}imgs/others/loading13.png" alt="" />
+
+  <header class="calendar-header">
+    <img class="game-logo" src="{{_res_path}}imgs/others/logo.png" alt="三角洲行动" />
+    <div class="header-copy">
+      <div class="section-label">ACTIVITY CALENDAR</div>
+      <h1>活动日历</h1>
+      <p>服务器时间 {{currentTime}}</p>
+    </div>
+    <div class="calendar-summary">
+      <div><strong>{{totalGroups}}</strong><span>活动分类</span></div>
+      <div><strong>{{totalCards}}</strong><span>活动卡片</span></div>
+    </div>
+  </header>
+
+  <section class="calendar-content">
+    {{each groups group}}
+    <section class="activity-group">
+      <div class="group-heading">
+        {{if group.icon}}
+        <img src="{{group.icon}}" alt="" onerror="this.remove();" />
+        {{/if}}
+        <h2>{{group.name}}</h2>
+        <span>{{group.cards.length}} 项</span>
+      </div>
+
+      {{if group.cards.length}}
+      <div class="activity-grid">
+        {{each group.cards card}}
+        <article class="activity-card">
+          <div class="activity-visual">
+            {{if card.backgroundImage}}
+            <img src="{{card.backgroundImage}}" alt="{{card.title}}" onerror="this.remove();" />
+            {{/if}}
+            <div class="visual-placeholder"></div>
+            <span class="status status-{{card.statusClass}}">{{card.statusText}}</span>
+          </div>
+          <div class="activity-body">
+            <div class="activity-title-row">
+              <h3>{{card.title}}</h3>
+              <span class="activity-label">{{card.label}}</span>
+            </div>
+            <div class="activity-time">{{card.timeText}}</div>
+            {{if card.rewardImages.length}}
+            <div class="reward-row">
+              <span>活动奖励</span>
+              <div class="reward-images">
+                {{each card.rewardImages reward}}
+                <img src="{{reward}}" alt="活动奖励" onerror="this.remove();" />
+                {{/each}}
+              </div>
+            </div>
+            {{/if}}
+          </div>
+        </article>
+        {{/each}}
+      </div>
+      {{else}}
+      <div class="empty-group">该分类暂时没有活动</div>
+      {{/if}}
+    </section>
+    {{/each}}
+  </section>
+
+  <footer class="calendar-footer">由 AstrBot DeltaForce Plugin 强力驱动</footer>
+</main>
+{{/block}}
+{{block 'footer'}}{{/block}}

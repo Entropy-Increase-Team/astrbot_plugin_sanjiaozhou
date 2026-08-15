@@ -419,6 +419,9 @@ class DeltaForceClient:
     async def daily_keyword(self):
         return await self.get("/api/v1/df/tools/dailykeyword")
 
+    async def activities(self):
+        return await self.get("/api/v1/df/activities")
+
     async def article_list(self):
         return await self.get("/api/v1/df/tools/article/list")
 

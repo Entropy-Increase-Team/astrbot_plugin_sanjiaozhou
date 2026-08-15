@@ -151,6 +151,7 @@ class LiveBackendTests(unittest.IsolatedAsyncioTestCase):
             ("TTS 预设", self.client.tts_presets, dict, {"presets"}),
             ("TTS 队列", self.client.tts_queue, dict, {"processing", "queueLength"}),
             ("每日密码", self.client.daily_keyword, dict, {"list"}),
+            ("活动日历", self.client.activities, dict, {"currentTime", "tabs", "cards", "groups"}),
             ("文章列表", self.client.article_list, dict, {"articles"}),
             ("AI 预设", self.client.ai_presets, dict, {"presets"}),
             (

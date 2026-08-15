@@ -2,10 +2,10 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-- 当前版本：`0.4.15`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.16`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
-- 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
+- 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
 - 使用插件内 Playwright 渲染 HTML 模板，帮助菜单和数据面板以图片形式返回。
 
 > [!TIP]
@@ -62,7 +62,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.14` 已逐项核对 Yunzai 全部命令正则，并补齐 `功能`、`娱乐功能`、各平台“登陆”写法及 `插件强制更新`、`插件更新日志` 等字面别名。`0.4.15` 会在 aiocqhttp 中尽力自动撤回用户提交的 OAuth 回调消息；其他适配器或撤回失败时会明确提醒用户手动撤回。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.14` 已逐项核对 Yunzai 全部命令正则，并补齐完整字面别名；`0.4.15` 增加 OAuth 回调敏感消息保护；`0.4.16` 接入最新版后端活动日历，并提供图片卡片与文本兜底。
 
 ### 个人类功能
 
@@ -96,6 +96,7 @@ playwright install chromium
 ### 工具类功能
 
 - [x] 每日密码查询
+- [x] 活动日历查询（当前、即将开始、已结束与时间待定状态）
 - [x] 官方文章列表/详情
 - [x] 社区改枪码入口
 - [x] 干员列表和干员详情
@@ -168,6 +169,7 @@ playwright install chromium
 | `服务器状态` | 查询 API 服务、数据库和运行环境状态 | `服务器状态` |
 | `用户统计` | 管理员查看 AstrBot 本地绑定统计 | `用户统计` |
 | `每日密码` | 查询今日密码 | `每日密码` |
+| `活动日历` / `活动` | 查询当前活动日历并生成图片卡片 | `活动日历` |
 | `文章列表` | 查询文章列表 | `文章列表` |
 | `文章详情 <ID>` | 查看文章详情 | `文章详情 123` |
 | `物品搜索 <名称/ID>` | 搜索游戏物品 | `物品搜索 金条` |
@@ -206,14 +208,14 @@ playwright install chromium
 python -m pytest -q -p no:cacheprovider
 ```
 
-发布前可启用全模板 Playwright 视觉验收；该模式会真实渲染 18 张 PNG，检查尺寸、文件体积、透明度和非白像素，并在检查后删除截图：
+发布前可启用全模板 Playwright 视觉验收；该模式会真实渲染 19 张 PNG，检查尺寸、文件体积、透明度和非白像素，并在检查后删除截图：
 
 ```powershell
 $env:DELTA_VISUAL_TESTS = "1"
 python -m pytest -q -p no:cacheprovider tests/test_core_queries.py -k core_templates
 ```
 
-真实后端联调默认不会联网；仅在安全环境中注入 `DELTA_LIVE_API_KEY` 后启用，`DELTA_LIVE_CLIENT_ID` 和 `DELTA_LIVE_FRAMEWORK_TOKEN` 分别控制 WebSocket 与已有绑定测试。联调覆盖登录初始化、实时订阅以及公共元数据、物品、价格、音频、TTS、文章、AI 和改枪方案字段契约。测试会压制底层网络调试日志，且不会输出 Header、Token、客户端 ID、二维码或 OAuth 链接：
+真实后端联调默认不会联网；仅在安全环境中注入 `DELTA_LIVE_API_KEY` 后启用，`DELTA_LIVE_CLIENT_ID` 和 `DELTA_LIVE_FRAMEWORK_TOKEN` 分别控制 WebSocket 与已有绑定测试。联调覆盖登录初始化、实时订阅以及公共元数据、活动日历、物品、价格、音频、TTS、文章、AI 和改枪方案字段契约。测试会压制底层网络调试日志，且不会输出 Header、Token、客户端 ID、二维码或 OAuth 链接：
 
 ```powershell
 python -m unittest tests.test_live_backend -v

@@ -479,9 +479,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.15", "0.4.14"],
+            ["0.4.16", "0.4.15"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "安全")
+        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()
@@ -646,6 +646,10 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.ai_review("fixture-token", "sol", "rp")
         self.assertEqual(client.post.await_args.args[0], "/api/v1/df/tools/ai")
         self.assertEqual(client.post.await_args.kwargs["json_data"], {"type": "sol", "preset": "rp"})
+
+        await client.activities()
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/activities")
+        self.assertEqual(client.get.await_args.kwargs, {})
 
         client.put = AsyncMock(return_value={"code": 0, "data": {}})
         await client.update_community_solution("fixture-uuid", {"description": "新描述"}, "qq_fixture")
@@ -2842,6 +2846,134 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂无可用密码数据", empty[0]["text"])
         self.assertIn("密码服务异常", error[0]["text"])
 
+    async def test_activities_renders_authoritative_groups_and_statuses(self):
+        client = SimpleNamespace(
+            activities=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "currentTime": "2026-08-15 12:00:00",
+                        "groups": [
+                            {
+                                "id": "10009",
+                                "tabName": "烽火地带",
+                                "imgUrl": "/assets/sol.png",
+                                "cardRows": [
+                                    [
+                                        {
+                                            "id": "active",
+                                            "eventTitle": "阿萨拉绿茵场",
+                                            "labelCopy": "武器外观",
+                                            "startTime": "2026-08-01 00:00:00",
+                                            "endTime": "2026-08-20 23:59:59",
+                                            "backgroundImage": "/assets/active.png",
+                                            "illustration": [
+                                                {"rewardImage": "/assets/reward.png"}
+                                            ],
+                                        },
+                                        {
+                                            "id": "upcoming",
+                                            "eventTitle": "新活动",
+                                            "startTime": "2026-08-16 00:00:00",
+                                        },
+                                    ],
+                                    [
+                                        {
+                                            "id": "ended",
+                                            "eventTitle": "往期活动",
+                                            "endTime": "2026-08-14 23:59:59",
+                                        },
+                                        {"id": "unknown", "eventTitle": "待定活动"},
+                                    ],
+                                ],
+                            }
+                        ],
+                    },
+                }
+            ),
+            resolve_url=Mock(side_effect=lambda value: f"https://api.example.invalid{value}"),
+        )
+        plugin = self._plugin(client)
+        plugin.config["enable_image_render"] = True
+        plugin.renderer = SimpleNamespace(
+            render_html=AsyncMock(return_value="D:/fixture-activities.png")
+        )
+
+        result = await _collect(plugin._activities(_Event()))
+
+        self.assertEqual(result[0]["type"], "image")
+        render_call = plugin.renderer.render_html.await_args
+        self.assertEqual(render_call.args[0], "Template/activities/activities.html")
+        self.assertEqual(render_call.args[2]["selector"], ".calendar-shell")
+        render_data = render_call.args[1]
+        self.assertEqual(render_data["totalGroups"], 1)
+        self.assertEqual(render_data["totalCards"], 4)
+        cards = render_data["groups"][0]["cards"]
+        self.assertEqual(
+            [card["statusText"] for card in cards],
+            ["进行中", "即将开始", "已结束", "时间待定"],
+        )
+        self.assertEqual(
+            cards[0]["backgroundImage"],
+            "https://api.example.invalid/assets/active.png",
+        )
+        self.assertEqual(
+            cards[0]["rewardImages"],
+            ["https://api.example.invalid/assets/reward.png"],
+        )
+
+    async def test_activities_text_fallback_uses_tabs_and_flat_cards(self):
+        client = SimpleNamespace(
+            activities=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "currentTime": "2026-08-15 12:00:00",
+                        "tabs": [{"id": "10010", "tabName": "全面战场"}],
+                        "cards": [
+                            {
+                                "id": "card-1",
+                                "associationTab": "10010",
+                                "eventTitle": "全面战场挑战",
+                                "labelCopy": "限时任务",
+                                "startTime": "2026-08-15 00:00:00",
+                                "endTime": "2026-08-18 23:59:59",
+                            }
+                        ],
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+
+        result = await _collect(plugin._activities(_Event()))
+
+        self.assertEqual(result[0]["type"], "plain")
+        self.assertIn("【三角洲活动日历】", result[0]["text"])
+        self.assertIn("【全面战场】", result[0]["text"])
+        self.assertIn("全面战场挑战 [进行中]", result[0]["text"])
+        self.assertIn("限时任务", result[0]["text"])
+
+    async def test_activities_handles_empty_invalid_and_error_responses(self):
+        client = SimpleNamespace(
+            activities=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"tabs": [], "cards": [], "groups": []}},
+                    {"code": 0, "data": ["unexpected"]},
+                    {"code": 503, "message": "公共账号池暂无可用凭证", "data": None},
+                ]
+            )
+        )
+        plugin = self._plugin(client)
+
+        empty = await _collect(plugin._activities(_Event()))
+        invalid = await _collect(plugin._activities(_Event()))
+        error = await _collect(plugin._activities(_Event()))
+
+        self.assertIn("暂无活动日历数据", empty[0]["text"])
+        self.assertIn("响应格式异常", invalid[0]["text"])
+        self.assertIn("公共账号池暂无可用凭证", error[0]["text"])
+
     async def test_articles_format_latest_fields_and_handle_empty_and_error(self):
         client = SimpleNamespace(
             article_list=AsyncMock(
@@ -3403,6 +3535,40 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 "deBuffList": [],
                 "buffList": [],
             },
+            "Template/activities/activities.html": {
+                "currentTime": "2026-08-15 12:00:00",
+                "totalGroups": 1,
+                "totalCards": 2,
+                "groups": [
+                    {
+                        "id": "10009",
+                        "name": "烽火地带",
+                        "icon": "",
+                        "cards": [
+                            {
+                                "id": "active",
+                                "title": "一项名称很长但不应遮挡状态和标签的测试活动",
+                                "label": "武器外观",
+                                "timeText": "2026-08-01 00:00:00 至 2026-08-20 23:59:59",
+                                "statusText": "进行中",
+                                "statusClass": "active",
+                                "backgroundImage": "",
+                                "rewardImages": [],
+                            },
+                            {
+                                "id": "upcoming",
+                                "title": "即将开放的活动",
+                                "label": "限时任务",
+                                "timeText": "2026-08-16 00:00:00 起",
+                                "statusText": "即将开始",
+                                "statusClass": "upcoming",
+                                "backgroundImage": "",
+                                "rewardImages": [],
+                            },
+                        ],
+                    }
+                ],
+            },
             "help/version-info.html": {
                 "name": "三角洲行动",
                 "currentVersion": PLUGIN_VERSION,
@@ -3449,7 +3615,12 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                     if not visual_enabled:
                         continue
 
-                    rendered = await renderer.render_html(name, data)
+                    options = (
+                        {"selector": ".calendar-shell"}
+                        if name == "Template/activities/activities.html"
+                        else None
+                    )
+                    rendered = await renderer.render_html(name, data, options)
                     self.assertTrue(rendered, f"{name} 未生成截图")
                     if not rendered:
                         continue

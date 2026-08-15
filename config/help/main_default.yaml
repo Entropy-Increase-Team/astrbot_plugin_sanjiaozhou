@@ -190,6 +190,9 @@ helpList:
         - icon: 46
           title: "每日密码"
           desc: "查询今日密码"
+        - icon: 40
+          title: "活动日历"
+          desc: "查看当前及即将开放的游戏活动"
         - icon: 86
           title: "开启/关闭日报推送"
           desc: "在本群开启/关闭日报推送"

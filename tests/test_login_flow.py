@@ -478,6 +478,7 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         duplicates = {value for value in all_commands if all_commands.count(value) > 1}
         self.assertFalse(duplicates)
         self.assertIn(("订阅", {"取消订阅", "订阅状态"}), DELTA_COMMAND_SPECS)
+        self.assertIn(("活动日历", {"活动", "活动列表"}), DELTA_COMMAND_SPECS)
 
     def test_yunzai_literal_command_aliases_are_registered(self):
         command_aliases = {

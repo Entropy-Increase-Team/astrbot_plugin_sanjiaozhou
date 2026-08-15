@@ -1,0 +1,312 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 100%;
+  min-height: 100%;
+  padding: 24px;
+  background: #090d11;
+  color: #f4f7f8;
+  overflow: visible;
+}
+
+.calendar-shell {
+  position: relative;
+  width: 1152px;
+  margin: 0 auto;
+  overflow: hidden;
+  background: #11171c;
+  border: 1px solid #2a353d;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.34);
+}
+
+.page-texture {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.08;
+  pointer-events: none;
+}
+
+.calendar-header {
+  position: relative;
+  z-index: 1;
+  min-height: 190px;
+  display: grid;
+  grid-template-columns: 160px 1fr 310px;
+  align-items: center;
+  gap: 28px;
+  padding: 34px 42px;
+  background: #172027;
+  border-bottom: 3px solid #19e58c;
+}
+
+.game-logo {
+  width: 148px;
+  height: auto;
+  object-fit: contain;
+}
+
+.section-label {
+  margin-bottom: 8px;
+  color: #19e58c;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.header-copy h1 {
+  margin: 0 0 8px;
+  font-size: 38px;
+  line-height: 1.15;
+  letter-spacing: 0;
+}
+
+.header-copy p {
+  color: #a8b3ba;
+  font-size: 16px;
+}
+
+.calendar-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 1px solid #35434c;
+  background: #0e1418;
+}
+
+.calendar-summary div {
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.calendar-summary div + div {
+  border-left: 1px solid #35434c;
+}
+
+.calendar-summary strong {
+  color: #ffd35d;
+  font-size: 30px;
+}
+
+.calendar-summary span {
+  color: #9ba8b0;
+  font-size: 13px;
+}
+
+.calendar-content {
+  position: relative;
+  z-index: 1;
+  padding: 34px 42px 18px;
+}
+
+.activity-group {
+  margin-bottom: 34px;
+}
+
+.group-heading {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #344049;
+}
+
+.group-heading::before {
+  content: "";
+  width: 5px;
+  height: 30px;
+  background: #19e58c;
+}
+
+.group-heading img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+}
+
+.group-heading h2 {
+  flex: 1;
+  min-width: 0;
+  font-size: 24px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.group-heading span {
+  padding: 5px 10px;
+  color: #9ba8b0;
+  background: #202930;
+  border: 1px solid #35434c;
+  font-size: 13px;
+}
+
+.activity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.activity-card {
+  min-width: 0;
+  overflow: hidden;
+  background: #182027;
+  border: 1px solid #303d45;
+  border-radius: 6px;
+}
+
+.activity-visual {
+  position: relative;
+  height: 184px;
+  overflow: hidden;
+  background: #202a31;
+}
+
+.activity-visual > img {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.visual-placeholder {
+  position: absolute;
+  inset: 0;
+  background: #26323a;
+  border-bottom: 1px solid #35434c;
+}
+
+.visual-placeholder::after {
+  content: "DELTA FORCE";
+  position: absolute;
+  right: 18px;
+  bottom: 15px;
+  color: #52616a;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.status {
+  position: absolute;
+  z-index: 2;
+  top: 14px;
+  left: 14px;
+  padding: 6px 11px;
+  color: #0a0d0f;
+  background: #d4dbe0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status-active {
+  background: #19e58c;
+}
+
+.status-upcoming {
+  background: #ffd35d;
+}
+
+.status-ended {
+  color: #e8edef;
+  background: #4b5962;
+}
+
+.activity-body {
+  min-height: 154px;
+  padding: 18px 20px 20px;
+}
+
+.activity-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.activity-title-row h3 {
+  flex: 1;
+  min-width: 0;
+  color: #ffffff;
+  font-size: 21px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.activity-label {
+  max-width: 128px;
+  padding: 5px 9px;
+  color: #77d8ff;
+  background: #142b35;
+  border: 1px solid #285266;
+  font-size: 12px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.activity-time {
+  min-height: 44px;
+  margin-top: 12px;
+  color: #aab5bc;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.reward-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #303b43;
+}
+
+.reward-row > span {
+  flex-shrink: 0;
+  color: #8f9da5;
+  font-size: 12px;
+}
+
+.reward-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.reward-images img {
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  background: #0f1519;
+  border: 1px solid #3b4850;
+}
+
+.empty-group {
+  padding: 28px;
+  color: #849199;
+  text-align: center;
+  background: #171e23;
+  border: 1px dashed #3a454c;
+}
+
+.calendar-footer {
+  position: relative;
+  z-index: 1;
+  padding: 20px 42px 24px;
+  color: #849199;
+  background: #0e1418;
+  border-top: 1px solid #2d3941;
+  text-align: center;
+  font-size: 12px;
+}
