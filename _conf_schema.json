@@ -69,6 +69,27 @@
     "type": "list",
     "default": []
   },
+  "ai_tts_enabled": {
+    "description": "是否允许 ai评价 命令将评价全文合成为 TTS 语音。",
+    "type": "bool",
+    "default": true
+  },
+  "ai_tts_access_mode": {
+    "description": "AI 评价 TTS 访问控制模式，与普通 TTS 的访问配置相互独立。",
+    "type": "string",
+    "options": ["blacklist", "whitelist"],
+    "default": "blacklist"
+  },
+  "ai_tts_group_list": {
+    "description": "AI 评价 TTS 群聊黑名单或白名单，填写群号；私聊不会匹配此列表。",
+    "type": "list",
+    "default": []
+  },
+  "ai_tts_user_list": {
+    "description": "AI 评价 TTS 用户黑名单或白名单，填写平台用户 ID。",
+    "type": "list",
+    "default": []
+  },
   "tts_max_length": {
     "description": "TTS 文本最大长度。",
     "type": "int",

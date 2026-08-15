@@ -509,13 +509,25 @@ class DeltaForcePlugin(Star):
             values = []
         return {str(item).strip() for item in values if str(item).strip()}
 
-    def _tts_permission_denial(self, event: AstrMessageEvent) -> str:
-        if self.config.get("tts_enabled", True) is False:
-            return "TTS 功能未启用"
+    def _tts_access_denial(
+        self,
+        event: AstrMessageEvent,
+        config_prefix: str,
+        label: str,
+    ) -> str:
+        if self.config.get(f"{config_prefix}_enabled", True) is False:
+            return f"{label} 功能未启用"
 
-        mode = str(self.config.get("tts_access_mode", "blacklist") or "blacklist").strip().lower()
-        user_list = self._config_id_set(self.config.get("tts_user_list", []))
-        group_list = self._config_id_set(self.config.get("tts_group_list", []))
+        mode = str(
+            self.config.get(f"{config_prefix}_access_mode", "blacklist")
+            or "blacklist"
+        ).strip().lower()
+        user_list = self._config_id_set(
+            self.config.get(f"{config_prefix}_user_list", [])
+        )
+        group_list = self._config_id_set(
+            self.config.get(f"{config_prefix}_group_list", [])
+        )
         user_id = str(event.get_sender_id() or "").strip()
         try:
             group_id = str(event.get_group_id() or "").strip()
@@ -524,13 +536,19 @@ class DeltaForcePlugin(Star):
 
         if mode == "whitelist":
             if user_id not in user_list and (not group_id or group_id not in group_list):
-                return "TTS 功能未对您开放"
+                return f"{label} 功能未对您开放"
             return ""
         if user_id in user_list:
-            return "TTS 功能已被禁用"
+            return f"{label} 功能已被禁用"
         if group_id and group_id in group_list:
-            return "TTS 功能在本群已被禁用"
+            return f"{label} 功能在本群已被禁用"
         return ""
+
+    def _tts_permission_denial(self, event: AstrMessageEvent) -> str:
+        return self._tts_access_denial(event, "tts", "TTS")
+
+    def _ai_tts_permission_denial(self, event: AstrMessageEvent) -> str:
+        return self._tts_access_denial(event, "ai_tts", "AI 评价 TTS")
 
     def _sender_name(self, event: AstrMessageEvent) -> str:
         try:
@@ -8370,7 +8388,12 @@ class DeltaForcePlugin(Star):
         preset_name = str(data.get("presetName") or preset or "锐评") if isinstance(data, dict) else (preset or "锐评")
         yield event.plain_result(f"【{mode_name} AI{preset_name}】\n{content}")
         if voice:
-            async for result in self._tts(event, f"{voice} {content}"):
+            async for result in self._tts(
+                event,
+                f"{voice} {content}",
+                access_scope="ai_tts",
+                skip_length_limit=True,
+            ):
                 yield result
 
     async def _voice_meta(self, event: AstrMessageEvent, command: str) -> AsyncGenerator[Any, None]:
@@ -8837,8 +8860,19 @@ class DeltaForcePlugin(Star):
             lines.append("可用情感：默认")
         yield event.plain_result("\n".join(lines))
 
-    async def _tts(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
-        denial = self._tts_permission_denial(event)
+    async def _tts(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        *,
+        access_scope: str = "tts",
+        skip_length_limit: bool = False,
+    ) -> AsyncGenerator[Any, None]:
+        denial = (
+            self._ai_tts_permission_denial(event)
+            if access_scope == "ai_tts"
+            else self._tts_permission_denial(event)
+        )
         if denial:
             yield event.plain_result(denial)
             return
@@ -8883,7 +8917,7 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("请输入需要合成的文本。")
             return
         max_len = int(self.config.get("tts_max_length", 800) or 800)
-        if len(text) > max_len:
+        if not skip_length_limit and len(text) > max_len:
             yield event.plain_result(f"TTS 文本过长，最多 {max_len} 字。")
             return
         payload = {"character": character_id, "text": text}
