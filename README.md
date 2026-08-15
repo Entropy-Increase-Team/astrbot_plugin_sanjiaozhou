@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.31`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.32`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -67,7 +67,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.31` 已补齐 TTS 总开关和群/用户黑白名单访问控制。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.32` 已补齐 TTS 角色预设的描述、默认情感、音色配置状态和情感说明。
 
 ### 个人类功能
 

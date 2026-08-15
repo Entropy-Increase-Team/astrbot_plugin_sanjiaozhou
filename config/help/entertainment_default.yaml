@@ -75,10 +75,10 @@ entertainmentHelpList:
         desc: "查看TTS服务状态和预设信息"
       - icon: 78
         title: "tts角色列表 | tts预设列表"
-        desc: "查看所有可用的角色预设列表"
+        desc: "查看角色描述、默认情感和可用情感数量"
       - icon: 78
         title: "tts角色详情 [角色ID]"
-        desc: "查看指定角色的详细信息"
+        desc: "查看角色描述、音色状态和情感说明"
       - icon: 64
         title: "tts上传"
         desc: "上传上次合成的语音文件"

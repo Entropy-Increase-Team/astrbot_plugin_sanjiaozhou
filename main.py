@@ -8771,8 +8771,24 @@ class DeltaForcePlugin(Star):
         for index, (character_id, value) in enumerate(presets.items(), 1):
             item = value if isinstance(value, dict) else {}
             name = item.get("name") or character_id
-            emotions = item.get("emotions") if isinstance(item.get("emotions"), dict) else {}
-            lines.append(f"{index}. {name}（{character_id}），情感 {len(emotions)} 种")
+            emotions = (
+                item.get("emotions") if isinstance(item.get("emotions"), dict) else {}
+            )
+            default_emotion = str(
+                item.get("defaultEmotion") or item.get("default_emotion") or ""
+            ).strip()
+            default_item = emotions.get(default_emotion) if default_emotion else None
+            default_name = (
+                str(default_item.get("name") or default_emotion)
+                if isinstance(default_item, dict)
+                else default_emotion or "默认"
+            )
+            lines.append(
+                f"{index}. {name}（{character_id}）｜默认情感 {default_name}｜情感 {len(emotions)} 种"
+            )
+            description = str(item.get("description") or "").strip()
+            if description:
+                lines.append(f"   {description[:120]}")
         lines.append("发送 tts角色详情 <角色ID> 查看详情。")
         yield event.plain_result("\n".join(lines))
 
@@ -8788,11 +8804,35 @@ class DeltaForcePlugin(Star):
         name = data.get("name") or character_id
         emotions = data.get("emotions") if isinstance(data.get("emotions"), dict) else {}
         lines = [f"【TTS 角色：{name}】", f"角色 ID：{character_id}"]
+        description = str(data.get("description") or "").strip()
+        if description:
+            lines.append(f"描述：{description[:300]}")
+        default_emotion = str(
+            data.get("defaultEmotion") or data.get("default_emotion") or ""
+        ).strip()
+        default_item = emotions.get(default_emotion) if default_emotion else None
+        default_name = (
+            str(default_item.get("name") or default_emotion)
+            if isinstance(default_item, dict)
+            else default_emotion or "默认"
+        )
+        default_suffix = (
+            f"（{default_emotion}）"
+            if default_emotion and default_name != default_emotion
+            else ""
+        )
+        lines.append(f"默认情感：{default_name}{default_suffix}")
+        voice_file = data.get("voiceFile") or data.get("voice_file")
+        lines.append(f"音色文件：{'已配置' if voice_file else '未配置'}")
         if emotions:
             lines.append("可用情感：")
             for emotion_id, value in emotions.items():
                 item = value if isinstance(value, dict) else {}
-                lines.append(f"- {item.get('name') or emotion_id}（{emotion_id}）")
+                emotion_line = f"- {item.get('name') or emotion_id}（{emotion_id}）"
+                emotion_description = str(item.get("description") or "").strip()
+                if emotion_description:
+                    emotion_line += f"：{emotion_description[:160]}"
+                lines.append(emotion_line)
         else:
             lines.append("可用情感：默认")
         yield event.plain_result("\n".join(lines))
