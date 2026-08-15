@@ -705,6 +705,81 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("回调 URL 无效", results[0]["text"])
         self.assertNotIn("incomplete", results[0]["text"])
 
+    async def test_cookie_login_recalls_sensitive_message_before_request(self):
+        cookie = "fixture-cookie-secret"
+        client = SimpleNamespace(
+            login_cookie=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"frameworkToken": "fixture-final-token"},
+                }
+            ),
+            bind_character=AsyncMock(return_value={"code": 0, "data": {}}),
+        )
+        plugin = self._plugin(client)
+        event = _RecallEvent()
+
+        results = await _collect(plugin._cookie_login(event, cookie))
+
+        event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        client.login_cookie.assert_awaited_once_with(cookie)
+        self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
+        self.assertNotIn("手动撤回", results[-1]["text"])
+        self.assertNotIn(cookie, str(results))
+
+    async def test_cookie_login_recall_failure_warns_and_redacts_response(self):
+        cookie = "fixture-cookie-secret"
+        client = SimpleNamespace(
+            login_cookie=AsyncMock(
+                return_value={
+                    "code": 401,
+                    "message": f"Cookie {cookie} 已失效",
+                    "data": None,
+                }
+            )
+        )
+        plugin = self._plugin(client)
+        event = _RecallEvent(RuntimeError("协议端拒绝撤回"))
+
+        with patch("astrbot_plugin_sanjiaozhou.main.logger") as mocked_logger:
+            results = await _collect(plugin._cookie_login(event, cookie))
+
+        self.assertIn("请立即手动撤回", results[0]["text"])
+        self.assertIn("[已隐藏]", results[-1]["text"])
+        self.assertNotIn(cookie, str(results))
+        self.assertNotIn(cookie, str(mocked_logger.mock_calls))
+        client.login_cookie.assert_awaited_once_with(cookie)
+
+    async def test_manual_binding_recalls_sensitive_message(self):
+        token = "fixture-framework-token-secret"
+        plugin = self._plugin(SimpleNamespace())
+        event = _RecallEvent()
+
+        results = await _collect(plugin._bind_token(event, token))
+
+        event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        plugin._save_binding.assert_awaited_once_with(event, token, "")
+        self.assertEqual(results[-1]["text"], "绑定成功：测试账号")
+        self.assertNotIn(token, str(results))
+
+    async def test_manual_binding_non_aiocqhttp_warns_and_redacts_response(self):
+        token = "fixture-framework-token-secret"
+        plugin = self._plugin(SimpleNamespace())
+        plugin._save_binding = AsyncMock(
+            return_value=(
+                {"framework_token": token, "nickname": "", "delta_uid": ""},
+                False,
+                f"远端拒绝凭证 {token}",
+            )
+        )
+
+        results = await _collect(plugin._bind_token(_Event(), token))
+
+        self.assertIn("请立即手动撤回", results[0]["text"])
+        self.assertIn("[已隐藏]", results[-1]["text"])
+        self.assertIn("未命名账号", results[-1]["text"])
+        self.assertNotIn(token, str(results))
+
     async def test_oauth_rejects_mismatched_state(self):
         client = _OAuthClient()
         plugin = self._plugin(client)
@@ -802,13 +877,13 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             bind_character=AsyncMock(
                 side_effect=[
                     {"code": 0, "data": {"success": True}},
-                    {"code": 400, "message": "角色尚未创建"},
+                    {"code": 400, "message": "角色尚未创建 fixture-token"},
                 ]
             )
         )
         plugin = self._plugin(client)
         plugin._save_binding.side_effect = [
-            ({"framework_token": "fixture-token"}, False, "绑定服务暂不可用"),
+            ({"framework_token": "fixture-token"}, False, "绑定服务暂不可用 fixture-token"),
             ({"framework_token": "fixture-token"}, True, ""),
         ]
 
@@ -820,6 +895,8 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("账号已绑定", remote_failed)
         self.assertIn("自动绑定游戏角色失败", role_failed)
         self.assertIn("角色尚未创建", role_failed)
+        self.assertNotIn("fixture-token", remote_failed)
+        self.assertNotIn("fixture-token", role_failed)
 
     async def test_non_idempotent_post_does_not_retry(self):
         client = object.__new__(DeltaForceClient)
@@ -1202,12 +1279,15 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         plugin = self._plugin(client)
         plugin._need_token = AsyncMock(return_value=None)
 
-        success = await _collect(plugin._bind_character(_Event(), "fixture-token"))
+        recall_event = _RecallEvent()
+        success = await _collect(plugin._bind_character(recall_event, "fixture-token"))
         error = await _collect(plugin._bind_character(_Event(), "fixture-token"))
         missing = await _collect(plugin._bind_character(_Event(), ""))
 
-        self.assertIn("角色绑定请求已完成", success[0]["text"])
-        self.assertIn("登录凭证已失效", error[0]["text"])
+        recall_event.bot.delete_msg.assert_awaited_once_with(message_id=12345)
+        self.assertIn("角色绑定请求已完成", success[-1]["text"])
+        self.assertIn("请立即手动撤回", error[0]["text"])
+        self.assertIn("登录凭证已失效", error[-1]["text"])
         self.assertIn("尚未绑定账号", missing[0]["text"])
 
     async def test_manual_binding_keeps_explicit_local_fallback_on_remote_error(self):
@@ -1252,9 +1332,9 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         success = await _collect(plugin._bind_token(_Event(), "fixture-token"))
         fallback = await _collect(plugin._bind_token(_Event(), "local-token"))
 
-        self.assertIn("绑定成功：测试账号", success[0]["text"])
-        self.assertIn("已先保存到 AstrBot 本地绑定", fallback[0]["text"])
-        self.assertIn("绑定服务暂不可用", fallback[0]["text"])
+        self.assertIn("绑定成功：测试账号", success[-1]["text"])
+        self.assertIn("已先保存到 AstrBot 本地绑定", fallback[-1]["text"])
+        self.assertIn("绑定服务暂不可用", fallback[-1]["text"])
         self.assertEqual(bindings.upsert_binding.await_count, 2)
 
     async def test_account_list_success_and_empty(self):
@@ -1282,6 +1362,29 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("★ 1. 测试账号 [qq] UID:123456", success[0]["text"])
         self.assertIn("尚未绑定任何账号", empty[0]["text"])
+
+    async def test_account_list_does_not_use_token_as_display_name(self):
+        token = "fixture-framework-token-secret"
+        plugin = self._plugin(SimpleNamespace())
+        plugin.bindings = SimpleNamespace(
+            get_user_bindings=AsyncMock(
+                return_value=[
+                    {
+                        "framework_token": token,
+                        "nickname": "",
+                        "delta_uid": "",
+                        "login_type": "qq",
+                        "is_primary": True,
+                    }
+                ]
+            )
+        )
+
+        result = await _collect(plugin._account_list(_Event()))
+
+        self.assertIn("未命名账号", result[0]["text"])
+        self.assertNotIn(token, result[0]["text"])
+        self.assertNotIn(token[:8], result[0]["text"])
 
     async def test_qr_login_handles_missing_image_and_api_error(self):
         client = SimpleNamespace(

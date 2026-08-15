@@ -455,10 +455,14 @@ class DeltaForcePlugin(Star):
         return code, state
 
     @staticmethod
-    async def _recall_oauth_callback(event: AstrMessageEvent) -> bool:
-        """在 aiocqhttp 中尽力撤回包含 OAuth code/state 的用户消息。"""
+    async def _recall_sensitive_message(
+        event: AstrMessageEvent,
+        source: str = "敏感凭证",
+    ) -> bool:
+        """在 aiocqhttp 中尽力撤回用户提交的敏感消息。"""
         try:
-            if event.get_platform_name() != "aiocqhttp":
+            get_platform_name = getattr(event, "get_platform_name", None)
+            if not callable(get_platform_name) or get_platform_name() != "aiocqhttp":
                 return False
             bot = getattr(event, "bot", None)
             message_obj = getattr(event, "message_obj", None)
@@ -469,15 +473,38 @@ class DeltaForcePlugin(Star):
             await delete_msg(
                 message_id=int(message_id) if message_id.isdigit() else message_id
             )
-            logger.info("[三角洲 OAuth] 已撤回用户提交的敏感回调消息。")
+            logger.info(f"[三角洲安全] 已撤回用户提交的{source}消息。")
             return True
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.warning(
-                f"[三角洲 OAuth] 敏感回调消息撤回失败：{type(exc).__name__}"
+                f"[三角洲安全] {source}消息撤回失败：{type(exc).__name__}"
             )
             return False
+
+    @classmethod
+    async def _recall_oauth_callback(cls, event: AstrMessageEvent) -> bool:
+        """保留 OAuth 专用入口，兼容既有调用与测试。"""
+        return await cls._recall_sensitive_message(event, "OAuth 回调")
+
+    @staticmethod
+    def _privacy_notice(recalled: bool, credential_name: str) -> str:
+        if recalled:
+            return ""
+        return (
+            f"隐私提醒：当前平台无法自动撤回含{credential_name}的消息，"
+            "请立即手动撤回。"
+        )
+
+    @staticmethod
+    def _redact_secret(text: Any, *secrets: str) -> str:
+        result = str(text or "")
+        for secret in secrets:
+            value = str(secret or "")
+            if value:
+                result = result.replace(value, "[已隐藏]")
+        return result
 
     @staticmethod
     def _expiry_millis(value: Any) -> int:
@@ -2058,9 +2085,14 @@ class DeltaForcePlugin(Star):
         if not cookie:
             yield event.plain_result("用法：ck登录 <cookie>")
             return
+        recalled = await self._recall_sensitive_message(event, "Cookie 凭证")
+        privacy_notice = self._privacy_notice(recalled, "Cookie 凭证")
+        if privacy_notice:
+            yield event.plain_result(privacy_notice)
         res = await self.client.login_cookie(cookie)
         if not self._ok(res):
-            yield event.plain_result(f"Cookie 登录失败: {self._message_of(res)}")
+            message = self._redact_secret(self._message_of(res), cookie)
+            yield event.plain_result(f"Cookie 登录失败: {message}")
             return
         data = self._data(res, {}) or {}
         token = data.get("frameworkToken") or data.get("framework_token") or data.get("token")
@@ -2116,11 +2148,8 @@ class DeltaForcePlugin(Star):
             return
 
         recalled = await self._recall_oauth_callback(event)
-        privacy_notice = (
-            ""
-            if recalled
-            else "\n隐私提醒：当前平台无法自动撤回含授权信息的消息，请立即手动撤回。"
-        )
+        notice = self._privacy_notice(recalled, "授权信息")
+        privacy_notice = f"\n{notice}" if notice else ""
         code, state = self._oauth_callback_parts(extra)
         if not code or not state:
             yield event.plain_result(
@@ -2307,6 +2336,7 @@ class DeltaForcePlugin(Star):
         source: str,
     ) -> str:
         _binding, remote_ok, remote_message = await self._save_binding(event, token, login_type)
+        safe_remote_message = self._redact_secret(remote_message, token)
         role_res = None
         if login_type in {"qq", "wechat"}:
             role_res = await self.client.bind_character(token)
@@ -2315,30 +2345,38 @@ class DeltaForcePlugin(Star):
             suffix = "账号和游戏角色均已绑定。" if role_res is not None else "已绑定为当前账号。"
             return f"{source}成功，{suffix}"
         if remote_ok:
+            role_message = self._redact_secret(self._message_of(role_res), token)
             return (
-                f"{source}成功，账号已绑定；自动绑定游戏角色失败：{self._message_of(role_res)}。"
+                f"{source}成功，账号已绑定；自动绑定游戏角色失败：{role_message}。"
                 "可稍后发送 角色绑定 重试。"
             )
 
-        local_notice = f"后端账号绑定未确认：{remote_message}；凭证已保存到 AstrBot 本地。"
+        local_notice = f"后端账号绑定未确认：{safe_remote_message}；凭证已保存到 AstrBot 本地。"
         if role_res is None:
             return f"{source}成功，但{local_notice}"
         if self._ok(role_res):
             return f"{source}成功，游戏角色绑定已完成，但{local_notice}"
+        role_message = self._redact_secret(self._message_of(role_res), token)
         return (
             f"{source}成功，但{local_notice}\n"
-            f"自动绑定游戏角色也失败：{self._message_of(role_res)}。可稍后发送 角色绑定 重试。"
+            f"自动绑定游戏角色也失败：{role_message}。可稍后发送 角色绑定 重试。"
         )
 
     async def _bind_token(self, event: AstrMessageEvent, token: str, login_type: str = "", quiet: bool = False) -> AsyncGenerator[Any, None]:
+        if not quiet:
+            recalled = await self._recall_sensitive_message(event, "frameworkToken 凭证")
+            privacy_notice = self._privacy_notice(recalled, "frameworkToken 凭证")
+            if privacy_notice:
+                yield event.plain_result(privacy_notice)
         binding, remote_ok, remote_message = await self._save_binding(event, token, login_type)
         if not quiet:
-            name = binding.get("nickname") or binding.get("delta_uid") or token[:8]
+            name = binding.get("nickname") or binding.get("delta_uid") or "未命名账号"
+            safe_remote_message = self._redact_secret(remote_message, token)
             if remote_ok:
                 yield event.plain_result(f"绑定成功：{name}")
             else:
                 yield event.plain_result(
-                    f"后端绑定接口未确认：{remote_message}\n"
+                    f"后端绑定接口未确认：{safe_remote_message}\n"
                     f"已先保存到 AstrBot 本地绑定：{name}。"
                 )
 
@@ -2368,13 +2406,19 @@ class DeltaForcePlugin(Star):
             pass
 
     async def _bind_character(self, event: AstrMessageEvent, token_arg: str) -> AsyncGenerator[Any, None]:
+        if token_arg:
+            recalled = await self._recall_sensitive_message(event, "frameworkToken 凭证")
+            privacy_notice = self._privacy_notice(recalled, "frameworkToken 凭证")
+            if privacy_notice:
+                yield event.plain_result(privacy_notice)
         token = token_arg or await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号，请先使用 登录 或 绑定 <token>。")
             return
         res = await self.client.bind_character(token)
         if not self._ok(res):
-            yield event.plain_result(f"角色绑定失败: {self._message_of(res)}")
+            message = self._redact_secret(self._message_of(res), token)
+            yield event.plain_result(f"角色绑定失败: {message}")
             return
         yield event.plain_result("角色绑定请求已完成。")
 
@@ -2386,7 +2430,7 @@ class DeltaForcePlugin(Star):
         lines = ["【三角洲账号列表】"]
         for idx, item in enumerate(bindings, 1):
             mark = "★" if item.get("is_primary") else " "
-            name = item.get("nickname") or item.get("delta_uid") or item.get("framework_token", "")[:8]
+            name = item.get("nickname") or item.get("delta_uid") or "未命名账号"
             login_type = item.get("login_type") or item.get("token_type") or "unknown"
             uid = item.get("delta_uid") or "-"
             lines.append(f"{mark} {idx}. {name} [{login_type}] UID:{uid}")
@@ -2416,7 +2460,8 @@ class DeltaForcePlugin(Star):
         if not binding:
             yield event.plain_result("序号无效，请发送 账号 查看列表。")
             return
-        yield event.plain_result(f"已切换到：{binding.get('nickname') or binding.get('framework_token', '')[:8]}")
+        name = binding.get("nickname") or binding.get("delta_uid") or "未命名账号"
+        yield event.plain_result(f"已切换到：{name}")
 
     async def _delete_account(self, event: AstrMessageEvent, index: int, delete_login_data: bool = False) -> AsyncGenerator[Any, None]:
         bindings = await self.bindings.get_user_bindings(event.get_sender_id())

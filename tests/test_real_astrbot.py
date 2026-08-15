@@ -336,6 +336,16 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
                 assert await DeltaForcePlugin._recall_oauth_callback(callback_event)
                 callback_event.bot.delete_msg.assert_awaited_once_with(message_id=789)
 
+                credential_event = object.__new__(AiocqhttpMessageEvent)
+                credential_event.platform_meta = SimpleNamespace(name="aiocqhttp")
+                credential_event.message_obj = SimpleNamespace(message_id="790")
+                credential_event.bot = SimpleNamespace(delete_msg=AsyncMock())
+                assert await DeltaForcePlugin._recall_sensitive_message(
+                    credential_event,
+                    "Cookie 凭证",
+                )
+                credential_event.bot.delete_msg.assert_awaited_once_with(message_id=790)
+
                 adapter = AiocqhttpAdapter(
                     {
                         "id": "fixture-aiocqhttp",

@@ -67,7 +67,7 @@ helpList:
           desc: "激活指定账号并同步后端主绑定"
         - icon: 86
           title: "绑定 [token]"
-          desc: "绑定token"
+          desc: "绑定token并保护敏感消息"
         - icon: 48
           title: "解绑 [序号]"
           desc: "解除后端绑定并移除本地记录"
@@ -97,7 +97,7 @@ helpList:
           desc: "在授权页选择已有账号，批准后自动绑定"
         - icon: 80
           title: "ck登陆 [cookies]"
-          desc: "通过cookie登录（ck登陆查看帮助）"
+          desc: "通过cookie登录并保护敏感消息"
         - icon: 78
           title: "信息"
           desc: "查询个人详细信息"

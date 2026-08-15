@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-- 当前版本：`0.4.17`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.18`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -62,7 +62,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.15` 增加 OAuth 回调敏感消息保护；`0.4.16` 接入活动日历；`0.4.17` 接入最新版后端 Gamesafe 微信安全中心授权与只读安全查询。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.16` 接入活动日历；`0.4.17` 接入 Gamesafe 微信安全中心；`0.4.18` 将敏感消息保护扩展至手动 Cookie 登录和 Token 绑定。
 
 ### 个人类功能
 
@@ -72,9 +72,9 @@ playwright install chromium
 - [x] 网页数据授权登录（授权页选择已有账号，批准后自动绑定）
 - [x] QQ/微信 Token 刷新
 - [x] WeGame 登录入口
-- [x] CK 登录入口
-- [x] Token 绑定、解绑、账号切换
-- [x] 角色绑定入口
+- [x] CK 登录入口（aiocqhttp 自动撤回 Cookie 消息，其他适配器提示立即手动撤回）
+- [x] Token 绑定、解绑、账号切换（手动提交 Token 时采用同等消息保护）
+- [x] 角色绑定入口（显式提交 Token 时采用同等消息保护）
 - [x] 个人信息查询
 - [x] UID 查询
 - [x] 地图统计
@@ -143,7 +143,8 @@ playwright install chromium
 | `qq授权登录` / `微信授权登录` | 获取 OAuth 链接或提交完整回调 URL | `qq授权登录 <完整回调URL>` |
 | `微信安全中心授权登录` | 获取 Gamesafe 微信授权链接或提交完整回调 URL | `微信安全中心授权登录 <完整回调URL>` |
 | `网页登录` | 打开网页授权页，选择已有账号并在批准后自动绑定 | `网页登录` |
-| `绑定 <token>` | 手动绑定 frameworkToken | `绑定 eyJ...` |
+| `ck登录 <cookie>` | 使用 Cookie 登录；提交后请确认原消息已撤回 | `ck登录 <cookie>` |
+| `绑定 <token>` | 手动绑定 frameworkToken；提交后请确认原消息已撤回 | `绑定 <token>` |
 | `账号` | 查看已绑定账号 | `账号` |
 | `账号切换 <序号>` | 切换当前账号并同步后端主绑定 | `账号切换 2` |
 | `解绑 <序号>` | 解除后端账号绑定并同步移除本地记录 | `解绑 1` |
