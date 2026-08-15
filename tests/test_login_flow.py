@@ -468,6 +468,101 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicates)
         self.assertIn(("订阅", {"取消订阅", "订阅状态"}), DELTA_COMMAND_SPECS)
 
+    def test_yunzai_literal_command_aliases_are_registered(self):
+        command_aliases = {
+            name: {name, *aliases} for name, aliases in DELTA_COMMAND_SPECS
+        }
+        expected = {
+            "帮助": {"帮助", "菜单", "功能"},
+            "娱乐帮助": {"娱乐帮助", "娱乐菜单", "娱乐功能"},
+            "登录": {
+                f"{prefix}{suffix}"
+                for prefix in (
+                    "",
+                    "qq",
+                    "QQ",
+                    "微信",
+                    "wx",
+                    "WX",
+                    "wegame",
+                    "WEGAME",
+                    "wegame微信",
+                    "微信wegame",
+                    "qqsafe",
+                    "QQsafe",
+                    "安全中心",
+                    "qq安全中心",
+                )
+                for suffix in ("登陆", "登录")
+            },
+            "qq授权登录": {
+                f"{prefix}{method}{suffix}"
+                for prefix in ("qq", "QQ")
+                for method in ("授权", "auth", "oauth")
+                for suffix in ("登陆", "登录")
+            },
+            "微信授权登录": {
+                f"{prefix}{method}{suffix}"
+                for prefix in ("微信", "wx", "WX")
+                for method in ("授权", "auth", "oauth")
+                for suffix in ("登陆", "登录")
+            },
+            "更新": {
+                "更新",
+                "强制更新",
+                "插件更新",
+                "插件强制更新",
+                "更新日志",
+                "插件更新日志",
+                "update",
+            },
+        }
+
+        for command_name, aliases in expected.items():
+            self.assertTrue(aliases <= command_aliases[command_name])
+
+    async def test_yunzai_literal_aliases_dispatch_to_expected_handlers(self):
+        plugin = object.__new__(DeltaForcePlugin)
+        calls = []
+
+        async def help_stub(_event, kind):
+            calls.append(("help", kind))
+            yield kind
+
+        async def login_stub(_event, command):
+            calls.append(("login", command))
+            yield command
+
+        async def oauth_stub(_event, platform, callback):
+            calls.append(("oauth", platform, callback))
+            yield platform
+
+        async def update_log_stub(_event):
+            calls.append(("update_log",))
+            yield "update_log"
+
+        async def update_stub(_event, force=False):
+            calls.append(("update", force))
+            yield "update"
+
+        plugin._help = help_stub
+        plugin._login = login_stub
+        plugin._oauth_login = oauth_stub
+        plugin._update_log = update_log_stub
+        plugin._update_plugin = update_stub
+
+        cases = (
+            ("功能", ("help", "main")),
+            ("娱乐功能", ("help", "entertainment")),
+            ("qq登陆", ("login", "qq登陆")),
+            ("WXoauth登陆 callback", ("oauth", "WX", "callback")),
+            ("插件更新日志", ("update_log",)),
+            ("插件强制更新", ("update", True)),
+        )
+        for command, expected_call in cases:
+            await _collect(plugin._dispatch(_Event(), command))
+            self.assertEqual(calls[-1], expected_call)
+
     async def test_qr_login_sends_image_and_handles_numeric_status(self):
         plugin = self._plugin(_QrClient())
         with patch("astrbot_plugin_sanjiaozhou.main.asyncio.sleep", new=AsyncMock()):

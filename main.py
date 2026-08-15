@@ -64,13 +64,80 @@ class _ScheduledEvent:
 
 
 DELTA_COMMAND_SPECS = [
-    ("帮助", {"菜单", "help", "三角洲帮助", "df帮助", "delta帮助"}),
-    ("娱乐帮助", {"娱乐菜单"}),
+    ("帮助", {"菜单", "功能", "help", "三角洲帮助", "df帮助", "delta帮助"}),
+    ("娱乐帮助", {"娱乐菜单", "娱乐功能"}),
     ("计算帮助", {"计算菜单"}),
-    ("登录", {"登陆", "qq登录", "QQ登录", "微信登录", "wx登录", "WX登录", "wegame登录", "WEGAME登录", "wegame微信登录", "微信wegame登录", "qqsafe登录", "QQsafe登录", "安全中心登录", "qq安全中心登录"}),
+    (
+        "登录",
+        {
+            "登陆",
+            "qq登录",
+            "qq登陆",
+            "QQ登录",
+            "QQ登陆",
+            "微信登录",
+            "微信登陆",
+            "wx登录",
+            "wx登陆",
+            "WX登录",
+            "WX登陆",
+            "wegame登录",
+            "wegame登陆",
+            "WEGAME登录",
+            "WEGAME登陆",
+            "wegame微信登录",
+            "wegame微信登陆",
+            "微信wegame登录",
+            "微信wegame登陆",
+            "qqsafe登录",
+            "qqsafe登陆",
+            "QQsafe登录",
+            "QQsafe登陆",
+            "安全中心登录",
+            "安全中心登陆",
+            "qq安全中心登录",
+            "qq安全中心登陆",
+        },
+    ),
     ("ck登录", {"ck登陆"}),
-    ("qq授权登录", {"QQ授权登录", "qqauth登录", "QQauth登录", "qqoauth登录", "QQoauth登录"}),
-    ("微信授权登录", {"wx授权登录", "WX授权登录", "微信auth登录", "wxauth登录", "微信oauth登录", "wxoauth登录"}),
+    (
+        "qq授权登录",
+        {
+            "qq授权登陆",
+            "QQ授权登录",
+            "QQ授权登陆",
+            "qqauth登录",
+            "qqauth登陆",
+            "QQauth登录",
+            "QQauth登陆",
+            "qqoauth登录",
+            "qqoauth登陆",
+            "QQoauth登录",
+            "QQoauth登陆",
+        },
+    ),
+    (
+        "微信授权登录",
+        {
+            "微信授权登陆",
+            "wx授权登录",
+            "wx授权登陆",
+            "WX授权登录",
+            "WX授权登陆",
+            "微信auth登录",
+            "微信auth登陆",
+            "wxauth登录",
+            "wxauth登陆",
+            "WXauth登录",
+            "WXauth登陆",
+            "微信oauth登录",
+            "微信oauth登陆",
+            "wxoauth登录",
+            "wxoauth登陆",
+            "WXoauth登录",
+            "WXoauth登陆",
+        },
+    ),
     ("网页登录", {"web登录", "网站登录", "网页登陆", "web登陆", "网站登陆"}),
     ("角色绑定", set()),
     ("绑定", set()),
@@ -145,7 +212,7 @@ DELTA_COMMAND_SPECS = [
     ("广播开启", {"通知开启", "广播启用", "通知启用", "广播订阅", "通知订阅", "广播关闭", "通知关闭", "广播禁用", "通知禁用", "广播取消", "通知取消", "广播状态", "通知状态", "广播设置", "通知设置"}),
     ("开启日报推送", {"关闭日报推送", "开启周报推送", "关闭周报推送", "开启特勤处推送", "关闭特勤处推送", "开启每日密码推送", "关闭每日密码推送"}),
     ("房间列表", {"创建房间", "加入房间", "退出房间", "解散房间", "踢人", "房间信息", "房间地图列表", "房间标签列表"}),
-    ("更新", {"强制更新", "插件更新", "更新日志", "update", "update_log"}),
+    ("更新", {"强制更新", "插件更新", "插件强制更新", "更新日志", "插件更新日志", "update", "update_log"}),
 ]
 
 
@@ -1256,11 +1323,11 @@ class DeltaForcePlugin(Star):
         body = self._body(msg)
         lowered = body.lower()
 
-        if body in {"帮助", "菜单", "help", "三角洲帮助", "df帮助", "delta帮助"}:
+        if body in {"帮助", "菜单", "功能", "help", "三角洲帮助", "df帮助", "delta帮助"}:
             async for r in self._help(event, "main"):
                 yield r
             return
-        if body in {"娱乐帮助", "娱乐菜单"}:
+        if body in {"娱乐帮助", "娱乐菜单", "娱乐功能"}:
             async for r in self._help(event, "entertainment"):
                 yield r
             return
@@ -1623,12 +1690,12 @@ class DeltaForcePlugin(Star):
         if body.startswith(("房间", "创建房间", "加入房间", "退出房间", "解散房间", "踢人")):
             yield event.plain_result("最新版后端仅提供战绩房间详情查询，没有创建、加入、退出、踢人等房间管理路由，因此当前无法等价移植。")
             return
-        if body in {"更新日志", "update_log"}:
+        if body in {"更新日志", "插件更新日志", "update_log"}:
             async for result in self._update_log(event):
                 yield result
             return
-        if body in {"更新", "强制更新", "插件更新", "update"}:
-            async for result in self._update_plugin(event, force=body == "强制更新"):
+        if body in {"更新", "强制更新", "插件更新", "插件强制更新", "update"}:
+            async for result in self._update_plugin(event, force=body in {"强制更新", "插件强制更新"}):
                 yield result
             return
 
