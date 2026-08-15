@@ -388,6 +388,12 @@ class DeltaForceClient:
         path = "/api/v2/df/person/collection" if version == 2 else "/api/v1/df/person/collection"
         return await self.get(path, framework_token=framework_token)
 
+    async def assets(self, framework_token: str):
+        return await self.get(
+            "/api/v1/df/person/assets",
+            framework_token=framework_token,
+        )
+
     async def title(self, framework_token: str):
         return await self.get("/api/v1/df/person/title", framework_token=framework_token)
 

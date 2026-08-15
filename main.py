@@ -3784,32 +3784,25 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        collection_res, map_res = await asyncio.gather(
-            self.client.collection(token, 2),
-            self.client.object_collection_map(),
-            return_exceptions=True,
-        )
-        if isinstance(collection_res, Exception) or not self._ok(collection_res):
-            message = str(collection_res) if isinstance(collection_res, Exception) else self._message_of(collection_res)
+        try:
+            assets_res = await self.client.assets(token)
+        except Exception as exc:
+            yield event.plain_result(f"资产查询失败: {type(exc).__name__}")
+            return
+        if not self._ok(assets_res):
+            message = self._message_of(assets_res)
             yield event.plain_result(f"藏品查询失败: {message}")
             return
-        if isinstance(map_res, Exception) or not self._ok(map_res):
-            message = str(map_res) if isinstance(map_res, Exception) else self._message_of(map_res)
-            yield event.plain_result(f"藏品基础信息查询失败: {message}")
+        raw = self._data(assets_res, None)
+        if not isinstance(raw, dict):
+            yield event.plain_result("资产接口返回格式异常。")
             return
-        raw = self._payload(collection_res, {}) or {}
-        user_items = self._find_nested_list(raw, "userData")
-        weapon_items = self._find_nested_list(raw, "weponData") or self._find_nested_list(raw, "weaponData")
-        owned = [item for item in user_items + weapon_items if isinstance(item, dict)]
-        if not owned:
-            yield event.plain_result("您的藏品库为空。")
-            return
-        mapping_rows = self._first_list(self._data(map_res, {}), ("list", "items", "data"))
-        mapping = {str(item.get("id") or item.get("objectID") or ""): item for item in mapping_rows if isinstance(item, dict)}
-        render_data = self._adapt_collection(owned, mapping, kind)
+        render_data = self._adapt_aggregated_assets(raw, kind)
         if not render_data["categories"]:
-            suffix = f"类型“{kind}”" if kind else ""
-            yield event.plain_result(f"未找到{suffix}的藏品。")
+            if render_data["sourceTotal"] > 0 and kind:
+                yield event.plain_result(f"未找到类型“{kind}”的资产。")
+            else:
+                yield event.plain_result("您的资产库为空。")
             return
         text = "\n".join(
             [f"【{render_data['typeName']}】共 {render_data['totalCount']} 件"]
@@ -3818,54 +3811,187 @@ class DeltaForcePlugin(Star):
         async for r in self._render_or_text(event, "Template/collection/collection.html", render_data, text, {"viewport_width": 1200, "viewport_height": 1600}):
             yield r
 
-    def _adapt_collection(self, owned: List[Dict[str, Any]], mapping: Dict[str, Dict[str, Any]], kind: str) -> Dict[str, Any]:
-        quality = {"橙": ("传说", 5), "紫": ("史诗", 4), "蓝": ("稀有", 3), "绿": ("普通", 2)}
-        background = {
-            "干员皮肤": "operator-skin",
-            "喷漆": "property-gx-li3.webp",
-            "挂饰": "property-gx-li2.webp",
-            "典藏枪皮": "property-jz-bg.webp",
-            "枪皮": "property-jz-bg.webp",
-            "载具": "property-qx-bg2.webp",
-            "头像": "property-gx-li3.webp",
-            "军牌": "property-jz-bg.webp",
-        }
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+    def _adapt_aggregated_assets(
+        self,
+        data: Dict[str, Any],
+        kind: str,
+    ) -> Dict[str, Any]:
+        source_categories: List[Tuple[str, str, List[Dict[str, Any]]]] = []
+        for key, code, name in (
+            ("weaponSkins", "weapon-skin", "典藏枪皮"),
+            ("charms", "charm", "典藏挂饰"),
+        ):
+            wrapped = data.get(key) if isinstance(data.get(key), dict) else {}
+            items = [
+                item
+                for item in self._first_list(wrapped, ("list", "items", "data"))
+                if isinstance(item, dict)
+            ]
+            if items:
+                source_categories.append((code, name, items))
+
+        collection = data.get("collection")
+        if isinstance(collection, dict):
+            groups: List[Tuple[str, str, List[Dict[str, Any]]]] = []
+            for key, value in collection.items():
+                if key == "total" or not isinstance(value, dict):
+                    continue
+                items = [
+                    item
+                    for item in self._first_list(value, ("list", "items", "data"))
+                    if isinstance(item, dict)
+                ]
+                if not items:
+                    continue
+                code = str(value.get("code") or key).strip() or "unknown"
+                name = str(value.get("name") or items[0].get("secondClassCN") or code).strip()
+                groups.append((code, name or "未分类", items))
+            source_categories.extend(sorted(groups, key=lambda item: (item[1], item[0])))
+
+        source_total = 0
+        categories: List[Dict[str, Any]] = []
         quality_counts: Dict[int, int] = {}
-        for item in owned:
-            item_id = str(item.get("ItemId") or item.get("itemId") or item.get("objectID") or item.get("id") or "")
-            info = mapping.get(item_id)
-            if not info:
-                continue
-            category = str(info.get("type") or "其他资产")
-            if kind and kind not in category and category not in kind:
-                continue
-            _quality_name, level = quality.get(str(info.get("rare") or ""), ("其他", 1))
-            quality_counts[level] = quality_counts.get(level, 0) + 1
-            grouped.setdefault(category, []).append(
-                {
-                    "name": info.get("name") or info.get("objectName") or f"物品 {item_id}",
-                    "id": item_id,
-                    "imageUrl": info.get("pic") or f"https://playerhub.df.qq.com/playerhub/60004/object/{item_id}.png",
-                    "qualityLevel": level,
-                    "category": category,
-                }
-            )
-        categories = [
-            {
-                "name": name,
-                "items": sorted(items, key=lambda item: (-item["qualityLevel"], item["name"])),
-                "count": len(items),
-                "bgImage": background.get(name, "property-gx-li3.webp"),
-            }
-            for name, items in sorted(grouped.items())
-        ]
+        for code, name, rows in source_categories:
+            prepared: List[Dict[str, Any]] = []
+            for row in rows:
+                try:
+                    quantity = max(1, int(self._number(row.get("quantity") or 1)))
+                except (OverflowError, ValueError):
+                    quantity = 1
+                source_total += quantity
+                if kind and not self._asset_kind_matches(kind, name, code):
+                    continue
+                item_id = str(
+                    row.get("itemId")
+                    or row.get("objectID")
+                    or row.get("id")
+                    or ""
+                ).strip()
+                level = self._asset_quality_level(row)
+                quality_counts[level] = quality_counts.get(level, 0) + quantity
+                image_url = str(
+                    row.get("pic")
+                    or row.get("appearancePic")
+                    or row.get("originalPic")
+                    or row.get("prePic")
+                    or ""
+                ).strip()
+                if not image_url and item_id:
+                    image_url = (
+                        "https://playerhub.df.qq.com/playerhub/60004/object/"
+                        f"{item_id}.png"
+                    )
+                item_name = self.data_mgr.decode_text(
+                    row.get("name")
+                    or row.get("gameName")
+                    or row.get("objectName")
+                    or row.get("customName")
+                    or ""
+                )
+                prepared.append(
+                    {
+                        "name": item_name or f"物品 {item_id or '未知'}",
+                        "id": item_id or "-",
+                        "imageUrl": image_url,
+                        "qualityLevel": level,
+                        "category": name,
+                        "quantity": quantity,
+                    }
+                )
+            if prepared:
+                prepared.sort(
+                    key=lambda item: (
+                        -item["qualityLevel"],
+                        item["name"],
+                        item["id"],
+                    )
+                )
+                categories.append(
+                    {
+                        "name": name,
+                        "items": prepared,
+                        "count": sum(item["quantity"] for item in prepared),
+                        "bgImage": self._asset_category_background(code, name),
+                    }
+                )
+
         return {
-            "typeName": kind or "所有藏品",
+            "typeName": kind or "所有资产",
             "totalCount": sum(category["count"] for category in categories),
-            "qualityStats": [{"level": level, "count": quality_counts[level]} for level in sorted(quality_counts, reverse=True)],
+            "sourceTotal": source_total,
+            "qualityStats": [
+                {"level": level, "count": quality_counts[level]}
+                for level in sorted(quality_counts, reverse=True)
+            ],
             "categories": categories,
         }
+
+    @staticmethod
+    def _asset_kind_matches(kind: str, name: str, code: str) -> bool:
+        query = re.sub(r"\s+", "", str(kind or "")).lower()
+        if not query:
+            return True
+        aliases = {
+            "weapon-skin": ("典藏枪皮", "枪皮", "武器皮肤"),
+            "charm": ("典藏挂饰", "挂饰", "饰品"),
+            "operator": ("干员", "干员皮肤"),
+            "gun": ("枪皮", "武器皮肤"),
+            "pendant": ("挂饰", "饰品"),
+            "vehicle": ("载具", "载具皮肤"),
+            "unknown": ("未分类", "其他资产"),
+        }
+        candidates = (name, code, *aliases.get(str(code).lower(), ()))
+        normalized = [
+            re.sub(r"\s+", "", str(value or "")).lower()
+            for value in candidates
+        ]
+        return any(
+            query in value or value in query
+            for value in normalized
+            if value
+        )
+
+    @staticmethod
+    def _asset_quality_level(item: Dict[str, Any]) -> int:
+        grade = item.get("grade")
+        try:
+            numeric = int(float(str(grade).strip()))
+        except (TypeError, ValueError):
+            numeric = 0
+        if numeric > 0:
+            return min(5, numeric)
+        text = " ".join(
+            str(item.get(key) or "").lower()
+            for key in ("quality", "rarity", "rawRarity")
+        )
+        for level, labels in (
+            (5, ("传说", "橙", "orange", "legendary", "ultimate")),
+            (4, ("史诗", "紫", "purple", "epic")),
+            (3, ("稀有", "蓝", "blue", "rare")),
+            (2, ("普通", "绿", "green", "common")),
+        ):
+            if any(label in text for label in labels):
+                return level
+        return 1
+
+    @staticmethod
+    def _asset_category_background(code: str, name: str) -> str:
+        normalized = f"{code} {name}".lower()
+        if "operator" in normalized or "干员" in normalized:
+            return "operator-skin"
+        if any(
+            value in normalized
+            for value in ("weapon", "gun", "枪皮", "武器")
+        ):
+            return "property-jz-bg.webp"
+        if any(
+            value in normalized
+            for value in ("charm", "pendant", "挂饰", "饰品")
+        ):
+            return "property-gx-li2.webp"
+        if "vehicle" in normalized or "载具" in normalized:
+            return "property-qx-bg2.webp"
+        return "property-gx-li3.webp"
 
     async def _red_records(self, event: AstrMessageEvent, command: str, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

@@ -436,7 +436,8 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 with PillowImage.open(path) as image:
                     self.assertGreater(image.width, 1000)
                     self.assertGreater(image.height, 1000)
-                path.unlink(missing_ok=True)
+                if os.environ.get("DELTA_KEEP_VISUAL") != "1":
+                    path.unlink(missing_ok=True)
             else:
                 render_data = plugin.renderer.render_html.await_args.args[1]
                 titles = {
@@ -504,21 +505,51 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         plugin = self._plugin()
         plugin.plugin_path = str(PLUGIN_DIR)
         plugin.config["enable_image_render"] = True
-        plugin.renderer = SimpleNamespace(
-            render_html=AsyncMock(return_value="D:/fixture-version.png")
+        changelogs = plugin._parse_changelog(
+            (PLUGIN_DIR / "CHANGELOG.md").read_text(encoding="utf-8")
         )
-
-        result = await _collect(plugin._update_log(_Event()))
-
-        self.assertEqual(result[0]["type"], "image")
-        render_call = plugin.renderer.render_html.await_args
-        self.assertEqual(render_call.args[0], "help/version-info.html")
-        self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
-            [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.18", "0.4.17"],
+            [item["version"] for item in changelogs],
+            ["0.4.19", "0.4.18"],
         )
-        self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "安全")
+        self.assertEqual(changelogs[0]["sections"][0]["title"], "改进")
+        visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
+        renderer = None
+        if visual_enabled:
+            renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))
+            plugin.renderer = renderer
+        else:
+            plugin.renderer = SimpleNamespace(
+                render_html=AsyncMock(return_value="D:/fixture-version.png")
+            )
+
+        try:
+            result = await _collect(plugin._update_log(_Event()))
+
+            self.assertEqual(result[0]["type"], "image")
+            if visual_enabled:
+                path = Path(result[0]["path"])
+                self.assertTrue(path.is_file())
+                with PillowImage.open(path) as image:
+                    self.assertGreater(image.width, 700)
+                    self.assertGreater(image.height, 800)
+                    self.assertIsNotNone(image.convert("RGB").getbbox())
+                if os.environ.get("DELTA_KEEP_VISUAL") != "1":
+                    path.unlink(missing_ok=True)
+            else:
+                render_call = plugin.renderer.render_html.await_args
+                self.assertEqual(render_call.args[0], "help/version-info.html")
+                self.assertEqual(
+                    render_call.args[1]["currentVersion"],
+                    PLUGIN_VERSION,
+                )
+                self.assertEqual(
+                    render_call.args[1]["changelogs"],
+                    changelogs,
+                )
+        finally:
+            if renderer is not None:
+                await renderer.close()
 
     async def test_update_log_falls_back_when_rendering_fails(self):
         plugin = self._plugin()
@@ -2564,50 +2595,156 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(chart["points"][0]["x"], "400.0")
         self.assertEqual(chart["pathData"], "M 400.0,90.0 L 410.0,90.0")
 
-    async def test_collection_merges_owned_items_with_public_mapping(self):
+    async def test_collection_uses_aggregated_assets_and_optionally_renders(self):
+        image_uri = (
+            PLUGIN_DIR / "resources" / "imgs" / "others" / "logo.png"
+        ).resolve().as_uri()
         client = SimpleNamespace(
-            collection=AsyncMock(
-                return_value={
-                    "code": 0,
-                    "data": {"data": {"userData": [{"ItemId": "1001"}], "weponData": [{"ItemId": "1002"}]}},
-                }
-            ),
-            object_collection_map=AsyncMock(
+            assets=AsyncMock(
                 return_value={
                     "code": 0,
                     "data": {
-                        "list": [
-                            {"id": "1001", "name": "测试皮肤", "type": "干员皮肤", "rare": "橙"},
-                            {"id": "1002", "name": "测试枪皮", "type": "枪皮", "rare": "紫"},
-                        ]
+                        "weaponSkins": {
+                            "total": 1,
+                            "list": [
+                                {
+                                    "itemId": "1001",
+                                    "name": "典藏步枪%20棱镜",
+                                    "pic": image_uri,
+                                    "grade": 5,
+                                }
+                            ],
+                        },
+                        "charms": {
+                            "total": 1,
+                            "list": [
+                                {
+                                    "itemId": "2001",
+                                    "name": "测试挂饰",
+                                    "pic": image_uri,
+                                    "rarity": "史诗",
+                                }
+                            ],
+                        },
+                        "collection": {
+                            "total": 2,
+                            "gun": {
+                                "code": "gun",
+                                "name": "枪皮",
+                                "total": 1,
+                                "list": [
+                                    {
+                                        "itemId": "1002",
+                                        "name": "测试枪皮",
+                                        "pic": image_uri,
+                                        "quantity": 2,
+                                        "quality": "紫",
+                                    }
+                                ],
+                            },
+                            "operator": {
+                                "code": "operator",
+                                "name": "干员皮肤",
+                                "total": 1,
+                                "list": [
+                                    {
+                                        "itemId": "3001",
+                                        "name": "测试干员皮肤",
+                                        "pic": image_uri,
+                                        "grade": 4,
+                                    }
+                                ],
+                            },
+                        },
+                        "summary": {
+                            "weaponSkinTotal": 1,
+                            "charmTotal": 1,
+                            "collectionTotal": 2,
+                        },
                     },
                 }
             ),
         )
         plugin = self._plugin(client)
+        visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
+        renderer = None
+        if visual_enabled:
+            renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))
+            plugin.renderer = renderer
+            plugin.config["enable_image_render"] = True
 
-        results = await _collect(plugin._collection(_Event(), "枪皮"))
+        try:
+            results = await _collect(plugin._collection(_Event(), "枪皮"))
+            missing = await _collect(plugin._collection(_Event(), "军牌"))
+            self.assertEqual(client.assets.await_count, 2)
+            self.assertIn("未找到类型“军牌”的资产", missing[0]["text"])
+            if visual_enabled:
+                self.assertEqual(results[0]["type"], "image")
+                path = Path(results[0]["path"])
+                self.assertTrue(path.is_file())
+                with PillowImage.open(path) as image:
+                    self.assertGreater(image.width, 1000)
+                    self.assertGreater(image.height, 600)
+                    self.assertIsNotNone(image.convert("RGB").getbbox())
+                if os.environ.get("DELTA_KEEP_VISUAL") != "1":
+                    path.unlink(missing_ok=True)
+            else:
+                self.assertIn("枪皮", results[0]["text"])
+                self.assertIn("共 3 件", results[0]["text"])
+                self.assertIn("典藏枪皮: 1 件", results[0]["text"])
+                self.assertIn("枪皮: 2 件", results[0]["text"])
+        finally:
+            if renderer is not None:
+                await renderer.close()
 
-        self.assertIn("枪皮", results[0]["text"])
-        self.assertIn("共 1 件", results[0]["text"])
+        adapted = plugin._adapt_aggregated_assets(
+            client.assets.return_value["data"],
+            "干员皮肤",
+        )
+        self.assertEqual(adapted["totalCount"], 1)
+        self.assertEqual(adapted["categories"][0]["bgImage"], "operator-skin")
+        self.assertEqual(
+            adapted["categories"][0]["items"][0]["qualityLevel"],
+            4,
+        )
 
-    async def test_collection_handles_empty_and_error_responses(self):
+    async def test_collection_handles_empty_error_and_malformed_responses(self):
         client = SimpleNamespace(
-            collection=AsyncMock(
+            assets=AsyncMock(
                 side_effect=[
-                    {"code": 0, "data": {"data": {"userData": [], "weponData": []}}},
-                    {"code": 500, "message": "藏品服务异常"},
+                    {
+                        "code": 0,
+                        "data": {
+                            "weaponSkins": {"total": 0, "list": []},
+                            "charms": {"total": 0, "list": []},
+                            "collection": {"total": 0},
+                        },
+                    },
+                    {"code": 500, "message": "资产服务异常"},
+                    {"code": 0, "data": []},
                 ]
             ),
-            object_collection_map=AsyncMock(return_value={"code": 0, "data": {"list": []}}),
         )
         plugin = self._plugin(client)
 
         empty = await _collect(plugin._collection(_Event(), ""))
         error = await _collect(plugin._collection(_Event(), ""))
+        malformed = await _collect(plugin._collection(_Event(), ""))
 
-        self.assertIn("藏品库为空", empty[0]["text"])
-        self.assertIn("藏品服务异常", error[0]["text"])
+        self.assertIn("资产库为空", empty[0]["text"])
+        self.assertIn("资产服务异常", error[0]["text"])
+        self.assertIn("返回格式异常", malformed[0]["text"])
+
+    async def test_aggregated_assets_client_uses_authoritative_route(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+
+        await client.assets("fixture-token")
+
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/person/assets",
+            framework_token="fixture-token",
+        )
 
     async def test_place_info_maps_chinese_type_level_and_template_fields(self):
         client = SimpleNamespace(

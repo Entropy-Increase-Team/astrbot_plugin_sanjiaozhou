@@ -11,6 +11,8 @@
 
 测试栏中的“待测”表示没有验证证据，不能视为通过。API 栏只填写已经从当前 Go 后端源码或 Swagger 确认的路径；其余项目在后续审计时补全。
 
+2026-08-15 将 `藏品`、`资产` 迁移到最新版 `GET /api/v1/df/person/assets`：直接消费后端已补全并去重的典藏枪皮、典藏挂饰与动态普通藏品分组，保留中文类型筛选，卡片与文本按堆叠数量汇总；移除运行时对旧 v2 藏品和公共映射接口的拼接依赖。
+
 2026-08-15 将敏感消息保护扩展至手动 Cookie 登录、frameworkToken 绑定与显式 Token 角色绑定：aiocqhttp 在后端请求前调用原生 `delete_msg`，其他适配器或撤回失败时提示立即手动撤回；业务流程继续执行，登录收尾和错误响应再次按用户提交值脱敏，账号列表不再回显 Token 前缀。
 
 2026-08-15 从 GitHub 拉取并确认 API `main` 最新提交仍为 `fbd0eb1`；在活动日历之外继续接入该版本的 Gamesafe 微信安全中心 OAuth 与七类只读查询。新增命令继续追加在原有命令之后，注册结构扩展为 91 个独立 `CommandFilter`、332 个唯一命令名与别名，不改变既有处理器顺序。
@@ -39,7 +41,7 @@
 | 娱乐 | `apps/entertainment/TTS.js` | `getTtsHealth`、`getTtsPresets`、`getTtsPresetDetail`、`downloadLastTts`、`synthesize` | TTS 状态、角色列表、角色详情、下载、合成 | tts状态、tts角色列表、tts角色详情、tts、tts上传、tts重播 | `_tts_status`、`_tts_presets`、`_tts_preset`、`_tts`、`_tts_recent` | `GET /api/v1/df/tts/health`；`GET /api/v1/df/tts/presets`；`GET /api/v1/df/tts/preset?character=`；`POST /api/v1/df/tts/synthesize`；`GET /api/v1/df/tts/task`；音频签名下载地址由任务结果提供 | 无 | 有 | 元数据、队列字段真实契约、异步任务轮询、语音与文件组件 fixture 通过 | 空状态、空预设和空详情 fixture 通过 | 查询、提交、任务失败和最近记录缺失 fixture 通过 | 已验证 |
 | 娱乐 | `apps/entertainment/Voice.js` | `getCharacterList`、`getTagList`、`getCategoryList`、`getAudioStats`、`sendVoice` | 角色、标签、分类、统计、语音 | 语音列表、语音及别名 | `_voice_meta`、`_voice` | `GET /api/v1/df/audio/random`；`GET /api/v1/df/audio/categories`；`GET /api/v1/df/audio/characters`；`GET /api/v1/df/audio/stats`；`GET /api/v1/df/audio/tags` | 无 | 有 | 权威路由、四类元数据真实契约、嵌套下载地址与语音组件 fixture 通过 | 五类空数据 fixture 通过 | 五类 API 错误 fixture 通过 | 已验证 |
 | 信息 | `apps/info/banhistory.js` | `getBanHistory` | 封号记录、违规记录/历史 | 封号记录及别名 | `_ban_history` | `GET /api/v1/df/qqsafe/ban`；Header：`X-Framework-Token` | 无 | 有 | 权威字段格式化 fixture 通过 | 空列表 fixture 通过 | 凭证失效 fixture 通过 | 已验证 |
-| 信息 | `apps/info/Collection.js` | `getCollection` | 藏品、资产 | 藏品及别名 | `_collection` | `GET /api/v2/df/person/collection`；`GET /api/v1/df/object/collection` | `collection` | 有 | 合并映射 fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
+| 信息 | `apps/info/Collection.js` | `getCollection` | 藏品、资产 | 藏品及别名 | `_collection`、`_adapt_aggregated_assets` | `GET /api/v1/df/person/assets`；Header：`X-Framework-Token` | `collection` | 有 | 典藏/普通资产合并、动态分类、类型筛选、稀有度、堆叠数量 fixture 与 Playwright 通过 | 空资产和筛选无结果 fixture 通过 | 响应格式异常、API 错误和未绑定 fixture 通过 | 已验证 |
 | 信息 | `apps/info/Data.js` | `getPersonalData` | 数据、data，含模式和赛季参数 | 数据及别名 | `_personal_data` | `GET /api/v1/df/person/personaldata`；Query：`type`、`seasonid` | `personalData` | 有 | fixture 与 Playwright 通过 | fixture 通过 | fixture 通过 | 已验证 |
 | 信息 | `apps/info/Flows.js` | `getFlows` | 流水，设备/道具/货币、分页 | 流水及别名 | `_flows`、`_money_trend_chart` | `GET /api/v1/df/person/flows`；Query：`type`、`page` | `flows`、`moneyTrendChart` | 有 | 三类型、多日趋势和单日趋势 fixture 与 Playwright 通过 | 空流水、无效余额 fixture 通过 | API、趋势渲染失败隔离 fixture 通过 | 已验证 |
 | 信息 | `apps/info/health.js` | `getServerHealth` | 服务器健康状态 | 服务器状态 | `_server_status` | `GET /health/detailed`；HTTP 503 且 `code=0` 时保留降级数据 | 无 | 有 | 正常与降级 fixture 通过 | 空响应 fixture 通过 | 上游错误 fixture 通过 | 已验证 |
