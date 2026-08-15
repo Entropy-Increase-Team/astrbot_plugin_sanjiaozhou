@@ -200,7 +200,10 @@ DELTA_COMMAND_SPECS = [
     ("物品搜索", set()),
     ("当前价格", {"最新价格", "价格"}),
     ("价格历史", {"历史价格"}),
+    ("弹药价格", {"弹药行情"}),
+    ("制造材料列表", {"材料列表"}),
     ("材料价格", {"制造材料"}),
+    ("囤货建议", {"材料囤货"}),
     ("利润历史", {"历史利润"}),
     ("利润排行", {"利润榜"}),
     ("最高利润", {"利润排行v2", "利润榜v2"}),
@@ -1875,8 +1878,20 @@ class DeltaForcePlugin(Star):
             async for r in self._price_history(event, m.group(2).strip()):
                 yield r
             return
+        if m := re.fullmatch(r"(弹药价格|弹药行情)\s*(.*)", body):
+            async for r in self._ammo_prices(event, m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(制造材料列表|材料列表)\s*(.*)", body):
+            async for r in self._material_list(event, m.group(2).strip()):
+                yield r
+            return
         if m := re.fullmatch(r"(材料价格|制造材料)\s*(.*)", body):
             async for r in self._material_price(event, m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(囤货建议|材料囤货)\s*(.*)", body):
+            async for r in self._stockpile_advice(event, m.group(2).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(利润历史|历史利润|利润排行|利润榜|最高利润|利润排行v2|利润榜v2|特勤处利润|特勤利润)\s*(.*)", body):
@@ -7150,6 +7165,100 @@ class DeltaForcePlugin(Star):
             lines.extend(f"{point.get('hour') or point.get('timestamp')}: {self.data_mgr.fmt_num(point.get('price') or point.get('avgPrice') or 0)}" for point in history[:10] if isinstance(point, dict))
         yield event.plain_result("\n".join(lines))
 
+    async def _ammo_prices(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        match = re.fullmatch(r"(\d+)(?:天)?", str(arg or "").strip()) if arg else None
+        if arg and not match:
+            yield event.plain_result("用法：弹药价格 [1-30天]")
+            return
+        days = int(match.group(1)) if match else 2
+        if not 1 <= days <= 30:
+            yield event.plain_result("查询天数需在 1-30 之间。")
+            return
+        res = await self.client.ammo_prices(str(days))
+        if not self._ok(res):
+            yield event.plain_result(f"弹药价格查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("bullets", "items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("当前没有弹药价格数据。")
+            return
+        summary = data.get("summary") if isinstance(data, dict) else {}
+        total = data.get("totalCount") if isinstance(data, dict) else None
+        lines = [
+            f"【弹药价格 · {days} 天】共 {total if total is not None else len(rows)} 种",
+            f"含有效价格：{summary.get('bulletsWithPriceData', '-')} 种"
+            if isinstance(summary, dict)
+            else "",
+        ]
+        for index, item in enumerate(rows[:30], 1):
+            name = item.get("gameName") or item.get("objectName") or "未知弹药"
+            item_id = item.get("objectID") or item.get("id") or "-"
+            stats = item.get("priceStats") if isinstance(item.get("priceStats"), dict) else {}
+            latest = stats.get("latestPrice")
+            if not item.get("hasValidPriceData") and not self._number(latest):
+                lines.append(f"{index}. {name}（{item_id}） 暂无价格")
+                continue
+            average = stats.get("avgPrice")
+            change = self._number(stats.get("priceChangePercent"))
+            lines.append(
+                f"{index}. {name}（{item_id}） 当前 {self.data_mgr.fmt_num(latest or 0)}，"
+                f"均价 {self.data_mgr.fmt_num(average or 0)}，涨跌 {change:+.2f}%"
+            )
+        if len(rows) > 30:
+            lines.append(f"仅展示价格最高的 30 种，其余 {len(rows) - 30} 种已省略。")
+        yield event.plain_result("\n".join(line for line in lines if line))
+
+    async def _material_list(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        query = str(arg or "").strip()
+        object_id = ""
+        if query:
+            object_id = await self._resolve_item_id(query)
+            if not object_id.isdigit():
+                yield event.plain_result(f"未找到制造成品：{query}")
+                return
+        res = await self.client.material_list(object_id)
+        if not self._ok(res):
+            yield event.plain_result(f"制造材料列表查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("materials", "items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("当前没有制造材料数据。")
+            return
+        product_name = data.get("productName") if isinstance(data, dict) else ""
+        total = data.get("total") if isinstance(data, dict) else None
+        if product_name:
+            title = f"【{product_name} · 制造材料】"
+        else:
+            title = f"【制造材料列表】共 {total if total is not None else len(rows)} 种"
+        lines = [title]
+        for index, item in enumerate(rows[:50], 1):
+            name = item.get("objectName") or "未知材料"
+            item_id = item.get("objectID") or item.get("id") or "-"
+            count = item.get("count")
+            suffix = f" ×{count}" if count is not None else ""
+            lines.append(f"{index}. {name}（{item_id}）{suffix}")
+        if len(rows) > 50:
+            lines.append(f"仅展示前 50 种，其余 {len(rows) - 50} 种已省略。")
+        yield event.plain_result("\n".join(lines))
+
     async def _material_price(self, event: AstrMessageEvent, item_id: str) -> AsyncGenerator[Any, None]:
         res = await self.client.material_price(item_id)
         if not self._ok(res):
@@ -7167,6 +7276,62 @@ class DeltaForcePlugin(Star):
             item_id = item.get("objectID") or "-"
             price = "暂无" if item.get("price") is None else self.data_mgr.fmt_num(item.get("price"))
             lines.append(f"{index}. {name}（{item_id}） {price}")
+        yield event.plain_result("\n".join(lines))
+
+    async def _stockpile_advice(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        raw = str(arg or "").strip()
+        match = re.fullmatch(r"(?:阈值\s*[=:]?\s*)?(\d+(?:\.\d+)?)%?", raw) if raw else None
+        if raw and not match:
+            yield event.plain_result("用法：囤货建议 [0-100阈值百分比]")
+            return
+        threshold = float(match.group(1)) if match else 5.0
+        if not 0 <= threshold <= 100:
+            yield event.plain_result("阈值百分比需在 0-100 之间。")
+            return
+        threshold_text = f"{threshold:g}"
+        res = await self.client.material_stockpile(threshold_text)
+        if not self._ok(res):
+            yield event.plain_result(f"囤货建议查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("当前没有可用的兑换材料囤货建议。")
+            return
+        lookback = data.get("lookbackDays") if isinstance(data, dict) else None
+        lines = [
+            f"【兑换材料囤货建议】阈值 {threshold_text}%"
+            + (f"，观察窗口 {lookback} 天" if lookback is not None else "")
+        ]
+        for index, item in enumerate(rows[:20], 1):
+            name = item.get("objectName") or "未知材料"
+            item_id = item.get("objectID") or item.get("id") or "-"
+            current = item.get("currentUnitCost")
+            low = item.get("lowUnitCost")
+            state = "接近低价" if item.get("isNearLow") else "高于低价窗口"
+            lines.append(
+                f"{index}. {name}（{item_id}）当前单位成本 "
+                f"{self.data_mgr.fmt_num(current or 0)}，窗口低位 "
+                f"{self.data_mgr.fmt_num(low or 0)}，{state}"
+            )
+            inputs = [value for value in item.get("inputs") or [] if isinstance(value, dict)]
+            if inputs:
+                input_text = "、".join(
+                    f"{value.get('objectName') or value.get('objectID') or '未知原料'}"
+                    f"×{value.get('count') or 1}"
+                    for value in inputs[:4]
+                )
+                lines.append(f"   原料：{input_text}")
+        if len(rows) > 20:
+            lines.append(f"仅展示前 20 条，其余 {len(rows) - 20} 条已省略。")
         yield event.plain_result("\n".join(lines))
 
     async def _profit(self, event: AstrMessageEvent, command: str, arg: str) -> AsyncGenerator[Any, None]:

@@ -688,6 +688,18 @@ class DeltaForceClient:
     async def current_price(self, item_id: str):
         return await self.get("/api/v1/df/object/price/ams/latest", params={"id": item_id}, require_key=False)
 
+    async def ammo_prices(self, days: str = "2"):
+        return await self.get(
+            "/api/v1/df/object/ammo",
+            params={"days": days},
+        )
+
+    async def material_list(self, object_id: str = ""):
+        return await self.get(
+            "/api/v1/df/place/material/list",
+            params={"objectID": object_id},
+        )
+
     async def material_price(self, keyword: str = "", page: str = "1", page_size: str = "50"):
         key = str(keyword or "").strip()
         params = {"page": page, "pageSize": page_size}
@@ -696,6 +708,12 @@ class DeltaForceClient:
         elif key:
             params["objectName"] = key
         return await self.get("/api/v1/df/place/material/price", params=params, require_key=False)
+
+    async def material_stockpile(self, threshold: str = "5"):
+        return await self.get(
+            "/api/v1/df/place/material/stockpile",
+            params={"threshold": threshold},
+        )
 
     async def profit_history(self, params: Dict[str, Any]):
         return await self.get("/api/v1/df/place/profit/history", params=params, require_key=False)
