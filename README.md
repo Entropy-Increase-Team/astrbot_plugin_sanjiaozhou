@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.37`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.38`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -71,7 +71,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.37` 已对齐最新版 API 的 OAuth 协议：QQ、微信和微信安全中心均可提交完整回调 URL，也可在当前会话内直接提交授权码。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.38` 已对齐最新版 WebSocket 握手身份协议，并支持按推送目标独立去重和失败补送。
 
 ### 个人类功能
 
@@ -102,7 +102,7 @@ playwright install chromium
 - [x] AI 锐评/AI 评价
 - [x] 战绩对局房间详情查询（`对局房间 [模式] [对局ID]`）
 - [ ] 开黑房间管理（最新版后端没有创建、加入、退出等路由）
-- [x] 战绩订阅与 WebSocket 实时推送（SOL/MP 图片卡片，渲染失败时自动使用文本）
+- [x] 战绩订阅与 WebSocket 实时推送（标准客户端身份握手、按目标失败补送、SOL/MP 图片卡片和文本兜底）
 - [ ] 通用广播接入（最新版后端未提供对应通知协议）
 - [x] 更新日志图片卡片与文本兜底
 

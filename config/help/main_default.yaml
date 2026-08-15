@@ -41,10 +41,10 @@ helpList:
           desc: "查看 AstrBot 本地绑定统计"
         - icon: 64
           title: "ws连接 | ws断开"
-          desc: "手动连接/断开WebSocket"
+          desc: "连接并订阅/断开战绩WebSocket"
         - icon: 78
           title: "ws状态"
-          desc: "查看WebSocket连接状态"
+          desc: "查看连接、订阅或重连状态"
         - icon: 92
           title: "更新日志"
           desc: "查看更新日志"

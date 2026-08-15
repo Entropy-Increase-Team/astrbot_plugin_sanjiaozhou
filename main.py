@@ -381,6 +381,8 @@ class DeltaForcePlugin(Star):
         self._ws_wakeup = asyncio.Event()
         self._ws_requested = False
         self._ws_connection = None
+        self._ws_subscribed = False
+        self._ws_last_error = ""
         self._seen_record_events: Dict[str, int] = {}
         self._oauth_sessions: Dict[Tuple[str, str], Dict[str, Any]] = {}
         self._music_lists: Dict[str, Dict[str, Any]] = {}
@@ -477,6 +479,7 @@ class DeltaForcePlugin(Star):
 
         connection = self._ws_connection
         self._ws_connection = None
+        self._ws_subscribed = False
         if connection is not None:
             await self._close_resource("WebSocket", connection.close)
         await self._close_resource("HTTP 客户端", self.client.close)
@@ -1092,6 +1095,7 @@ class DeltaForcePlugin(Star):
 
     async def _ws_supervisor(self) -> None:
         if websockets is None:
+            self._ws_last_error = "未安装 websockets"
             logger.warning("[三角洲订阅] 未安装 websockets，战绩实时推送不可用；REST 订阅仍可使用。")
             return
         backoff = 2
@@ -1109,6 +1113,7 @@ class DeltaForcePlugin(Star):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
+                self._ws_last_error = type(exc).__name__
                 logger.warning(f"[三角洲订阅] WebSocket 连接断开：{type(exc).__name__}，{backoff} 秒后重连")
                 try:
                     await asyncio.wait_for(self._ws_stop.wait(), timeout=backoff)
@@ -1118,14 +1123,20 @@ class DeltaForcePlugin(Star):
 
     async def _ws_run_once(self) -> None:
         uri, origin = self._ws_uri()
+        client_id = self._ws_client_id()
         header_argument = self._ws_header_argument(websockets.connect)
         connect_options = {
             "origin": origin,
             "ping_interval": 20,
             "ping_timeout": 60,
             "close_timeout": 5,
-            header_argument: {"X-API-Key": self.client.api_key},
+            header_argument: {
+                "X-API-Key": self.client.api_key,
+                "X-Client-ID": client_id,
+                "X-Client-Type": "bot",
+            },
         }
+        self._ws_subscribed = False
         try:
             async with websockets.connect(uri, **connect_options) as connection:
                 self._ws_connection = connection
@@ -1134,7 +1145,7 @@ class DeltaForcePlugin(Star):
                     "id": request_id,
                     "type": "record.client.subscribe",
                     "kind": "request",
-                    "data": {"client_id": self._ws_client_id()},
+                    "data": {"client_id": client_id},
                     "ts": int(dt.datetime.now().timestamp() * 1000),
                 }
                 await connection.send(json.dumps(envelope, ensure_ascii=False))
@@ -1163,6 +1174,8 @@ class DeltaForcePlugin(Star):
                     if not payload.get("subscribed"):
                         raise RuntimeError("后端未确认战绩订阅频道")
                     break
+                self._ws_subscribed = True
+                self._ws_last_error = ""
                 async for raw in connection:
                     if self._ws_stop.is_set():
                         break
@@ -1174,20 +1187,13 @@ class DeltaForcePlugin(Star):
                         await self._push_record_event(message.get("data") or {})
         finally:
             self._ws_connection = None
+            self._ws_subscribed = False
 
     async def _push_record_event(self, data: Dict[str, Any]) -> None:
         sub_id = str(data.get("subscription_id") or "")
         if not sub_id:
             return
         event_key = f"{sub_id}:{data.get('record_id') or ''}:{data.get('event_time') or ''}"
-        if event_key in self._seen_record_events:
-            return
-        self._seen_record_events[event_key] = int(dt.datetime.now().timestamp())
-        if len(self._seen_record_events) > 512:
-            oldest = sorted(self._seen_record_events, key=self._seen_record_events.get)[:128]
-            for key in oldest:
-                self._seen_record_events.pop(key, None)
-
         subscriptions = [
             item
             for item in self.subscriptions.all()
@@ -1201,6 +1207,13 @@ class DeltaForcePlugin(Star):
                     target = str(umo or "").strip()
                     if target and target not in targets:
                         targets.append(target)
+        if not targets:
+            return
+        targets = [
+            target
+            for target in targets
+            if f"{event_key}:{target}" not in self._seen_record_events
+        ]
         if not targets:
             return
 
@@ -1235,6 +1248,17 @@ class DeltaForcePlugin(Star):
                 await self.context.send_message(umo, MessageChain(components))
             except Exception as exc:
                 logger.warning(f"[三角洲订阅] 推送到 {umo} 失败：{type(exc).__name__}")
+            else:
+                self._seen_record_events[f"{event_key}:{umo}"] = int(
+                    dt.datetime.now().timestamp()
+                )
+        if len(self._seen_record_events) > 512:
+            oldest = sorted(
+                self._seen_record_events,
+                key=self._seen_record_events.get,
+            )[:128]
+            for key in oldest:
+                self._seen_record_events.pop(key, None)
 
     async def _record_push_display_name(
         self,
@@ -2279,6 +2303,8 @@ class DeltaForcePlugin(Star):
                 return
             if body.endswith(("断开", "关闭", "停止")):
                 self._ws_requested = False
+                self._ws_subscribed = False
+                self._ws_last_error = ""
                 self._ws_wakeup.set()
                 if self._ws_connection is not None:
                     try:
@@ -2287,11 +2313,27 @@ class DeltaForcePlugin(Star):
                         pass
                 yield event.plain_result("已停止三角洲 WebSocket 战绩推送。")
             elif body.endswith(("状态", "status")):
-                state = "已连接" if self._ws_connection is not None else "等待连接"
                 if websockets is None:
                     state = "未安装 websockets"
+                elif not str(getattr(self.client, "api_key", "") or "").strip():
+                    state = "未配置 API Key"
+                elif getattr(self, "_ws_subscribed", False):
+                    state = "已连接并订阅"
+                elif self._ws_connection is not None:
+                    state = "已连接，正在订阅"
+                elif self._ws_requested:
+                    state = "等待连接或重连"
+                    last_error = str(getattr(self, "_ws_last_error", "") or "")
+                    if last_error:
+                        state += f"，最近错误 {last_error}"
+                else:
+                    state = "已停止"
                 yield event.plain_result(f"WebSocket 状态：{state}。")
             else:
+                if not str(getattr(self.client, "api_key", "") or "").strip():
+                    yield event.plain_result("未配置三角洲 API Key，无法连接 WebSocket。")
+                    return
+                self._ws_last_error = ""
                 self._ws_requested = True
                 self._ws_wakeup.set()
                 yield event.plain_result("已请求连接三角洲 WebSocket，连接成功后会自动订阅当前客户端战绩。")
