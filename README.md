@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.30`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.31`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -49,6 +49,10 @@ playwright install chromium
 - `render_timeout`: Playwright 渲染超时时间，单位毫秒。
 - `login_poll_timeout`: 扫码登录和网页登录授权的轮询超时时间，单位秒。
 - `login_poll_interval`: 扫码登录和网页登录授权的轮询间隔，单位秒。
+- `tts_enabled`: 是否启用 TTS 语音合成；关闭后仍可查询状态和角色预设。
+- `tts_access_mode`: TTS 访问模式，支持 `blacklist`（默认）和 `whitelist`。
+- `tts_group_list`: TTS 群聊黑名单或白名单；私聊不会匹配群列表。
+- `tts_user_list`: TTS 用户黑名单或白名单。白名单模式下，用户或所在群任一命中即可使用；黑名单模式下，任一命中都会拒绝。
 - `tts_max_length`: TTS 文本最大长度。
 - `tts_poll_timeout`: TTS 合成任务最长等待时间，默认 450 秒。
 - `tts_poll_interval`: TTS 合成任务状态轮询间隔，默认 5 秒。
@@ -63,7 +67,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.30` 已修复角色、场景和动作语音的位置参数解析。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.31` 已补齐 TTS 总开关和群/用户黑白名单访问控制。
 
 ### 个人类功能
 

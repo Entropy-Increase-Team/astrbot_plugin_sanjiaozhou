@@ -498,6 +498,40 @@ class DeltaForcePlugin(Star):
     def _user_identifier(self, event: AstrMessageEvent) -> str:
         return f"qq_{event.get_sender_id()}"
 
+    @staticmethod
+    def _config_id_set(value: Any) -> set[str]:
+        """将 WebUI 列表或旧版文本配置统一为可比较的 ID 集合。"""
+        if isinstance(value, str):
+            values = re.split(r"[,，;；\s]+", value)
+        elif isinstance(value, (list, tuple, set)):
+            values = value
+        else:
+            values = []
+        return {str(item).strip() for item in values if str(item).strip()}
+
+    def _tts_permission_denial(self, event: AstrMessageEvent) -> str:
+        if self.config.get("tts_enabled", True) is False:
+            return "TTS 功能未启用"
+
+        mode = str(self.config.get("tts_access_mode", "blacklist") or "blacklist").strip().lower()
+        user_list = self._config_id_set(self.config.get("tts_user_list", []))
+        group_list = self._config_id_set(self.config.get("tts_group_list", []))
+        user_id = str(event.get_sender_id() or "").strip()
+        try:
+            group_id = str(event.get_group_id() or "").strip()
+        except Exception:
+            group_id = ""
+
+        if mode == "whitelist":
+            if user_id not in user_list and (not group_id or group_id not in group_list):
+                return "TTS 功能未对您开放"
+            return ""
+        if user_id in user_list:
+            return "TTS 功能已被禁用"
+        if group_id and group_id in group_list:
+            return "TTS 功能在本群已被禁用"
+        return ""
+
     def _sender_name(self, event: AstrMessageEvent) -> str:
         try:
             sender = getattr(event, "sender", None)
@@ -8764,6 +8798,10 @@ class DeltaForcePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     async def _tts(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
+        denial = self._tts_permission_denial(event)
+        if denial:
+            yield event.plain_result(denial)
+            return
         parts = arg.split()
         if len(parts) < 2:
             yield event.plain_result("用法：tts <角色/预设> [情感] <文本>")

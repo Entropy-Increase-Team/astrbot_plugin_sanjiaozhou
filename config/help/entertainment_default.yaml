@@ -66,7 +66,7 @@ entertainmentHelpList:
     list:
       - icon: 87
         title: "tts [角色] [情感] 文本"
-        desc: "合成并发送语音（角色、情感、文本用空格分隔）"
+        desc: "合成并发送语音，受 WebUI 群/用户黑白名单控制"
       - icon: 87
         title: "tts 麦晓雯 开心 你好呀！"
         desc: "示例：使用指定角色和情感合成语音"

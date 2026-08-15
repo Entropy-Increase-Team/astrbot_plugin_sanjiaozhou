@@ -48,6 +48,27 @@
     "type": "int",
     "default": 5
   },
+  "tts_enabled": {
+    "description": "是否启用 TTS 语音合成。关闭后仍可查询服务状态和角色预设。",
+    "type": "bool",
+    "default": true
+  },
+  "tts_access_mode": {
+    "description": "TTS 访问控制模式。黑名单模式会拒绝列表中的用户或群；白名单模式只允许列表中的用户或群。",
+    "type": "string",
+    "options": ["blacklist", "whitelist"],
+    "default": "blacklist"
+  },
+  "tts_group_list": {
+    "description": "TTS 群聊黑名单或白名单，填写群号；私聊不会匹配此列表。",
+    "type": "list",
+    "default": []
+  },
+  "tts_user_list": {
+    "description": "TTS 用户黑名单或白名单，填写平台用户 ID。",
+    "type": "list",
+    "default": []
+  },
   "tts_max_length": {
     "description": "TTS 文本最大长度。",
     "type": "int",
