@@ -420,6 +420,12 @@ class DeltaForceClient:
     async def quest_lines(self):
         return await self.get("/api/v1/df/quest/lines")
 
+    async def quest_line_detail(self, line_id: int):
+        return await self.get(f"/api/v1/df/quest/line/{int(line_id)}")
+
+    async def quest_line_tree(self, line_id: int):
+        return await self.get(f"/api/v1/df/quest/line/{int(line_id)}/tree")
+
     async def quest_search(
         self,
         keyword: str = "",
@@ -446,6 +452,9 @@ class DeltaForceClient:
 
     async def season_quest_lines(self):
         return await self.get("/api/v1/df/quest/season/lines")
+
+    async def season_quest_line_detail(self, line_id: int):
+        return await self.get(f"/api/v1/df/quest/season/line/{int(line_id)}")
 
     async def red_list(self, framework_token: str):
         return await self.get("/api/v1/df/person/redlist", framework_token=framework_token)
