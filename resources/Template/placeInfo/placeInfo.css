@@ -28,7 +28,7 @@ body {
     background: #06090c;
     color: #d1d5db;
     font-family: 'ProjectD', "Microsoft YaHei", sans-serif;
-    width: 1700px;
+    width: 1280px;
     margin: 0 auto;
     overflow: hidden;
     height: auto;
@@ -38,9 +38,9 @@ body {
 .container {
     position: relative;
     width: 100%;
-    min-height: 1000px;
+    min-height: 720px;
     background: radial-gradient(circle at 50% 0%, #161d24 0%, #06090c 100%);
-    padding-bottom: 60px;
+    padding-bottom: 40px;
 }
 
 /* 背景点阵装饰 */
@@ -59,7 +59,7 @@ body {
     z-index: 2;
     display: flex;
     align-items: center;
-    padding: 40px 60px;
+    padding: 30px 40px;
     border-bottom: 1px solid rgba(15, 247, 150, 0.1);
 }
 
@@ -95,16 +95,16 @@ body {
 .content {
     position: relative;
     z-index: 2;
-    padding: 40px 60px 0 60px;
+    padding: 30px 40px 0 40px;
 }
 
 .place-card {
     display: flex;
-    gap: 60px;
+    gap: 32px;
     background: rgba(20, 25, 30, 0.4);
     border: 1px solid rgba(255, 255, 255, 0.05);
     border-radius: 4px;
-    padding: 50px;
+    padding: 36px;
     position: relative;
     margin-bottom: 0;
 }
@@ -123,7 +123,7 @@ body {
 
 /* ========== 左侧：视觉展示 ========== */
 .place-left {
-    width: 480px;
+    width: 340px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -132,17 +132,20 @@ body {
 }
 
 .place-name {
-    font-size: 56px;
+    width: 100%;
+    font-size: 40px;
     font-weight: 700;
     color: #FFFFFF;
-    margin-bottom: 40px;
-    letter-spacing: 2px;
+    margin-bottom: 24px;
+    letter-spacing: 0;
     text-align: center;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .image-box {
-    width: 450px;
-    height: 400px;
+    width: 320px;
+    height: 300px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -152,8 +155,8 @@ body {
 }
 
 .place-image {
-    max-width: 150%;
-    max-height: 150%;
+    max-width: 100%;
+    max-height: 100%;
     object-fit: contain;
     filter: drop-shadow(0 0 40px rgba(15, 247, 150, 0.15));
 }
@@ -163,34 +166,40 @@ body {
     width: 100%;
     text-align: center;
     padding-top: 20px;
+    min-width: 0;
 }
 
 .level-label { 
     font-size: 14px; 
     color: #FFFFFF; 
     font-weight: 700;
-    letter-spacing: 4px;
+    letter-spacing: 2px;
     display: block;
     margin-bottom: 10px;
 }
 
 .level-value { 
-    font-size: 100px; 
+    display: block;
+    max-width: 100%;
+    font-size: 72px;
     font-weight: 800; 
     color: #FFFFFF; 
-    line-height: 1;
+    line-height: 1.2;
+    overflow-wrap: anywhere;
 }
 
 /* ========== 右侧：数据面板 ========== */
 .place-right {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 40px;
+    gap: 28px;
 }
 
 .section {
     width: 100%;
+    min-width: 0;
 }
 
 .section-title {
@@ -203,6 +212,7 @@ body {
     align-items: center;
     gap: 12px;
     text-transform: uppercase;
+    overflow-wrap: anywhere;
 }
 
 .section-title::before {
@@ -210,20 +220,22 @@ body {
     width: 4px; 
     height: 14px;
     background: #0FF796;
+    flex-shrink: 0;
 }
 
 /* 升级条件 */
 .upgrade-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
 }
 
 .info-tile {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.05);
-    padding: 20px 25px;
+    padding: 16px 18px;
     border-radius: 4px;
+    min-width: 0;
 }
 
 .tile-label { 
@@ -236,6 +248,9 @@ body {
     font-size: 24px; 
     font-weight: bold; 
     color: #fff; 
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .tile-value.highlight { 
@@ -245,35 +260,36 @@ body {
 /* 物资列表 - 重新设计 */
 .materials-list {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px;
 }
 
 .material-item {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid rgba(255, 255, 255, 0.08);
-    padding: 25px;
+    padding: 16px;
     display: flex;
     flex-direction: column;
     align-items: center;
     border-radius: 4px;
+    min-width: 0;
 }
 
 .mat-img-container {
-    width: 120px;
-    height: 120px;
+    width: 88px;
+    height: 88px;
     background: rgba(0, 0, 0, 0.4);
     border-radius: 8px;
     display: flex;
     align-items: center;
     justify-content: center;
-    margin-bottom: 20px;
+    margin-bottom: 14px;
     box-shadow: inset 0 0 20px rgba(15, 247, 150, 0.1);
 }
 
 .mat-img {
-    width: 90px;
-    height: 90px;
+    width: 68px;
+    height: 68px;
     object-fit: contain;
 }
 
@@ -282,18 +298,25 @@ body {
     color: #eee;
     margin-bottom: 8px;
     font-weight: bold;
+    max-width: 100%;
+    text-align: center;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .mat-count {
     font-size: 20px;
     color: #0FF796;
     font-weight: 800;
+    max-width: 100%;
+    text-align: center;
+    overflow-wrap: anywhere;
 }
 
 /* 物品库网格 */
 .unlock-grid {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
 }
 
@@ -312,6 +335,7 @@ body {
     text-align: center;
     border-radius: 4px;
     min-height: 120px;
+    min-width: 0;
 }
 
 .unlock-tag-img {
@@ -325,11 +349,11 @@ body {
 }
 
 .unlock-tag span {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
     width: 100%;
     text-align: center;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* 效果标签 */
@@ -346,6 +370,9 @@ body {
     padding: 5px 15px;
     border-radius: 2px;
     font-size: 13px;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 /* 详情文本 */
@@ -358,4 +385,6 @@ body {
     background: rgba(0, 0, 0, 0.4);
     border-radius: 4px;
     border-left: 3px solid #0FF796;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }

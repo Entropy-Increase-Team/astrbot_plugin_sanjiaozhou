@@ -398,8 +398,8 @@ helpList:
           title: "特勤处状态"
           desc: "查询特勤处制造状态"
         - icon: 71
-          title: "特勤处信息 [场所]"
-          desc: "查询特勤处设施升级信息"
+          title: "特勤处信息 [all/场所] [等级]"
+          desc: "逐等级查询；OneBot按设施合并转发"
         - icon: 71
           title: "物品列表 [一级分类] [二级分类] [页码]"
           desc: "获取物品列表（默认props/collection）"

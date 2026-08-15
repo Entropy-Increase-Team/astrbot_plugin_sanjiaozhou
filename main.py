@@ -6959,14 +6959,33 @@ class DeltaForcePlugin(Star):
             "armory": "防具台",
             "diving": "潜水中心",
         }
-        type_aliases = {**{key: key for key in type_names}, **{value: key for key, value in type_names.items()}}
         args = place.split()
-        requested = args[0] if args and args[0].lower() not in {"all", "全部"} else ""
-        place_type = type_aliases.get(requested, "") if requested else ""
+        if not args:
+            yield event.plain_result(
+                "请使用以下命令格式：\n"
+                "特勤处信息 all - 查询所有设施，每种设施分别发送\n"
+                "特勤处信息 仓库 - 查询仓库全部等级\n"
+                "特勤处信息 仓库 1 - 查询仓库等级 1\n\n"
+                "支持的设施类型：" + "、".join(type_names.values())
+            )
+            return
+
+        is_all = args[0].lower() in {"all", "全部"}
+        requested = "" if is_all else args[0]
+        type_aliases = {
+            **{key: key for key in type_names},
+            **{value: key for key, value in type_names.items()},
+        }
+        place_type = type_aliases.get(requested.lower(), "") if requested else ""
         if requested and not place_type:
             yield event.plain_result("未知特勤处类型。支持：" + "、".join(type_names.values()))
             return
-        level = next((int(value) for value in args[1:] if value.isdigit()), 0)
+
+        target_level = (
+            int(args[1])
+            if len(args) > 1 and re.fullmatch(r"[+-]?\d+", args[1])
+            else None
+        )
         res = await self.client.place_info(token, place_type)
         if not self._ok(res):
             yield event.plain_result(f"特勤处信息查询失败: {self._message_of(res)}")
@@ -6975,23 +6994,164 @@ class DeltaForcePlugin(Star):
         places = self._first_list(data, ("places", "list", "items", "data"))
         relate_map = data.get("relateMap") if isinstance(data, dict) and isinstance(data.get("relateMap"), dict) else {}
         processed = self._adapt_places(places, relate_map, type_names)
-        if level:
-            exact = [item for item in processed if int(self._num(item.get("level"))) == level]
+        if place_type:
+            processed = [item for item in processed if item.get("placeType") == place_type]
+        if place_type and target_level is not None:
+            exact = [
+                item
+                for item in processed
+                if int(self._num(item.get("level"))) == target_level
+            ]
             if exact:
-                processed = exact
+                processed = exact[:1]
             elif processed:
                 highest = max(int(self._num(item.get("level"))) for item in processed)
-                processed = [item for item in processed if int(self._num(item.get("level"))) == highest]
-                yield event.plain_result(f"未找到等级 {level}，已展示当前可用最高等级 {highest}。")
+                processed = [item for item in processed if int(self._num(item.get("level"))) == highest][:1]
+                yield event.plain_result(
+                    f"未找到等级 {target_level}，已展示当前可用最高等级 {highest}。"
+                )
         if not processed:
             yield event.plain_result("未查询到符合条件的特勤处设施。")
             return
-        text = "\n".join(
-            ["【特勤处信息】"]
-            + [f"{item['displayName']} Lv.{item['level']}，升级材料 {len(item['upgradeRequired'])} 种" for item in processed]
+
+        if place_type and target_level is not None:
+            item = processed[0]
+            image = await self._render_place_info_image(item)
+            if image:
+                yield event.image_result(image)
+            else:
+                yield event.plain_result(self._place_info_text(item))
+            return
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in processed:
+            item_type = str(item.get("placeType") or "unknown")
+            grouped.setdefault(item_type, []).append(item)
+
+        type_order = list(type_names)
+        sorted_types = sorted(
+            grouped,
+            key=lambda value: (
+                type_order.index(value) if value in type_order else len(type_order),
+                value,
+            ),
         )
-        async for r in self._render_or_text(event, "Template/placeInfo/placeInfo.html", {"places": processed}, text, {"viewport_width": 1200, "viewport_height": 1600}):
-            yield r
+        for item_type in sorted_types:
+            level_items: Dict[int, Dict[str, Any]] = {}
+            for item in grouped[item_type]:
+                level_items.setdefault(int(self._num(item.get("level"))), item)
+            ordered = [level_items[value] for value in sorted(level_items)]
+            title = type_names.get(item_type) or ordered[0].get("displayName") or item_type
+            async for result in self._send_place_info_group(event, str(title), ordered):
+                yield result
+
+    async def _render_place_info_image(self, place: Dict[str, Any]) -> Optional[str]:
+        if not self.config.get("enable_image_render", True):
+            return None
+        try:
+            return await self.renderer.render_html(
+                "Template/placeInfo/placeInfo.html",
+                {"places": [place]},
+                {"viewport_width": 1280, "viewport_height": 1600},
+            )
+        except Exception as exc:
+            logger.error(
+                f"[特勤处信息] 渲染 {place.get('displayName') or '未知设施'} "
+                f"Lv.{place.get('level') or 0} 失败: {type(exc).__name__}"
+            )
+            return None
+
+    async def _send_place_info_group(
+        self,
+        event: AstrMessageEvent,
+        title: str,
+        places: List[Dict[str, Any]],
+    ) -> AsyncGenerator[Any, None]:
+        rendered = []
+        for place in places:
+            rendered.append((place, await self._render_place_info_image(place)))
+
+        platform_getter = getattr(event, "get_platform_name", None)
+        try:
+            is_onebot = callable(platform_getter) and platform_getter() == "aiocqhttp"
+        except Exception:
+            is_onebot = False
+
+        if is_onebot:
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = [
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(f"【{title}】\n共 {len(places)} 个等级")],
+                )
+            ]
+            for place, image in rendered:
+                heading = f"【{title} - Lv.{place.get('level') or 0}】\n"
+                content = [Comp.Plain(heading)]
+                if image:
+                    content.append(Comp.Image.fromFileSystem(image))
+                else:
+                    content.append(Comp.Plain(self._place_info_text(place)))
+                nodes.append(
+                    Comp.Node(
+                        uin=self_id,
+                        name="三角洲行动",
+                        content=content,
+                    )
+                )
+            yield event.chain_result([Comp.Nodes(nodes)])
+            return
+
+        yield event.plain_result(f"【{title}】\n共 {len(places)} 个等级")
+        for place, image in rendered:
+            heading = f"【{title} - Lv.{place.get('level') or 0}】"
+            if image:
+                yield event.plain_result(heading)
+                yield event.image_result(image)
+            else:
+                yield event.plain_result(f"{heading}\n{self._place_info_text(place)}")
+
+    @staticmethod
+    def _place_info_text(place: Dict[str, Any]) -> str:
+        name = str(place.get("displayName") or "未知设施")
+        level = place.get("level") or 0
+        lines = [f"{name} Lv.{level}"]
+        upgrade = place.get("upgradeInfo") if isinstance(place.get("upgradeInfo"), dict) else {}
+        if upgrade:
+            condition = str(upgrade.get("condition") or "无")
+            lines.append(f"升级条件：{condition}")
+            lines.append(f"所需哈夫币：{upgrade.get('hafCountFormatted') or 0}")
+        materials = [item for item in place.get("upgradeRequired") or [] if isinstance(item, dict)]
+        if materials:
+            lines.append(
+                "升级材料："
+                + "、".join(
+                    f"{item.get('objectName') or '未知物品'} x{item.get('count') or 0}"
+                    for item in materials
+                )
+            )
+        unlock = place.get("unlockInfo") if isinstance(place.get("unlockInfo"), dict) else {}
+        effects = [str(value) for value in unlock.get("properties") or [] if str(value)]
+        if effects:
+            lines.append("解锁效果：" + "、".join(effects))
+        props = [item for item in unlock.get("props") or [] if isinstance(item, dict)]
+        if props:
+            lines.append(
+                "解锁物品："
+                + "、".join(
+                    f"{item.get('objectName') or '未知物品'}"
+                    + (f" x{item.get('count')}" if item.get("count") not in (None, "") else "")
+                    for item in props
+                )
+            )
+        if place.get("detail"):
+            lines.append(f"设施说明：{place['detail']}")
+        return "\n".join(lines)
 
     def _adapt_places(
         self,
@@ -7062,6 +7222,7 @@ class DeltaForcePlugin(Star):
             haf_count = self._number(upgrade.get("hafCount"))
             result.append(
                 {
+                    "placeType": place_type,
                     "displayName": place.get("placeName") or type_names.get(place_type) or "未知设施",
                     "level": int(self._num(place.get("level"))),
                     "imageUrl": f"imgs/place/{type_images[place_type]}" if place_type in type_images else "",
