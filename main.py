@@ -250,6 +250,12 @@ DELTA_COMMAND_SPECS = [
     ("任务线详情", {"任务线资料"}),
     ("任务线树", {"任务树", "任务线树状图"}),
     ("赛季任务详情", {"赛季任务线详情"}),
+    ("任务目标", {"任务目标列表"}),
+    ("任务奖励", {"任务奖励列表"}),
+    ("赛季阶段", {"赛季阶段列表"}),
+    ("赛季任务组", {"赛季分组", "赛季任务分组"}),
+    ("命运契约", {"命运任务", "命运契约任务"}),
+    ("任务统计", {"任务库统计"}),
 ]
 
 
@@ -1561,6 +1567,30 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(?:赛季任务详情|赛季任务线详情)\s*(.*)", body):
             async for r in self._season_quest_line_detail(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务目标|任务目标列表)\s*(.*)", body):
+            async for r in self._quest_components(event, m.group(1).strip(), "objectives"):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务奖励|任务奖励列表)\s*(.*)", body):
+            async for r in self._quest_components(event, m.group(1).strip(), "rewards"):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:赛季阶段|赛季阶段列表)\s*(.*)", body):
+            async for r in self._season_quest_stages(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:赛季任务组|赛季分组|赛季任务分组)\s*(.*)", body):
+            async for r in self._season_quest_groups(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:命运契约|命运任务|命运契约任务)\s*(.*)", body):
+            async for r in self._fate_quests(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务统计|任务库统计)\s*(.*)", body):
+            async for r in self._quest_stats(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(?:任务线|任务线列表)\s*(.*)", body):
@@ -4357,19 +4387,50 @@ class DeltaForcePlugin(Star):
         return page, ""
 
     @staticmethod
-    def _quest_id_page_args(arg: str, usage: str) -> Tuple[int, int, str]:
+    def _positive_id_page_args(
+        arg: str,
+        usage: str,
+        label: str,
+    ) -> Tuple[int, int, str]:
         parts = str(arg or "").split()
         if not parts or not re.fullmatch(r"\d{1,12}", parts[0]):
             return 0, 1, usage
-        line_id = int(parts[0])
-        if line_id <= 0:
-            return 0, 1, "任务线 ID 必须是正整数。"
+        item_id = int(parts[0])
+        if item_id <= 0:
+            return 0, 1, f"{label} ID 必须是正整数。"
         if len(parts) == 1:
-            return line_id, 1, ""
+            return item_id, 1, ""
         if len(parts) > 2:
             return 0, 1, usage
         page, error = DeltaForcePlugin._quest_page_arg(parts[1], usage)
-        return (line_id, page, error) if not error else (0, 1, error)
+        return (item_id, page, error) if not error else (0, 1, error)
+
+    @staticmethod
+    def _quest_id_page_args(arg: str, usage: str) -> Tuple[int, int, str]:
+        return DeltaForcePlugin._positive_id_page_args(arg, usage, "任务线")
+
+    @staticmethod
+    def _quest_filter_page_args(
+        arg: str,
+        filter_pattern: str,
+        usage: str,
+        minimum: int = 0,
+    ) -> Tuple[Optional[int], int, str]:
+        filter_value: Optional[int] = None
+        page = 1
+        for part in str(arg or "").split():
+            low = part.casefold().replace("：", "=")
+            if match := re.fullmatch(r"(?:page|p|页)=?(\d+)", low):
+                page = int(match.group(1))
+            elif match := re.fullmatch(rf"(?:{filter_pattern})=?(\d+)", low):
+                filter_value = int(match.group(1))
+            else:
+                return None, 1, usage
+        if page < 1 or page > 10000:
+            return None, 1, "页码必须在 1 到 10000 之间。"
+        if filter_value is not None and (filter_value < minimum or filter_value > 10**12):
+            return None, 1, usage
+        return filter_value, page, ""
 
     @staticmethod
     def _quest_search_args(
@@ -4715,6 +4776,341 @@ class DeltaForcePlugin(Star):
         if fate_quests:
             lines.append(f"命运契约任务: {len(fate_quests)} 项")
         yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_components(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        kind: str,
+    ) -> AsyncGenerator[Any, None]:
+        is_objective = kind == "objectives"
+        title = "任务目标" if is_objective else "任务奖励"
+        usage = f"格式：{title} <任务ID> [页码]"
+        quest_id, page, error = self._positive_id_page_args(arg, usage, "任务")
+        if error:
+            yield event.plain_result(error)
+            return
+        response = (
+            await self.client.quest_objectives(quest_id)
+            if is_objective
+            else await self.client.quest_rewards(quest_id)
+        )
+        if not self._ok(response):
+            yield event.plain_result(f"查询{title}失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, []),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result(f"该任务暂无{title[2:]}资料。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        lines = [f"【{title}｜任务 {quest_id}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            if is_objective:
+                name = self._quest_text(
+                    item.get("objectiveDesc") or item.get("briefObjectiveDesc"),
+                    f"目标 {item.get('objectiveId') or index}",
+                )[:180]
+                details = [
+                    f"目标 ID: {item.get('objectiveId') or '-'}",
+                    f"类型: {int(self._num(item.get('type')))}",
+                ]
+                required = int(self._num(item.get("requiredCount")))
+                if required > 0:
+                    details.append(f"所需数量: {required}")
+                maps = item.get("mapId") or []
+                if not isinstance(maps, list):
+                    maps = [maps]
+                map_text = "、".join(str(value) for value in maps[:8] if value is not None)
+                if map_text:
+                    details.append(f"地图: {map_text}")
+                if item.get("shouldMustBeCompleted"):
+                    details.append("必须完成")
+                helper = self._quest_text(item.get("helperTips"))[:120]
+                lines.append(
+                    f"{index}. {name}\n"
+                    + "｜".join(details)
+                    + (f"\n提示: {helper}" if helper else "")
+                )
+            else:
+                label = self._quest_text(item.get("rowDescription"))[:140]
+                item_id = item.get("itemId") or "-"
+                count = max(0, int(self._num(item.get("number"))))
+                details = [
+                    f"奖励 ID: {item.get('rewardId') or '-'}",
+                    f"类型: {int(self._num(item.get('type')))}",
+                    f"物品 ID: {item_id}",
+                ]
+                bind_type = int(self._num(item.get("bindType")))
+                if bind_type > 0:
+                    details.append(f"绑定类型: {bind_type}")
+                if item.get("importantReward"):
+                    details.append("重要奖励")
+                lines.append(
+                    f"{index}. {label or f'物品 {item_id}'} ×{count}\n"
+                    + "｜".join(details)
+                )
+        lines.append(f"发送 任务详情 {quest_id} 查看任务完整资料。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _season_quest_stages(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        page, error = self._quest_page_arg(arg, "格式：赛季阶段 [页码]")
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.season_quest_stages()
+        if not self._ok(response):
+            yield event.plain_result(f"查询赛季阶段失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, {}),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("暂无赛季阶段资料。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        lines = [f"【赛季阶段】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(item.get("name"), "未命名阶段")[:100]
+            desc = self._quest_text(item.get("desc"))[:160]
+            sub_groups = item.get("stageSubGroupArr") or []
+            if not isinstance(sub_groups, list):
+                sub_groups = [sub_groups]
+            details = [
+                f"阶段 ID: {item.get('stageId') or '-'}",
+                f"顺序: {int(self._num(item.get('stageSequence')))}",
+                f"主分组: {item.get('stageMainGroup') or '-'}",
+            ]
+            if sub_groups:
+                details.append(
+                    "子分组: "
+                    + "、".join(str(value) for value in sub_groups[:8])
+                )
+            unlock_stars = int(self._num(item.get("stageUnlockStarCount")))
+            if unlock_stars > 0:
+                details.append(f"解锁星数: {unlock_stars}")
+            lines.append(
+                f"{index}. {name}\n"
+                + "｜".join(details)
+                + (f"\n{desc}" if desc else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _season_quest_groups(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        group_type, page, error = self._quest_filter_page_args(
+            arg,
+            "类型|type",
+            "格式：赛季任务组 [类型=数字] [页码]",
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.season_quest_groups(group_type)
+        if not self._ok(response):
+            yield event.plain_result(f"查询赛季任务组失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, {}),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("没有找到符合条件的赛季任务组。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        heading = f"类型 {group_type}" if group_type is not None else "全部类型"
+        lines = [f"【赛季任务组｜{heading}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(
+                item.get("titleName") or item.get("name"),
+                "未命名分组",
+            )[:100]
+            quest_ids = item.get("questIdArr") or []
+            if not isinstance(quest_ids, list):
+                quest_ids = [quest_ids]
+            details = [
+                f"分组 ID: {item.get('groupId') or '-'}",
+                f"类型: {int(self._num(item.get('groupType')))}",
+                f"顺序: {int(self._num(item.get('sequence')))}",
+                f"任务数: {len(quest_ids)}",
+            ]
+            stars = int(self._num(item.get("gropStarCount")))
+            if stars > 0:
+                details.append(f"星数: {stars}")
+            quest_text = "、".join(str(value) for value in quest_ids[:8])
+            lines.append(
+                f"{index}. {name}\n"
+                + "｜".join(details)
+                + (f"\n任务 ID: {quest_text}" if quest_text else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _fate_quests(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        season_id, page, error = self._quest_filter_page_args(
+            arg,
+            "赛季|season|seasonid",
+            "格式：命运契约 [赛季=数字] [页码]",
+            minimum=1,
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.fate_quests(season_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询命运契约失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, {}),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("没有找到符合条件的命运契约任务。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        heading = f"赛季 {season_id}" if season_id is not None else "全部赛季"
+        lines = [f"【命运契约｜{heading}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            quest = item.get("questDetail") if isinstance(item.get("questDetail"), dict) else {}
+            name = self._quest_text(quest.get("name"), "未命名命运任务")[:100]
+            desc = self._quest_text(quest.get("desc"))[:160]
+            details = [
+                f"契约 ID: {item.get('fateQuestId') or '-'}",
+                f"任务 ID: {item.get('questId') or '-'}",
+                f"赛季: {item.get('seasonId') or '-'}",
+                f"顺序: {int(self._num(item.get('fateQuestSequence')))}",
+            ]
+            unlock_time = int(self._num(item.get("fateQuestUnlockTime")))
+            if unlock_time > 0:
+                details.append(f"解锁时间参数: {unlock_time}")
+            lines.append(
+                f"{index}. {name}\n"
+                + "｜".join(details)
+                + (f"\n{desc}" if desc else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_stats(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        if str(arg or "").strip():
+            yield event.plain_result("格式：任务统计")
+            return
+        response = await self.client.quest_stats()
+        if not self._ok(response):
+            yield event.plain_result(f"查询任务统计失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        if not isinstance(data, dict) or not data:
+            yield event.plain_result("任务资料库统计为空。")
+            return
+        sections = [
+            (
+                "基础任务",
+                [
+                    ("questLines", "任务线"),
+                    ("quests", "任务"),
+                    ("objectives", "任务目标"),
+                    ("rewards", "任务奖励"),
+                    ("conditions", "任务条件"),
+                ],
+            ),
+            (
+                "赛季任务",
+                [
+                    ("seasonLines", "赛季任务线"),
+                    ("stages", "赛季阶段"),
+                    ("groups", "赛季任务组"),
+                    ("fateQuests", "命运契约"),
+                    ("seasonQuestConfigs", "赛季配置"),
+                    ("seasonQuestGuides", "赛季指引"),
+                ],
+            ),
+            (
+                "收集与扩展",
+                [
+                    ("collectorGroups", "收集任务组"),
+                    ("collectorRewards", "收集奖励"),
+                    ("collectorSlots", "收集槽位"),
+                    ("characterCheckingConditions", "角色检查条件"),
+                    ("complexPropObjectives", "复杂物品目标"),
+                    ("complexWeaponTerms", "复杂武器条件"),
+                    ("solContractRewards", "烽火契约奖励"),
+                    ("solQuestMapConfigs", "烽火地图配置"),
+                    ("solObjectiveTypes", "烽火目标类型"),
+                    ("solTargetTypes", "烽火目标对象"),
+                    ("solQuestDialogs", "烽火任务对话"),
+                ],
+            ),
+            (
+                "重生任务",
+                [
+                    ("rebirthQuestlines", "重生任务线"),
+                    ("rebirthPrerequestGroups", "重生前置组"),
+                    ("rebirthTextConfigs", "重生文本配置"),
+                    ("rebornQuestNameTemplates", "重生名称模板"),
+                ],
+            ),
+        ]
+        lines = ["【任务资料库统计】"]
+        for section_name, entries in sections:
+            lines.append(section_name)
+            lines.extend(
+                f"- {label}: {int(self._num(data.get(key))):,}"
+                for key, label in entries
+            )
+        yield event.plain_result("\n".join(lines))
 
     async def _quest_search(
         self,

@@ -450,11 +450,31 @@ class DeltaForceClient:
     async def quest_detail(self, quest_id: int):
         return await self.get(f"/api/v1/df/quest/{int(quest_id)}")
 
+    async def quest_objectives(self, quest_id: int):
+        return await self.get(f"/api/v1/df/quest/objectives/{int(quest_id)}")
+
+    async def quest_rewards(self, quest_id: int):
+        return await self.get(f"/api/v1/df/quest/rewards/{int(quest_id)}")
+
     async def season_quest_lines(self):
         return await self.get("/api/v1/df/quest/season/lines")
 
     async def season_quest_line_detail(self, line_id: int):
         return await self.get(f"/api/v1/df/quest/season/line/{int(line_id)}")
+
+    async def season_quest_stages(self):
+        return await self.get("/api/v1/df/quest/season/stages")
+
+    async def season_quest_groups(self, group_type: Optional[int] = None):
+        params = {"type": int(group_type)} if group_type is not None else {}
+        return await self.get("/api/v1/df/quest/season/groups", params=params)
+
+    async def fate_quests(self, season_id: Optional[int] = None):
+        params = {"seasonId": int(season_id)} if season_id is not None else {}
+        return await self.get("/api/v1/df/quest/fate", params=params)
+
+    async def quest_stats(self):
+        return await self.get("/api/v1/df/quest/stats")
 
     async def red_list(self, framework_token: str):
         return await self.get("/api/v1/df/person/redlist", framework_token=framework_token)
