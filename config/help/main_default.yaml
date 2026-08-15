@@ -234,6 +234,9 @@ helpList:
           title: "价格历史 | 当前价格 [物品名/ID]"
           desc: "查询物品历史/当前价格"
         - icon: 61
+          title: "OCR价格 | OCR价格历史 [物品/天数]"
+          desc: "查询OCR最新价、区间统计和历史"
+        - icon: 61
           title: "弹药价格 [1-30天]"
           desc: "查询弹药当前价、均价和历史涨跌"
         - icon: 61
@@ -242,6 +245,9 @@ helpList:
         - icon: 61
           title: "材料价格 [物品ID]"
           desc: "查询制造材料最低价格"
+        - icon: 61
+          title: "OCR材料价格 | OCR材料历史 [物品/页码/天数]"
+          desc: "查询制造材料OCR当前价和历史"
         - icon: 61
           title: "囤货建议 [阈值百分比]"
           desc: "只读观察兑换材料是否接近低价"
@@ -257,6 +263,9 @@ helpList:
         - icon: 62
           title: "特勤处利润 [类型]"
           desc: "查询特勤处四个场所利润TOP3"
+        - icon: 61
+          title: "OCR利润历史 | OCR利润排行 | OCR特勤处利润"
+          desc: "支持物品、天数、场所、计价和数量参数"
   
   right:
     - order: 1

@@ -200,14 +200,21 @@ DELTA_COMMAND_SPECS = [
     ("物品搜索", set()),
     ("当前价格", {"最新价格", "价格"}),
     ("价格历史", {"历史价格"}),
+    ("OCR价格", {"OCR最新价"}),
+    ("OCR价格历史", {"OCR历史价格"}),
     ("弹药价格", {"弹药行情"}),
     ("制造材料列表", {"材料列表"}),
     ("材料价格", {"制造材料"}),
+    ("OCR材料价格", {"OCR制造材料"}),
+    ("OCR材料历史", {"OCR材料价格历史"}),
     ("囤货建议", {"材料囤货"}),
     ("利润历史", {"历史利润"}),
     ("利润排行", {"利润榜"}),
     ("最高利润", {"利润排行v2", "利润榜v2"}),
     ("特勤处利润", {"特勤利润"}),
+    ("OCR利润历史", set()),
+    ("OCR利润排行", {"OCR利润榜"}),
+    ("OCR特勤处利润", {"OCR特勤利润"}),
     ("上传改枪码", {"上传改枪方案"}),
     ("改枪码列表", {"改枪方案列表"}),
     ("改枪码详情", {"改枪方案详情"}),
@@ -1878,6 +1885,14 @@ class DeltaForcePlugin(Star):
             async for r in self._price_history(event, m.group(2).strip()):
                 yield r
             return
+        if m := re.fullmatch(r"(OCR价格历史|OCR历史价格)\s*(.*)", body, flags=re.I):
+            async for r in self._ocr_price(event, m.group(2).strip(), history=True):
+                yield r
+            return
+        if m := re.fullmatch(r"(OCR价格|OCR最新价)\s*(.*)", body, flags=re.I):
+            async for r in self._ocr_price(event, m.group(2).strip(), history=False):
+                yield r
+            return
         if m := re.fullmatch(r"(弹药价格|弹药行情)\s*(.*)", body):
             async for r in self._ammo_prices(event, m.group(2).strip()):
                 yield r
@@ -1890,11 +1905,23 @@ class DeltaForcePlugin(Star):
             async for r in self._material_price(event, m.group(2).strip()):
                 yield r
             return
+        if m := re.fullmatch(r"(OCR材料历史|OCR材料价格历史)\s*(.*)", body, flags=re.I):
+            async for r in self._ocr_material_history(event, m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(OCR材料价格|OCR制造材料)\s*(.*)", body, flags=re.I):
+            async for r in self._ocr_material_price(event, m.group(2).strip()):
+                yield r
+            return
         if m := re.fullmatch(r"(囤货建议|材料囤货)\s*(.*)", body):
             async for r in self._stockpile_advice(event, m.group(2).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(利润历史|历史利润|利润排行|利润榜|最高利润|利润排行v2|利润榜v2|特勤处利润|特勤利润)\s*(.*)", body):
+            async for r in self._profit(event, m.group(1), m.group(2).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(OCR利润历史|OCR利润排行|OCR利润榜|OCR特勤处利润|OCR特勤利润)\s*(.*)", body, flags=re.I):
             async for r in self._profit(event, m.group(1), m.group(2).strip()):
                 yield r
             return
@@ -7165,6 +7192,98 @@ class DeltaForcePlugin(Star):
             lines.extend(f"{point.get('hour') or point.get('timestamp')}: {self.data_mgr.fmt_num(point.get('price') or point.get('avgPrice') or 0)}" for point in history[:10] if isinstance(point, dict))
         yield event.plain_result("\n".join(lines))
 
+    @staticmethod
+    def _parse_ocr_search_args(arg: str, default_days: int, max_days: int) -> tuple[str, int, str]:
+        raw = str(arg or "").strip()
+        days = default_days
+        query_parts: List[str] = []
+        for part in raw.split():
+            if match := re.fullmatch(r"(\d+)天", part):
+                days = int(match.group(1))
+            else:
+                query_parts.append(part)
+        if not 1 <= days <= max_days:
+            return "", days, f"查询天数需在 1-{max_days} 之间。"
+        return " ".join(query_parts), days, ""
+
+    @staticmethod
+    def _looks_like_ocr_object_id(value: str) -> bool:
+        return bool(re.fullmatch(r"\d+(?:[-_][A-Za-z0-9_-]+)?", str(value or "").strip()))
+
+    async def _ocr_price(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        history: bool,
+    ) -> AsyncGenerator[Any, None]:
+        default_days = 30 if history else 7
+        keyword, days, error = self._parse_ocr_search_args(arg, default_days, 3650 if history else 30)
+        if error:
+            yield event.plain_result(error)
+            return
+        if history and not keyword:
+            yield event.plain_result("用法：OCR价格历史 <名称/ID> [1-3650天]")
+            return
+        params: Dict[str, Any] = {"days": str(days), "page": "1", "limit": "20"}
+        if keyword:
+            params["objectID" if self._looks_like_ocr_object_id(keyword) else "objectName"] = keyword
+        res = (
+            await self.client.ocr_price_history(params)
+            if history
+            else await self.client.ocr_price_latest(params)
+        )
+        command_name = "OCR价格历史" if history else "OCR价格"
+        if not self._ok(res):
+            yield event.plain_result(f"{command_name}查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            suffix = f"“{keyword}”" if keyword else "当前条件"
+            yield event.plain_result(f"未查询到{suffix}的 {command_name}数据。")
+            return
+        pagination = data.get("pagination") if isinstance(data, dict) and isinstance(data.get("pagination"), dict) else {}
+        total = pagination.get("total", len(rows))
+        if history:
+            stats = data.get("stats") if isinstance(data, dict) and isinstance(data.get("stats"), dict) else {}
+            lines = [f"【OCR价格历史：{keyword}】{days} 天，共 {total} 条"]
+            if stats:
+                lines.append(
+                    f"均价 {self.data_mgr.fmt_num(stats.get('avgPrice') or 0)}，"
+                    f"最低/最高 {self.data_mgr.fmt_num(stats.get('minPrice') or 0)} / "
+                    f"{self.data_mgr.fmt_num(stats.get('maxPrice') or 0)}，"
+                    f"最大波动 {self._number(stats.get('maxChangePercent')):+.2f}%"
+                )
+            for item in rows[:20]:
+                name = item.get("objectName") or keyword or "未知物品"
+                item_id = item.get("objectID") or "-"
+                extra = item.get("condition") or item.get("ammoLevel") or ""
+                label = f" [{extra}]" if extra else ""
+                lines.append(
+                    f"{self._fmt_time(item.get('timestamp'))} {name}（{item_id}）{label} "
+                    f"{self.data_mgr.fmt_num(item.get('price') or 0)}"
+                )
+        else:
+            lines = [f"【OCR最新价格 · {days} 天】共 {total} 种"]
+            for index, item in enumerate(rows[:20], 1):
+                name = item.get("objectName") or "未知物品"
+                item_id = item.get("objectID") or item.get("baseObjectID") or "-"
+                extra = item.get("condition") or item.get("ammoLevel") or ""
+                label = f" [{extra}]" if extra else ""
+                lines.append(
+                    f"{index}. {name}（{item_id}）{label} 当前 "
+                    f"{self.data_mgr.fmt_num(item.get('latestPrice') or 0)}，"
+                    f"均价 {self.data_mgr.fmt_num(item.get('avgPrice') or 0)}，"
+                    f"涨跌 {self._number(item.get('change')):+.2f}%"
+                )
+        if int(self._number(total, len(rows))) > len(rows):
+            lines.append(f"仅展示前 {len(rows)} 条，可缩小名称或 ID 范围继续查询。")
+        yield event.plain_result("\n".join(lines))
+
     async def _ammo_prices(
         self,
         event: AstrMessageEvent,
@@ -7278,6 +7397,91 @@ class DeltaForcePlugin(Star):
             lines.append(f"{index}. {name}（{item_id}） {price}")
         yield event.plain_result("\n".join(lines))
 
+    async def _ocr_material_price(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        raw = str(arg or "").strip()
+        page = "1"
+        query_parts: List[str] = []
+        for part in raw.split():
+            if match := re.fullmatch(r"页(\d+)", part):
+                page = match.group(1)
+            elif match := re.fullmatch(r"第(\d+)页", part):
+                page = match.group(1)
+            else:
+                query_parts.append(part)
+        if not 1 <= int(page) <= 10000:
+            yield event.plain_result("页码需在 1-10000 之间。")
+            return
+        keyword = " ".join(query_parts)
+        res = await self.client.ocr_material_price(keyword, page, "20")
+        if not self._ok(res):
+            yield event.plain_result(f"OCR材料价格查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("materials", "items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("未查询到符合条件的 OCR 制造材料价格。")
+            return
+        pagination = data.get("pagination") if isinstance(data, dict) and isinstance(data.get("pagination"), dict) else {}
+        lines = [
+            f"【OCR材料价格】第 {pagination.get('page', page)} 页，共 {pagination.get('total', len(rows))} 种"
+        ]
+        for index, item in enumerate(rows, 1):
+            name = item.get("objectName") or "未知材料"
+            item_id = item.get("objectID") or "-"
+            price = item.get("price")
+            source = item.get("priceSource") or item.get("source") or "ocr"
+            price_text = "暂无" if price is None else self.data_mgr.fmt_num(price)
+            lines.append(f"{index}. {name}（{item_id}） {price_text}，来源 {source}")
+        yield event.plain_result("\n".join(lines))
+
+    async def _ocr_material_history(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        keyword, days, error = self._parse_ocr_search_args(arg, 7, 3650)
+        if error:
+            yield event.plain_result(error)
+            return
+        if not keyword:
+            yield event.plain_result("用法：OCR材料历史 <名称/ID> [1-3650天]")
+            return
+        object_id = await self._resolve_item_id(keyword)
+        if not object_id.isdigit():
+            yield event.plain_result(f"未找到制造材料：{keyword}")
+            return
+        res = await self.client.ocr_material_price_history(object_id, str(days))
+        if not self._ok(res):
+            yield event.plain_result(f"OCR材料历史查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("history", "items", "list", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("暂无该材料的 OCR 价格历史。")
+            return
+        name = data.get("objectName") if isinstance(data, dict) else ""
+        lines = [f"【{name or keyword} · OCR材料历史】{days} 天，共 {len(rows)} 条"]
+        for item in rows[:20]:
+            lines.append(
+                f"{self._fmt_time(item.get('timestamp'))} "
+                f"{self.data_mgr.fmt_num(item.get('price') or 0)}"
+            )
+        if len(rows) > 20:
+            lines.append(f"仅展示最近 20 条，其余 {len(rows) - 20} 条已省略。")
+        yield event.plain_result("\n".join(lines))
+
     async def _stockpile_advice(
         self,
         event: AstrMessageEvent,
@@ -7345,6 +7549,8 @@ class DeltaForcePlugin(Star):
             "pharmacy": "pharmacy",
             "armory": "armory",
         }
+        is_ocr = str(command or "").upper().startswith("OCR")
+        source_label = "OCR" if is_ocr else "AMS"
         params = self._parse_key_values(arg)
         parts = [part for part in arg.split() if "=" not in part]
         if "历史" in command:
@@ -7358,7 +7564,11 @@ class DeltaForcePlugin(Star):
                     query_parts.append(part)
             query = str(params.get("objectID") or params.get("objectId") or " ".join(query_parts)).strip()
             if not query:
-                yield event.plain_result("用法：利润历史 <物品名称/ID> [天数]")
+                prefix = "OCR利润历史" if is_ocr else "利润历史"
+                yield event.plain_result(f"用法：{prefix} <物品名称/ID> [1-30天]")
+                return
+            if days and (not days.isdigit() or not 1 <= int(days) <= 30):
+                yield event.plain_result("查询天数需在 1-30 之间。")
                 return
             object_id = await self._resolve_item_id(query)
             if not object_id.isdigit():
@@ -7367,13 +7577,31 @@ class DeltaForcePlugin(Star):
             params = {"objectID": object_id}
             if days:
                 params["days"] = days
-            res = await self.client.profit_history(params)
+            res = (
+                await self.client.ocr_profit_history(params)
+                if is_ocr
+                else await self.client.profit_history(params)
+            )
         elif "排行" in command or "利润榜" in command or "最高" in command:
             params = self._profit_query_params(parts, params, place_aliases, default_limit="10")
-            res = await self.client.profit_rank(params)
+            if is_ocr:
+                params = self._ocr_profit_material_mode(params, parts)
+                if params.get("materialMode") not in {"latest", "min", "craft"}:
+                    yield event.plain_result("OCR 材料计价模式仅支持：最新、最低、制造。")
+                    return
+                res = await self.client.ocr_profit_rank(params)
+            else:
+                res = await self.client.profit_rank(params)
         else:
             params = self._profit_query_params(parts, params, place_aliases)
-            res = await self.client.place_profit(params)
+            if is_ocr:
+                params = self._ocr_profit_material_mode(params, parts)
+                if params.get("materialMode") not in {"latest", "min", "craft"}:
+                    yield event.plain_result("OCR 材料计价模式仅支持：最新、最低、制造。")
+                    return
+                res = await self.client.ocr_place_profit(params)
+            else:
+                res = await self.client.place_profit(params)
         if not self._ok(res):
             yield event.plain_result(f"{command}查询失败: {self._message_of(res)}")
             return
@@ -7384,7 +7612,10 @@ class DeltaForcePlugin(Star):
             if not history:
                 yield event.plain_result("暂无该物品的利润历史数据。")
                 return
-            lines = [f"【{info.get('objectName') or '物品'}利润历史】{data.get('days', params.get('days', 7))} 天"]
+            lines = [
+                f"【{info.get('objectName') or '物品'}利润历史 · {source_label}】"
+                f"{data.get('days', params.get('days', 7))} 天"
+            ]
             lines.append(f"{info.get('placeName') or info.get('placeType') or '未知场所'} Lv.{info.get('level') or '-'}，周期 {info.get('period') or '-'} 小时")
             for item in history[:20]:
                 if not isinstance(item, dict):
@@ -7401,13 +7632,36 @@ class DeltaForcePlugin(Star):
                 yield event.plain_result("当前查询条件下没有利润排行数据。")
                 return
             sort_name = "时均利润" if str(data.get("sortType") or params.get("type")) == "hour" else "总利润"
-            lines = [f"【利润排行 · {sort_name}】"]
+            mode_name = self._ocr_material_mode_name(params.get("materialMode")) if is_ocr else ""
+            title_suffix = f" · {source_label}" + (f"/{mode_name}" if mode_name else "")
+            lines = [f"【利润排行 · {sort_name}{title_suffix}】"]
             for index, item in enumerate(rows, 1):
                 value = item.get("hourProfit") if sort_name == "时均利润" else item.get("totalProfit")
                 lines.append(
                     f"{item.get('rank') or index}. {item.get('objectName') or item.get('objectID') or '未知物品'} "
                     f"({item.get('placeName') or item.get('placeType') or '未知场所'} Lv.{item.get('level') or '-'}) {self._format_profit(value or 0)}"
                 )
+            yield event.plain_result("\n".join(lines))
+            return
+        if is_ocr:
+            rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
+            if not rows:
+                yield event.plain_result("当前查询条件下没有 OCR 特勤处利润数据。")
+                return
+            sort_name = "时均" if str(data.get("sortType") or params.get("type")) == "hour" else "总利润"
+            mode_name = self._ocr_material_mode_name(data.get("materialMode") or params.get("materialMode"))
+            lines = [f"【OCR特勤处利润 · {sort_name}/{mode_name}】"]
+            for index, item in enumerate(rows[:20], 1):
+                value = item.get("hourProfit") if sort_name == "时均" else item.get("totalProfit")
+                lines.append(
+                    f"{index}. {item.get('objectName') or item.get('objectID') or '未知物品'} "
+                    f"({item.get('placeName') or item.get('placeType') or '未知场所'} "
+                    f"Lv.{item.get('level') or '-'}) {self._format_profit(value or 0)}，"
+                    f"售价 {self.data_mgr.fmt_num(item.get('salePrice') or 0)}，"
+                    f"材料 {self.data_mgr.fmt_num(item.get('materialCost') or 0)}"
+                )
+            if len(rows) > 20:
+                lines.append(f"仅展示前 20 条，其余 {len(rows) - 20} 条已省略。")
             yield event.plain_result("\n".join(lines))
             return
         places = [item for item in self._first_list(data, ("manufacturingPlaces", "places", "list", "data")) if isinstance(item, dict)]
@@ -7422,6 +7676,40 @@ class DeltaForcePlugin(Star):
                 value = item.get("hourProfit") if str(data.get("sortType") or params.get("type")) == "hour" else item.get("totalProfit")
                 lines.append(f"{index}. {item.get('objectName') or item.get('objectID') or '未知物品'} {self._format_profit(value or 0)}")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _ocr_material_mode_name(value: Any) -> str:
+        return {
+            "latest": "最新价",
+            "min": "窗口最低价",
+            "craft": "制造成本",
+        }.get(str(value or "latest").strip().lower(), "最新价")
+
+    @staticmethod
+    def _ocr_profit_material_mode(params: Dict[str, Any], parts: List[str]) -> Dict[str, Any]:
+        result = dict(params)
+        raw_mode = ""
+        for key in ("materialMode", "material_mode", "材料模式", "计价"):
+            if key in result:
+                raw_mode = str(result.pop(key) or "")
+                break
+        aliases = {
+            "latest": "latest",
+            "最新": "latest",
+            "实时": "latest",
+            "min": "min",
+            "最低": "min",
+            "低价": "min",
+            "craft": "craft",
+            "制造": "craft",
+            "合成": "craft",
+        }
+        for part in parts:
+            if part.lower() in aliases:
+                raw_mode = part.lower()
+        normalized = raw_mode.strip().lower()
+        result["materialMode"] = aliases.get(normalized, normalized or "latest")
+        return result
 
     @staticmethod
     def _profit_query_params(
@@ -7448,7 +7736,7 @@ class DeltaForcePlugin(Star):
                 params["level"] = match.group(1)
             elif part.isdigit():
                 params["limit"] = part
-        params["type"] = "hour" if str(params.get("type") or "hour").lower() in {"hour", "hourprofit"} else "total"
+        params["type"] = "hour" if str(params.get("type") or "total").lower() in {"hour", "hourprofit"} else "total"
         return params
 
     def _solution_items(self, response: Any) -> List[Dict[str, Any]]:

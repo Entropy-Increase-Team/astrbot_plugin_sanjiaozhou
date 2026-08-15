@@ -709,6 +709,27 @@ class DeltaForceClient:
             params["objectName"] = key
         return await self.get("/api/v1/df/place/material/price", params=params, require_key=False)
 
+    async def ocr_price_latest(self, params: Dict[str, Any]):
+        return await self.get("/api/v1/df/price/ocr/latest", params=params)
+
+    async def ocr_price_history(self, params: Dict[str, Any]):
+        return await self.get("/api/v1/df/price/ocr/history", params=params)
+
+    async def ocr_material_price(self, keyword: str = "", page: str = "1", page_size: str = "50"):
+        key = str(keyword or "").strip()
+        params = {"page": page, "pageSize": page_size}
+        if key.isdigit():
+            params["objectID"] = key
+        elif key:
+            params["objectName"] = key
+        return await self.get("/api/v1/df/place/material/price/ocr", params=params)
+
+    async def ocr_material_price_history(self, object_id: str, days: str = "7"):
+        return await self.get(
+            "/api/v1/df/place/material/price/history/ocr",
+            params={"objectID": object_id, "days": days},
+        )
+
     async def material_stockpile(self, threshold: str = "5"):
         return await self.get(
             "/api/v1/df/place/material/stockpile",
@@ -723,6 +744,15 @@ class DeltaForceClient:
 
     async def place_profit(self, params: Dict[str, Any]):
         return await self.get("/api/v1/df/place/profit", params=params, require_key=False)
+
+    async def ocr_profit_history(self, params: Dict[str, Any]):
+        return await self.get("/api/v1/df/place/profit/history/ocr", params=params)
+
+    async def ocr_profit_rank(self, params: Dict[str, Any]):
+        return await self.get("/api/v1/df/place/profit/rank/ocr", params=params)
+
+    async def ocr_place_profit(self, params: Dict[str, Any]):
+        return await self.get("/api/v1/df/place/profit/ocr", params=params)
 
     async def list_record_subscriptions(self, user_identifier: str, client_id: str, client_type: str = "bot"):
         """列出当前 API Key 作用域下的战绩订阅。"""
