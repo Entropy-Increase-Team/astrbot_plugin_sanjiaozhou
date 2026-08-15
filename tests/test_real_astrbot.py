@@ -96,8 +96,9 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
                 )
                 hit_counts.append(hits)
 
-            assert len(handlers) == len(DELTA_COMMAND_SPECS) == 106
-            assert len(command_filters) == 106
+            assert len(handlers) == len(DELTA_COMMAND_SPECS) == 108
+            assert len(command_filters) == 108
+            assert len(all_names) == 369
             assert not regex_filters
             assert not duplicates
             assert not spaced_names
@@ -456,6 +457,8 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             env=env,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=90,
             check=False,
         )

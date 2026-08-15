@@ -156,6 +156,8 @@ DELTA_COMMAND_SPECS = [
     ("货币", {"money", "余额"}),
     ("流水", {"flows"}),
     ("藏品", {"资产"}),
+    ("成就", {"荣誉", "徽章"}),
+    ("成就分类", {"荣誉分类", "徽章分类", "成就盒子"}),
     ("出红记录", {"大红记录", "藏品记录", "大红收藏", "大红藏品", "大红海报", "藏品海报"}),
     ("封号记录", {"违规记录", "违规历史", "封号历史"}),
     ("特勤处状态", {"placestatus"}),
@@ -1527,6 +1529,14 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(藏品|资产)(?:\s+(.*))?", body):
             async for r in self._collection(event, (m.group(2) or "").strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:成就分类|荣誉分类|徽章分类|成就盒子)\s*(.*)", body):
+            async for r in self._honor_boxes(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:成就|荣誉|徽章)\s*(.*)", body):
+            async for r in self._honors(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(出红记录|大红记录|藏品记录|大红收藏|大红藏品|大红海报|藏品海报)(?:\s+(.+))?", body):
@@ -3965,6 +3975,179 @@ class DeltaForcePlugin(Star):
             else:
                 lines.append(f"{item['index']}. {item['dtEventTime']} {item['AddOrReduce']} 余额 {item['leftMoney']} {item['Reason']}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _honor_mode_and_args(arg: str) -> Tuple[Optional[str], int, str, str]:
+        mode = "sol"
+        page = 1
+        category = ""
+        error = ""
+        for part in str(arg or "").split():
+            low = part.lower()
+            if part in SOL_ALIASES or low in SOL_ALIASES:
+                mode = "sol"
+            elif part in MP_ALIASES or low in MP_ALIASES:
+                mode = "mp"
+            elif match := re.fullmatch(r"(?:page|页)?(\d+)", low):
+                page = max(1, int(match.group(1)))
+            elif match := re.fullmatch(r"(?:box|分类)[=:](.+)", part, flags=re.I):
+                category = match.group(1).strip()
+            elif not category:
+                category = part.strip()
+            else:
+                error = "格式：成就 [烽火/全面] [分类名或分类=ID] [页码]"
+                break
+        return mode, page, category, error
+
+    @staticmethod
+    def _honor_box_rows(response: Any) -> List[Dict[str, Any]]:
+        data = DeltaForcePlugin._data(response, {}) or {}
+        return [
+            item
+            for item in DeltaForcePlugin._first_list(data, ("list", "items", "boxes"))
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _honor_item_detail(item: Dict[str, Any]) -> Tuple[int, str, str]:
+        detail = item.get("detail") if isinstance(item.get("detail"), dict) else {}
+        levels = [
+            level
+            for level in detail.get("items") or []
+            if isinstance(level, dict)
+        ]
+        selected = max(levels, key=lambda value: DeltaForcePlugin._num(value.get("grade")), default={})
+        grade = int(DeltaForcePlugin._num(selected.get("grade")))
+        description = str(selected.get("desc") or "").strip()
+        conditions = selected.get("unlockCond") or []
+        if isinstance(conditions, str):
+            condition = conditions.strip()
+        else:
+            condition = "；".join(
+                str(value).strip()
+                for value in conditions
+                if str(value or "").strip()
+            )
+        if len(description) > 160:
+            description = description[:157].rstrip() + "..."
+        if len(condition) > 240:
+            condition = condition[:237].rstrip() + "..."
+        return grade, description, condition
+
+    async def _honor_boxes(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        mode, page, category, error = self._honor_mode_and_args(arg)
+        if error or category or page != 1:
+            yield event.plain_result("格式：成就分类 [烽火/全面]")
+            return
+        token = await self._need_token(event)
+        if not token:
+            yield event.plain_result("您尚未绑定账号，请先使用 登录 或 绑定 <token>。")
+            return
+        response = await self.client.honor_boxes(token, mode or "sol")
+        if not self._ok(response):
+            yield event.plain_result(f"查询成就分类失败：{self._message_of(response)}")
+            return
+        rows = self._honor_box_rows(response)
+        if not rows:
+            yield event.plain_result("当前模式暂无成就分类数据。")
+            return
+        rows.sort(key=lambda item: (self._num(item.get("sort")), self._num(item.get("boxID"))))
+        mode_name = "烽火地带" if mode == "sol" else "全面战场"
+        lines = [f"【{mode_name}成就分类】共 {len(rows)} 类"]
+        for index, item in enumerate(rows, 1):
+            lines.append(
+                f"{index}. {item.get('name') or '未命名分类'}｜分类 ID: {item.get('boxID', '-')}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    async def _honors(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        mode, page, category, error = self._honor_mode_and_args(arg)
+        if error:
+            yield event.plain_result(error)
+            return
+        token = await self._need_token(event)
+        if not token:
+            yield event.plain_result("您尚未绑定账号，请先使用 登录 或 绑定 <token>。")
+            return
+        honor_response, box_response = await asyncio.gather(
+            self.client.honors(token, mode or "sol"),
+            self.client.honor_boxes(token, mode or "sol"),
+        )
+        if not self._ok(honor_response):
+            yield event.plain_result(f"查询个人成就失败：{self._message_of(honor_response)}")
+            return
+        data = self._data(honor_response, {}) or {}
+        honor_map = data.get("honorMap") if isinstance(data, dict) else None
+        if not isinstance(honor_map, dict) or not honor_map:
+            yield event.plain_result("当前模式暂无已解锁成就。")
+            return
+
+        boxes = self._honor_box_rows(box_response) if self._ok(box_response) else []
+        box_names = {
+            str(item.get("boxID")): str(item.get("name") or "").strip()
+            for item in boxes
+            if item.get("boxID") is not None
+        }
+        selected_box_ids = set(honor_map)
+        if category:
+            normalized = category.casefold()
+            if category.isdigit():
+                selected_box_ids = {category} if category in honor_map else set()
+            elif normalized in {"未分类", "其他"}:
+                selected_box_ids = {"0"} if "0" in honor_map else set()
+            else:
+                selected_box_ids = {
+                    box_id
+                    for box_id, name in box_names.items()
+                    if normalized in name.casefold()
+                }
+            if not selected_box_ids:
+                yield event.plain_result(
+                    f"未找到成就分类“{category}”，请发送 成就分类 {('烽火' if mode == 'sol' else '全面')} 查看分类。"
+                )
+                return
+
+        rows: List[Tuple[str, str, Dict[str, Any]]] = []
+        for box_id, values in honor_map.items():
+            if str(box_id) not in selected_box_ids or not isinstance(values, list):
+                continue
+            box_name = box_names.get(str(box_id)) or ("未分类" if str(box_id) == "0" else f"分类 {box_id}")
+            for item in values:
+                if isinstance(item, dict):
+                    rows.append((str(box_id), box_name, item))
+        rows.sort(key=lambda value: (value[1], self._num(value[2].get("sort")), str(value[2].get("name") or "")))
+        if not rows:
+            yield event.plain_result("当前筛选条件下暂无已解锁成就。")
+            return
+
+        page_size = 10
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        start = (page - 1) * page_size
+        page_rows = rows[start : start + page_size]
+        mode_name = "烽火地带" if mode == "sol" else "全面战场"
+        title_filter = f"｜{category}" if category else ""
+        lines = [f"【{mode_name}个人成就{title_filter}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        for index, (box_id, box_name, item) in enumerate(page_rows, start + 1):
+            grade, description, condition = self._honor_item_detail(item)
+            grade_text = f"｜{grade} 级" if grade > 0 else ""
+            lines.append(
+                f"{index}. [{box_name}] {item.get('name') or '未命名成就'}{grade_text}\n"
+                f"分类 ID: {box_id}｜成就 ID: {item.get('honorID') or item.get('id') or '-'}"
+                + (f"\n{description}" if description else "")
+                + (f"\n解锁条件: {condition}" if condition else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
 
     async def _collection(self, event: AstrMessageEvent, kind: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

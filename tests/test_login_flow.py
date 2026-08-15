@@ -524,6 +524,11 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             DELTA_COMMAND_SPECS,
         )
         self.assertIn(("改枪方案复审", {"改枪码复审"}), DELTA_COMMAND_SPECS)
+        self.assertIn(("成就", {"荣誉", "徽章"}), DELTA_COMMAND_SPECS)
+        self.assertIn(
+            ("成就分类", {"荣誉分类", "徽章分类", "成就盒子"}),
+            DELTA_COMMAND_SPECS,
+        )
         self.assertIn(
             (
                 "微信安全中心授权登录",

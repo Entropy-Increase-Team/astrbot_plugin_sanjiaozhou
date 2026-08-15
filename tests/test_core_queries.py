@@ -403,6 +403,162 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         plugin._render_identity = identity
         return plugin
 
+    async def test_honor_client_uses_authoritative_person_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+
+        await client.honors("fixture-token", "mp")
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/person/honor",
+            params={"solutionType": "mp"},
+            framework_token="fixture-token",
+        )
+
+        client.get.reset_mock()
+        await client.honor_boxes("fixture-token", "sol")
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/person/honorbox",
+            params={"solutionType": "sol"},
+            framework_token="fixture-token",
+        )
+
+    async def test_honor_commands_support_mode_category_and_pagination(self):
+        honors = [
+            {
+                "id": 10000 + index,
+                "honorID": 2000 + index,
+                "name": f"测试成就 {index}",
+                "boxID": 1002,
+                "sort": index,
+                "detail": {
+                    "items": [
+                        {
+                            "grade": 1,
+                            "desc": "初级描述",
+                            "unlockCond": ["初级条件"],
+                        },
+                        {
+                            "grade": 4,
+                            "desc": f"高级描述 {index}",
+                            "unlockCond": [f"高级条件 {index}"],
+                        },
+                    ]
+                },
+            }
+            for index in range(1, 12)
+        ]
+        client = SimpleNamespace(
+            honors=AsyncMock(
+                return_value={"code": 0, "data": {"honorMap": {"1002": honors}}}
+            ),
+            honor_boxes=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "list": [
+                            {
+                                "boxID": 1002,
+                                "name": "全勤纪念",
+                                "solutionType": "mp",
+                                "sort": 1,
+                            }
+                        ]
+                    },
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        categories = await _collect(plugin._dispatch(_Event(), "成就分类 全面"))
+        second_page = await _collect(
+            plugin._dispatch(_Event(), "成就 全面 分类=1002 页2")
+        )
+        named_filter = await _collect(
+            plugin._dispatch(_Event(), "荣誉 全面 全勤纪念")
+        )
+        page_out = await _collect(
+            plugin._dispatch(_Event(), "徽章 全面 页3")
+        )
+
+        self.assertIn("【全面战场成就分类】", categories[0]["text"])
+        self.assertIn("全勤纪念｜分类 ID: 1002", categories[0]["text"])
+        self.assertIn("第 2/2 页，共 11 项", second_page[0]["text"])
+        self.assertIn("测试成就 11｜4 级", second_page[0]["text"])
+        self.assertIn("高级条件 11", second_page[0]["text"])
+        self.assertNotIn("初级描述", second_page[0]["text"])
+        self.assertIn("全面战场个人成就｜全勤纪念", named_filter[0]["text"])
+        self.assertIn("页码超出范围，当前共 2 页", page_out[0]["text"])
+        self.assertEqual(client.honors.await_args_list[0].args, ("fixture-token", "mp"))
+        self.assertTrue(
+            all(call.args == ("fixture-token", "mp") for call in client.honor_boxes.await_args_list)
+        )
+
+    async def test_honor_commands_handle_empty_error_and_metadata_fallback(self):
+        client = SimpleNamespace(
+            honors=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"honorMap": {}}},
+                    {
+                        "code": 0,
+                        "data": {
+                            "honorMap": {
+                                "0": [
+                                    {
+                                        "honorID": 2099,
+                                        "name": "铁三角",
+                                        "detail": {"items": []},
+                                    }
+                                ]
+                            }
+                        },
+                    },
+                    {"code": 401, "message": "凭证已失效"},
+                    {
+                        "code": 0,
+                        "data": {
+                            "honorMap": {
+                                "1002": [{"honorID": 2011, "name": "七日限定"}]
+                            }
+                        },
+                    },
+                ]
+            ),
+            honor_boxes=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 503, "message": "分类服务暂不可用"},
+                    {"code": 0, "data": {"list": []}},
+                    {
+                        "code": 0,
+                        "data": {"list": [{"boxID": 1002, "name": "全勤纪念"}]},
+                    },
+                    {"code": 0, "data": {"list": []}},
+                    {"code": 500, "message": "分类查询异常"},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+
+        categories_empty = await _collect(plugin._honor_boxes(_Event(), ""))
+        categories_error = await _collect(plugin._honor_boxes(_Event(), ""))
+        honors_empty = await _collect(plugin._honors(_Event(), ""))
+        metadata_fallback = await _collect(plugin._honors(_Event(), ""))
+        honors_error = await _collect(plugin._honors(_Event(), ""))
+        missing_category = await _collect(
+            plugin._honors(_Event(), "分类=不存在")
+        )
+        invalid_categories = await _collect(
+            plugin._honor_boxes(_Event(), "烽火 多余参数")
+        )
+
+        self.assertIn("暂无成就分类", categories_empty[0]["text"])
+        self.assertIn("分类服务暂不可用", categories_error[0]["text"])
+        self.assertIn("暂无已解锁成就", honors_empty[0]["text"])
+        self.assertIn("[未分类] 铁三角", metadata_fallback[0]["text"])
+        self.assertIn("凭证已失效", honors_error[0]["text"])
+        self.assertIn("未找到成就分类", missing_category[0]["text"])
+        self.assertIn("格式：成就分类", invalid_categories[0]["text"])
+
     async def test_help_reports_configuration_read_error(self):
         plugin = self._plugin()
         plugin.plugin_path = str(PLUGIN_DIR)
@@ -452,6 +608,8 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("复制改枪码 [方案ID]", titles)
                 self.assertIn("我的改枪收藏夹", titles)
                 self.assertIn("改枪方案复审 [方案ID] [原因]", titles)
+                self.assertIn("成就 [模式] [分类/页码]", titles)
+                self.assertIn("成就分类 [模式]", titles)
         finally:
             if renderer is not None:
                 await renderer.close()
@@ -515,7 +673,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [item["version"] for item in changelogs],
-            ["0.4.21", "0.4.20"],
+            ["0.4.22", "0.4.21"],
         )
         self.assertEqual(changelogs[0]["sections"][0]["title"], "新增")
         visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"

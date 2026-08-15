@@ -397,6 +397,20 @@ class DeltaForceClient:
     async def title(self, framework_token: str):
         return await self.get("/api/v1/df/person/title", framework_token=framework_token)
 
+    async def honors(self, framework_token: str, mode: str = "sol"):
+        return await self.get(
+            "/api/v1/df/person/honor",
+            params={"solutionType": mode or "sol"},
+            framework_token=framework_token,
+        )
+
+    async def honor_boxes(self, framework_token: str, mode: str = "sol"):
+        return await self.get(
+            "/api/v1/df/person/honorbox",
+            params={"solutionType": mode or "sol"},
+            framework_token=framework_token,
+        )
+
     async def red_list(self, framework_token: str):
         return await self.get("/api/v1/df/person/redlist", framework_token=framework_token)
 
