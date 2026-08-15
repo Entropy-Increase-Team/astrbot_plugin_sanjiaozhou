@@ -87,11 +87,11 @@ helpList:
           title: "安全中心登陆"
           desc: "通过 QQSafe 安全中心扫码登录"
         - icon: 71
-          title: "(QQ/微信)授权登录 [回调URL]"
-          desc: "授权后提交浏览器最终停留的完整回调URL"
+          title: "(QQ/微信)授权登录 [回调/授权码]"
+          desc: "提交完整回调URL或当前会话授权码"
         - icon: 71
-          title: "微信安全中心授权登录 [回调URL]"
-          desc: "通过 Gamesafe 微信授权并绑定安全中心账号"
+          title: "微信安全中心授权 [回调/授权码]"
+          desc: "通过 Gamesafe 微信授权并绑定账号"
         - icon: 52
           title: "网页登陆"
           desc: "在授权页选择已有账号，批准后自动绑定"

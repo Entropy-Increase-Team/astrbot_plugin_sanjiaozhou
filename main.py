@@ -620,6 +620,28 @@ class DeltaForcePlugin(Star):
         return code, state
 
     @staticmethod
+    def _valid_oauth_code(value: str) -> bool:
+        code = str(value or "").strip()
+        return bool(code and len(code) <= 2048 and not any(char.isspace() for char in code))
+
+    def _prune_oauth_sessions(self, now_millis: Optional[int] = None) -> None:
+        current = (
+            now_millis
+            if now_millis is not None
+            else int(dt.datetime.now().timestamp() * 1000)
+        )
+        expired = []
+        for key, session in self._oauth_sessions.items():
+            raw_expire = session.get("expire")
+            if not raw_expire:
+                continue
+            expire = self._expiry_millis(raw_expire)
+            if not expire or current >= expire:
+                expired.append(key)
+        for key in expired:
+            self._oauth_sessions.pop(key, None)
+
+    @staticmethod
     async def _recall_sensitive_message(
         event: AstrMessageEvent,
         source: str = "敏感凭证",
@@ -2606,6 +2628,7 @@ class DeltaForcePlugin(Star):
         }.get(pf, "qq授权登录")
 
         if not extra:
+            self._prune_oauth_sessions()
             res = await self.client.oauth_url(pf, platform_id=self._user_identifier(event), bot_id=self._client_id(event))
             if not self._ok(res):
                 yield event.plain_result(f"获取 OAuth 链接失败: {self._message_of(res)}")
@@ -2617,21 +2640,29 @@ class DeltaForcePlugin(Star):
             url = data.get("loginUrl") or data.get("login_url") or data.get("auth_url") or data.get("oauth_url") or data.get("url") or ""
             framework_token = data.get("frameworkToken") or data.get("framework_token") or ""
             state = str(data.get("state") or framework_token).strip()
+            now_ms = int(dt.datetime.now().timestamp() * 1000)
             expire = self._expiry_millis(
                 data.get("expire") or data.get("expires_at") or data.get("expiresAt")
             )
+            if not expire:
+                expire = now_ms + 10 * 60 * 1000
             if not url or not framework_token or not state:
                 yield event.plain_result("OAuth 接口响应缺少授权链接或会话标识，请稍后重试。")
+                return
+            if expire <= now_ms:
+                yield event.plain_result("OAuth 授权链接生成后已过期，请重新获取。")
                 return
             self._oauth_sessions[session_key] = {
                 "framework_token": str(framework_token),
                 "state": state,
                 "expire": expire,
             }
+            remaining_seconds = self._remaining_login_seconds(expire, 600, now_ms)
             yield event.plain_result(
                 f"请在对应客户端中打开以下链接完成授权：\n{url}\n\n"
-                f"授权后复制浏览器最终停留的完整回调 URL，并发送：\n"
-                f"{command_name} <完整回调URL>\n\n"
+                f"链接约 {remaining_seconds} 秒内有效。授权后发送以下任一种内容：\n"
+                f"{command_name} <完整回调URL>\n"
+                f"{command_name} <授权码>\n\n"
                 "回调 URL 含敏感授权信息，请勿转发给他人。"
             )
             return
@@ -2639,22 +2670,52 @@ class DeltaForcePlugin(Star):
         recalled = await self._recall_oauth_callback(event)
         notice = self._privacy_notice(recalled, "授权信息")
         privacy_notice = f"\n{notice}" if notice else ""
-        code, state = self._oauth_callback_parts(extra)
-        if not code or not state:
-            yield event.plain_result(
-                "回调 URL 无效，必须是包含 code 和 state 的完整 http(s) 地址。"
-                + privacy_notice
-            )
-            return
-
         session = self._oauth_sessions.get(session_key)
         now_ms = int(dt.datetime.now().timestamp() * 1000)
-        if session and session.get("expire") and now_ms >= int(session["expire"]):
+        session_expire = self._expiry_millis((session or {}).get("expire"))
+        if session and session.get("expire") and (
+            not session_expire or now_ms >= session_expire
+        ):
             self._oauth_sessions.pop(session_key, None)
             yield event.plain_result(
                 "OAuth 授权会话已过期，请重新获取授权链接。" + privacy_notice
             )
             return
+        self._prune_oauth_sessions(now_ms)
+
+        raw_extra = str(extra or "").strip()
+        code, callback_state = self._oauth_callback_parts(raw_extra)
+        try:
+            parsed = urlparse(raw_extra)
+            is_callback_url = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        except ValueError:
+            is_callback_url = False
+        if is_callback_url:
+            if not code:
+                yield event.plain_result(
+                    "回调 URL 无效，未找到 code 参数。" + privacy_notice
+                )
+                return
+            state = callback_state or str((session or {}).get("state") or "")
+            if not state:
+                yield event.plain_result(
+                    "回调 URL 无效：缺少 state，且当前没有可用 OAuth 会话，请重新获取授权链接。"
+                    + privacy_notice
+                )
+                return
+        else:
+            if not session:
+                yield event.plain_result(
+                    "单独提交授权码前，请先发送授权登录命令获取链接；否则请提交包含 code 和 state 的完整回调 URL。"
+                    + privacy_notice
+                )
+                return
+            if not self._valid_oauth_code(raw_extra):
+                yield event.plain_result("授权码格式无效，请重新复制。" + privacy_notice)
+                return
+            code = raw_extra
+            state = str(session.get("state") or "")
+
         if session and state != session.get("state"):
             yield event.plain_result(
                 "OAuth 回调的 state 与当前会话不匹配，请重新获取授权链接。"
@@ -2663,16 +2724,28 @@ class DeltaForcePlugin(Star):
             return
 
         framework_token = str((session or {}).get("framework_token") or state)
+        payload = {
+            "frameworkToken": framework_token,
+            "state": state,
+        }
+        if is_callback_url:
+            payload["callbackUrl"] = raw_extra
+        else:
+            payload["authCode"] = code
         res = await self.client.oauth_submit(
             pf,
-            {
-                "callbackUrl": extra.strip(),
-                "frameworkToken": framework_token,
-            },
+            payload,
         )
         if not self._ok(res):
+            safe_message = self._redact_secret(
+                self._message_of(res),
+                raw_extra,
+                code,
+                state,
+                framework_token,
+            )
             yield event.plain_result(
-                f"OAuth 授权提交失败: {self._message_of(res)}{privacy_notice}"
+                f"OAuth 授权提交失败: {safe_message}{privacy_notice}"
             )
             return
         data = self._data(res, {}) or {}
