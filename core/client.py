@@ -488,6 +488,41 @@ class DeltaForceClient:
         params = {"slotId": int(slot_id)} if slot_id is not None else {}
         return await self.get("/api/v1/df/quest/collector/random", params=params)
 
+    async def quest_items(self, search: str = "", page: int = 1, limit: int = 8):
+        return await self.get(
+            "/api/v1/df/quest/items",
+            params={
+                "search": str(search or "").strip()[:100],
+                "page": max(1, int(page)),
+                "limit": max(1, min(int(limit), 200)),
+            },
+        )
+
+    async def quest_item_detail(self, item_id: str):
+        safe_item_id = quote(str(item_id or "").strip(), safe="")
+        return await self.get(f"/api/v1/df/quest/item/{safe_item_id}")
+
+    async def rebirth_quest_lines(self):
+        return await self.get("/api/v1/df/quest/rebirth/lines")
+
+    async def rebirth_quest_line_detail(self, line_id: int):
+        return await self.get(f"/api/v1/df/quest/rebirth/line/{int(line_id)}")
+
+    async def rebirth_prerequest_groups(self, line_id: Optional[int] = None):
+        params = {"lineId": int(line_id)} if line_id is not None else {}
+        return await self.get(
+            "/api/v1/df/quest/rebirth/prerequest-groups",
+            params=params,
+        )
+
+    async def rebirth_prerequest_group_detail(self, group_id: int):
+        return await self.get(
+            f"/api/v1/df/quest/rebirth/prerequest-group/{int(group_id)}"
+        )
+
+    async def rebirth_text_configs(self):
+        return await self.get("/api/v1/df/quest/rebirth/text-configs")
+
     async def quest_stats(self):
         return await self.get("/api/v1/df/quest/stats")
 

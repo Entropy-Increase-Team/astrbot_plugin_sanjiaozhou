@@ -260,6 +260,13 @@ DELTA_COMMAND_SPECS = [
     ("收集任务奖励", {"收集者奖励", "收集奖励"}),
     ("收集任务槽位", {"收集者槽位", "收集槽位"}),
     ("随机收集任务", {"随机收集者任务", "收集任务随机"}),
+    ("任务物品", {"任务物品列表"}),
+    ("任务物品详情", {"任务物品资料"}),
+    ("重生任务线", {"重生任务列表"}),
+    ("重生任务线详情", {"重生任务线资料"}),
+    ("重生前置组", {"重生前置任务组"}),
+    ("重生前置组详情", {"重生前置任务组详情"}),
+    ("重生文本配置", {"重生文本"}),
 ]
 
 
@@ -1611,6 +1618,34 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(?:随机收集任务|随机收集者任务|收集任务随机)\s*(.*)", body):
             async for r in self._random_collector_tasks(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务物品详情|任务物品资料)\s*(.*)", body):
+            async for r in self._quest_item_detail(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务物品|任务物品列表)\s*(.*)", body):
+            async for r in self._quest_items(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:重生任务线详情|重生任务线资料)\s*(.*)", body):
+            async for r in self._rebirth_quest_line_detail(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:重生任务线|重生任务列表)\s*(.*)", body):
+            async for r in self._rebirth_quest_lines(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:重生前置组详情|重生前置任务组详情)\s*(.*)", body):
+            async for r in self._rebirth_prerequest_group_detail(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:重生前置组|重生前置任务组)\s*(.*)", body):
+            async for r in self._rebirth_prerequest_groups(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:重生文本配置|重生文本)\s*(.*)", body):
+            async for r in self._rebirth_text_configs(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(?:任务线|任务线列表)\s*(.*)", body):
@@ -4430,6 +4465,33 @@ class DeltaForcePlugin(Star):
         return DeltaForcePlugin._positive_id_page_args(arg, usage, "任务线")
 
     @staticmethod
+    def _quest_item_search_args(arg: str) -> Tuple[str, int, str]:
+        parts = str(arg or "").split()
+        keyword_parts: List[str] = []
+        page = 1
+        page_seen = False
+        for index, part in enumerate(parts):
+            low = part.casefold().replace("：", "=")
+            if match := re.fullmatch(r"(?:page|p|页)=?(\d+)", low):
+                if page_seen:
+                    return "", 1, "页码只能指定一次。"
+                page = int(match.group(1))
+                page_seen = True
+            elif index == len(parts) - 1 and index > 0 and re.fullmatch(r"\d+", low):
+                if page_seen:
+                    return "", 1, "页码只能指定一次。"
+                page = int(low)
+                page_seen = True
+            else:
+                keyword_parts.append(part)
+        if page < 1 or page > 10000:
+            return "", 1, "页码必须在 1 到 10000 之间。"
+        keyword = " ".join(keyword_parts).strip()
+        if len(keyword) > 100:
+            return "", 1, "搜索关键词不能超过 100 个字符。"
+        return keyword, page, ""
+
+    @staticmethod
     def _quest_filter_page_args(
         arg: str,
         filter_pattern: str,
@@ -5361,6 +5423,394 @@ class DeltaForcePlugin(Star):
         if len(rows) > len(visible_rows):
             lines.append(f"结果较多，仅展示前 {len(visible_rows)} 项。")
         lines.append("结果由后端按当前槽位概率即时随机生成。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_items(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        search, page, error = self._quest_item_search_args(arg)
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.quest_items(search=search, page=page, limit=8)
+        if not self._ok(response):
+            yield event.plain_result(f"查询任务物品失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            value
+            for value in self._first_list(data, ("data", "list", "items"))
+            if isinstance(value, dict)
+        ]
+        total = max(len(rows), int(self._num(data.get("total")))) if isinstance(data, dict) else len(rows)
+        total_pages = (
+            max(1, int(self._num(data.get("totalPages"))))
+            if isinstance(data, dict)
+            else 1
+        )
+        if page > total_pages and total > 0:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        if not rows:
+            yield event.plain_result("没有找到符合条件的任务物品。")
+            return
+        heading = f"搜索: {search}" if search else "全部物品"
+        lines = [f"【任务物品｜{heading}】第 {page}/{total_pages} 页，共 {total} 项"]
+        start = (page - 1) * 8
+        for index, item in enumerate(rows, start + 1):
+            name = self._quest_text(
+                item.get("name") or item.get("shortName"),
+                "未命名物品",
+            )[:80]
+            sub_name = self._quest_text(item.get("subName") or item.get("shortName"))[:80]
+            details = [
+                f"物品 ID: {item.get('itemId') or '-'}",
+                f"类型: {int(self._num(item.get('gameItemType')))}",
+                f"品质: {int(self._num(item.get('quality')))}",
+                f"堆叠: {max(0, int(self._num(item.get('maxStackCount'))))}",
+            ]
+            lines.append(
+                f"{index}. {name}"
+                + (f"｜{sub_name}" if sub_name and sub_name != name else "")
+                + "\n"
+                + "｜".join(details)
+            )
+        lines.append("发送 任务物品详情 <物品ID> 查看完整资料。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_item_detail(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        item_id = str(arg or "").strip()
+        if not re.fullmatch(r"[^\s/?#]{1,100}", item_id):
+            yield event.plain_result("格式：任务物品详情 <物品ID>")
+            return
+        response = await self.client.quest_item_detail(item_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询任务物品详情失败：{self._message_of(response)}")
+            return
+        item = self._payload(response, {}) or {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("任务物品详情为空。")
+            return
+        name = self._quest_text(
+            item.get("name") or item.get("shortName"),
+            "未命名物品",
+        )[:100]
+        desc = self._quest_text(
+            item.get("description") or item.get("shortDescription")
+        )[:400]
+        aliases = []
+        for key in ("subName", "shortName"):
+            value = self._quest_text(item.get(key))[:80]
+            if value and value != name and value not in aliases:
+                aliases.append(value)
+        length = max(0, int(self._num(item.get("length"))))
+        width = max(0, int(self._num(item.get("width"))))
+        capacity = max(0, self._num(item.get("capacity")))
+        lines = [
+            f"【任务物品详情｜{name}】",
+            f"物品 ID: {item.get('itemId') or item_id}",
+            f"类型: {int(self._num(item.get('gameItemType')))}｜品质: {int(self._num(item.get('quality')))}｜材料类型: {int(self._num(item.get('material')))}",
+            f"堆叠上限: {max(0, int(self._num(item.get('maxStackCount'))))}｜尺寸: {length}×{width}｜容量: {capacity:g}",
+            "属性: "
+            + "｜".join(
+                [
+                    f"可分解: {'是' if item.get('canDecomposed') else '否'}",
+                    f"可使用: {'是' if item.get('canUsed') else '否'}",
+                    f"可赠送: {'是' if item.get('canBeGift') else '否'}",
+                    f"可存安全箱: {'是' if item.get('canStoreInSafeBox') else '否'}",
+                ]
+            ),
+        ]
+        if aliases:
+            lines.insert(2, "其他名称: " + "、".join(aliases))
+        if desc:
+            lines.append(desc)
+        yield event.plain_result("\n".join(lines))
+
+    async def _rebirth_quest_lines(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        page, error = self._quest_page_arg(arg, "格式：重生任务线 [页码]")
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.rebirth_quest_lines()
+        if not self._ok(response):
+            yield event.plain_result(f"查询重生任务线失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            value
+            for value in self._first_list(data, ("data", "list", "items"))
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("暂无重生任务线资料。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        start = (page - 1) * page_size
+        lines = [f"【重生任务线】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(item.get("name"), "未命名重生任务线")[:100]
+            desc = self._quest_text(item.get("desc"))[:160]
+            details = [
+                f"任务线 ID: {item.get('lineId') or '-'}",
+                f"成长等级: {max(0, int(self._num(item.get('growthLevel'))))}",
+                f"每周经验上限: {max(0, int(self._num(item.get('weeklyQuestExpLimit'))))}",
+            ]
+            if item.get("startTime") or item.get("endTime"):
+                details.append(f"周期: {item.get('startTime') or '-'} 至 {item.get('endTime') or '-'}")
+            lines.append(
+                f"{index}. {name}\n"
+                + "｜".join(details)
+                + (f"\n{desc}" if desc else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _rebirth_quest_line_detail(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        line_id, page, error = self._positive_id_page_args(
+            arg,
+            "格式：重生任务线详情 <任务线ID> [页码]",
+            "重生任务线",
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.rebirth_quest_line_detail(line_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询重生任务线详情失败：{self._message_of(response)}")
+            return
+        item = self._payload(response, {}) or {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("重生任务线详情为空。")
+            return
+        raw_quests = item.get("quests") or {}
+        quest_values = raw_quests.values() if isinstance(raw_quests, dict) else raw_quests
+        quests = [value for value in quest_values if isinstance(value, dict)]
+        quests.sort(key=lambda value: int(self._num(value.get("questId"))))
+        page_size = 8
+        total_pages = max(1, (len(quests) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        name = self._quest_text(item.get("name"), "未命名重生任务线")[:100]
+        desc = self._quest_text(item.get("desc"))[:300]
+        lines = [
+            f"【重生任务线详情｜{name}】第 {page}/{total_pages} 页，共 {len(quests)} 个前置任务",
+            f"任务线 ID: {item.get('lineId') or line_id}｜成长等级: {max(0, int(self._num(item.get('growthLevel'))))}｜每周经验上限: {max(0, int(self._num(item.get('weeklyQuestExpLimit'))))}",
+            f"首领任务线: {item.get('bossQuestLineId') or '-'}｜士兵任务线: {item.get('soldierQuestLineId') or '-'}｜文本配置: {item.get('textRowId') or '-'}",
+        ]
+        if desc:
+            lines.append(desc)
+        group_ids = item.get("prologueQuestGroupId") or []
+        if not isinstance(group_ids, list):
+            group_ids = [group_ids]
+        if group_ids:
+            lines.append("前置组 ID: " + "、".join(str(value) for value in group_ids[:12]))
+        text_config = item.get("textConfig") if isinstance(item.get("textConfig"), dict) else {}
+        config_name = self._quest_text(text_config.get("name"))[:100]
+        if config_name:
+            lines.append(f"文本主题: {config_name}")
+        final_parts = []
+        for key, label in (("bossFinalQuest", "首领最终任务"), ("soldierFinalQuest", "士兵最终任务")):
+            value = item.get(key) if isinstance(item.get(key), dict) else {}
+            if value:
+                final_parts.append(
+                    f"{label}: {self._quest_text(value.get('name'), '未命名')[:60]}({value.get('questId') or '-'})"
+                )
+        lines.extend(final_parts)
+        start = (page - 1) * page_size
+        if quests:
+            lines.append("前置任务")
+            for index, quest in enumerate(quests[start : start + page_size], start + 1):
+                quest_name = self._quest_text(quest.get("name"), "未命名任务")[:80]
+                quest_desc = self._quest_text(quest.get("desc"))[:120]
+                lines.append(
+                    f"{index}. {quest_name}｜任务 ID: {quest.get('questId') or '-'}｜等级: {max(0, int(self._num(quest.get('acceptRequiredLevel'))))}"
+                    + (f"\n{quest_desc}" if quest_desc else "")
+                )
+        else:
+            lines.append("暂无前置任务资料。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _rebirth_prerequest_groups(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        line_id, page, error = self._quest_filter_page_args(
+            arg,
+            "任务线|line|lineid",
+            "格式：重生前置组 [任务线=数字] [页码]",
+            minimum=1,
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.rebirth_prerequest_groups(line_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询重生前置组失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            value
+            for value in self._first_list(data, ("data", "list", "items"))
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("没有找到符合条件的重生前置组。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        heading = f"任务线 {line_id}" if line_id is not None else "全部分组"
+        start = (page - 1) * page_size
+        lines = [f"【重生前置组｜{heading}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(item.get("name"), "未命名前置组")[:100]
+            desc = self._quest_text(item.get("desc"))[:140]
+            sequence = self._quest_text(item.get("sequenceStr"), str(item.get("sequence") or "-"))[:60]
+            quest_ids = item.get("questIdArr") or []
+            if not isinstance(quest_ids, list):
+                quest_ids = [quest_ids]
+            quest_text = "、".join(str(value) for value in quest_ids[:10])
+            lines.append(
+                f"{index}. {name}\n"
+                f"分组 ID: {item.get('groupId') or '-'}｜顺序: {sequence}｜类型: {item.get('groupType') or '-'}｜星数: {max(0, int(self._num(item.get('groupStarCount'))))}"
+                + (f"\n{desc}" if desc else "")
+                + (f"\n任务 ID: {quest_text}" if quest_text else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _rebirth_prerequest_group_detail(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        group_id, page, error = self._positive_id_page_args(
+            arg,
+            "格式：重生前置组详情 <分组ID> [页码]",
+            "重生前置组",
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.rebirth_prerequest_group_detail(group_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询重生前置组详情失败：{self._message_of(response)}")
+            return
+        item = self._payload(response, {}) or {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("重生前置组详情为空。")
+            return
+        quests = [value for value in (item.get("quests") or []) if isinstance(value, dict)]
+        quests.sort(key=lambda value: int(self._num(value.get("questId"))))
+        page_size = 8
+        total_pages = max(1, (len(quests) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        name = self._quest_text(item.get("name"), "未命名前置组")[:100]
+        desc = self._quest_text(item.get("desc"))[:300]
+        sequence = self._quest_text(item.get("sequenceStr"), str(item.get("sequence") or "-"))[:80]
+        lines = [
+            f"【重生前置组详情｜{name}】第 {page}/{total_pages} 页，共 {len(quests)} 个任务",
+            f"分组 ID: {item.get('groupId') or group_id}｜顺序: {sequence}｜类型: {item.get('groupType') or '-'}｜星数: {max(0, int(self._num(item.get('groupStarCount'))))}",
+        ]
+        if desc:
+            lines.append(desc)
+        start = (page - 1) * page_size
+        if quests:
+            for index, quest in enumerate(quests[start : start + page_size], start + 1):
+                quest_name = self._quest_text(quest.get("name"), "未命名任务")[:80]
+                quest_desc = self._quest_text(quest.get("desc"))[:120]
+                objectives = quest.get("objectiveList") or []
+                rewards = quest.get("rewardList") or []
+                lines.append(
+                    f"{index}. {quest_name}\n"
+                    f"任务 ID: {quest.get('questId') or '-'}｜类型: {int(self._num(quest.get('questType')))}｜等级: {max(0, int(self._num(quest.get('acceptRequiredLevel'))))}｜目标: {len(objectives) if isinstance(objectives, list) else 0}｜奖励: {len(rewards) if isinstance(rewards, list) else 0}"
+                    + (f"\n{quest_desc}" if quest_desc else "")
+                )
+        else:
+            lines.append("暂无任务资料。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _rebirth_text_configs(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        page, error = self._quest_page_arg(arg, "格式：重生文本配置 [页码]")
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.rebirth_text_configs()
+        if not self._ok(response):
+            yield event.plain_result(f"查询重生文本配置失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            value
+            for value in self._first_list(data, ("data", "list", "items"))
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("暂无重生文本配置。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        start = (page - 1) * page_size
+        lines = [f"【重生文本配置】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(item.get("name"), "未命名配置")[:100]
+            boss_name = self._quest_text(item.get("bossName"))[:60]
+            boss_code = self._quest_text(item.get("bossCodeName"))[:60]
+            prologue = self._quest_text(item.get("prologueQuestName"))[:80]
+            weekly = self._quest_text(item.get("weeklyName"))[:80]
+            challenge = self._quest_text(item.get("challengeName"))[:80]
+            experience = self._quest_text(item.get("experienceName"))[:80]
+            labels = [
+                self._quest_text(item.get(key))[:40]
+                for key in ("tagPrerequest", "tagWeekly", "tagChallenge")
+            ]
+            summary = "｜".join(
+                value
+                for value in (
+                    f"首领: {boss_name}" if boss_name else "",
+                    f"代号: {boss_code}" if boss_code else "",
+                    f"序章: {prologue}" if prologue else "",
+                    f"每周: {weekly}" if weekly else "",
+                    f"挑战: {challenge}" if challenge else "",
+                    f"历练: {experience}" if experience else "",
+                )
+                if value
+            )
+            lines.append(
+                f"{index}. {name}｜配置 ID: {item.get('textRowId') or '-'}"
+                + (f"\n{summary}" if summary else "")
+                + (f"\n标签: {'、'.join(value for value in labels if value)}" if any(labels) else "")
+            )
         yield event.plain_result("\n\n".join(lines))
 
     async def _quest_search(
