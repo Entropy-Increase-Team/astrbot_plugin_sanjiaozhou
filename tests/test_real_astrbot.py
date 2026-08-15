@@ -19,6 +19,7 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
         script = textwrap.dedent(
             """
             import asyncio
+            import importlib
             from collections import Counter
             from types import SimpleNamespace
             from unittest.mock import patch
@@ -30,6 +31,7 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             )
             from astrbot.core.star.filter.command import CommandFilter
             from astrbot.core.star.filter.regex import RegexFilter
+            from astrbot.core.star import command_management
             from astrbot.core.star.star import star_registry
             from astrbot.core.star.star_handler import star_handlers_registry
             from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
@@ -180,9 +182,148 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
                 assert active_commands == ["数据"]
 
 
+            async def verify_cross_plugin_conflict_resolution():
+                for module in (
+                    "astrbot_plugin_endfield.main",
+                    "astrbot.builtin_stars.builtin_commands.main",
+                ):
+                    importlib.import_module(module)
+
+                context = SimpleNamespace(
+                    astrbot_config={
+                        "admins_id": [],
+                        "wake_prefix": ["!!"],
+                        "plugin_set": ["*"],
+                        "disable_builtin_commands": False,
+                        "platform_settings": {
+                            "no_permission_reply": True,
+                            "friend_message_needs_wake_prefix": True,
+                            "ignore_bot_self_message": False,
+                            "ignore_at_all": False,
+                            "unique_session": False,
+                        },
+                    }
+                )
+                stage = WakingCheckStage()
+                await stage.initialize(context)
+
+                async def passthrough(_event, active_handlers):
+                    return active_handlers
+
+                async def wake(message):
+                    event = PipelineEvent("!!" + message)
+                    with patch.object(
+                        SessionPluginManager,
+                        "filter_handlers_by_session",
+                        new=passthrough,
+                    ):
+                        await stage.process(event)
+                    return event.get_extra("activated_handlers", [])
+
+                def plugin_hits(active_handlers):
+                    return [
+                        handler
+                        for handler in active_handlers
+                        if handler.handler_module_path == module_name
+                    ]
+
+                before = {
+                    "help": await wake("help"),
+                    "tts": await wake("tts 麦晓雯 你好"),
+                    "干员列表": await wake("干员列表"),
+                }
+                assert len(plugin_hits(before["help"])) == 1
+                assert len(plugin_hits(before["tts"])) == 1
+                assert len(plugin_hits(before["干员列表"])) == 1
+                assert len(before["help"]) == 2
+                assert len(before["tts"]) == 2
+                assert len(before["干员列表"]) == 2
+
+                target_handlers = {}
+                for handler in handlers:
+                    command_filter = next(
+                        (
+                            item
+                            for item in handler.event_filters
+                            if isinstance(item, CommandFilter)
+                        ),
+                        None,
+                    )
+                    if command_filter:
+                        target_handlers[command_filter.command_name] = handler
+
+                configs = {}
+
+                async def get_config(handler_full_name):
+                    return configs.get(handler_full_name)
+
+                async def upsert_config(**kwargs):
+                    config = SimpleNamespace(**kwargs)
+                    configs[config.handler_full_name] = config
+                    return config
+
+                async def get_configs():
+                    return list(configs.values())
+
+                async def delete_configs(_handler_full_names):
+                    return None
+
+                help_filter = next(
+                    item for item in command_filters if item.command_name == "帮助"
+                )
+                help_aliases = sorted(help_filter.alias - {"help"})
+
+                with (
+                    patch.object(
+                        command_management.db_helper,
+                        "get_command_config",
+                        new=get_config,
+                    ),
+                    patch.object(
+                        command_management.db_helper,
+                        "upsert_command_config",
+                        new=upsert_config,
+                    ),
+                    patch.object(
+                        command_management.db_helper,
+                        "get_command_configs",
+                        new=get_configs,
+                    ),
+                    patch.object(
+                        command_management.db_helper,
+                        "delete_command_configs",
+                        new=delete_configs,
+                    ),
+                ):
+                    await command_management.rename_command(
+                        target_handlers["帮助"].handler_full_name,
+                        "帮助",
+                        help_aliases,
+                    )
+                    await command_management.rename_command(
+                        target_handlers["干员列表"].handler_full_name,
+                        "三角洲干员列表",
+                        [],
+                    )
+                    await command_management.rename_command(
+                        target_handlers["tts"].handler_full_name,
+                        "三角洲tts",
+                        [],
+                    )
+
+                assert not plugin_hits(await wake("help"))
+                assert len(plugin_hits(await wake("帮助"))) == 1
+                assert not plugin_hits(await wake("tts 麦晓雯 你好"))
+                assert len(plugin_hits(await wake("三角洲tts 麦晓雯 你好"))) == 1
+                assert not plugin_hits(await wake("干员列表"))
+                assert len(plugin_hits(await wake("三角洲干员列表"))) == 1
+
+
             asyncio.run(verify_wake_prefix())
+            asyncio.run(verify_cross_plugin_conflict_resolution())
             print("REAL_ASTRBOT_REGISTRATION_OK")
             print("REAL_ASTRBOT_WAKE_PREFIX_OK")
+            print("REAL_ASTRBOT_CONFLICT_RESOLUTION_OK")
             """
         )
         env = os.environ.copy()
@@ -209,6 +350,7 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
         )
         self.assertIn("REAL_ASTRBOT_REGISTRATION_OK", result.stdout)
         self.assertIn("REAL_ASTRBOT_WAKE_PREFIX_OK", result.stdout)
+        self.assertIn("REAL_ASTRBOT_CONFLICT_RESOLUTION_OK", result.stdout)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
 
-- 当前版本：`0.4.11`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.12`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -13,6 +13,9 @@
 
 > [!IMPORTANT]
 > 以下命令示例均不写触发符。实际发送时请使用 AstrBot WebUI 中配置的指令触发符，例如 WebUI 配置为 `/` 时发送 `/帮助`。
+
+> [!WARNING]
+> 同时启用终末地插件和 AstrBot 内置命令时，`干员列表`、`tts`、`help` 会发生跨插件冲突。请在 WebUI 的“命令管理”中移除本插件帮助命令的 `help` 别名，并将本插件的 `干员列表`、`tts` 分别重命名为 `三角洲干员列表`、`三角洲tts`。该设置由 AstrBot 持久化，不需要修改插件源码。
 
 ## 安装插件
 
@@ -215,7 +218,7 @@ python -m pytest -q -p no:cacheprovider tests/test_core_queries.py -k core_templ
 python -m unittest tests.test_live_backend -v
 ```
 
-使用 AstrBot 自身 Python 环境可启用隔离子进程测试，验证真实框架导入、插件元数据、标准命令过滤器、别名唯一性、单消息单 handler 匹配，以及 WebUI 自定义触发符去除后的参数保留：
+使用 AstrBot 自身 Python 环境可启用隔离子进程测试，验证真实框架导入、插件元数据、标准命令过滤器、别名唯一性、单消息单 handler 匹配、WebUI 自定义触发符去除后的参数保留，以及跨插件冲突经 AstrBot 原生命令管理改名后的唯一激活：
 
 ```powershell
 $env:DELTA_REAL_ASTRBOT_TESTS = "1"
