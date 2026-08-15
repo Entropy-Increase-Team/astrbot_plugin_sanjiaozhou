@@ -376,6 +376,7 @@ class DeltaForcePlugin(Star):
         self._music_lists: Dict[str, Dict[str, Any]] = {}
         self._music_last: Dict[str, Dict[str, Any]] = {}
         self._tts_last: Dict[str, Dict[str, Any]] = {}
+        self._ai_cooldowns: Dict[str, float] = {}
         self._initialized = False
         self._terminated = False
 
@@ -8355,16 +8356,82 @@ class DeltaForcePlugin(Star):
                 lines.append(f"{index}. {item}")
         yield event.plain_result("\n".join(lines))
 
+    async def _resolve_ai_preset(
+        self,
+        preset_input: str,
+    ) -> Tuple[str, str, str]:
+        response = await self.client.ai_presets()
+        if not self._ok(response):
+            return "", "", f"AI 预设查询失败: {self._message_of(response)}"
+        data = self._data(response, {}) or {}
+        presets = self._first_list(data, ("presets", "items", "list", "data"))
+        keyword = str(preset_input or "").strip()
+        normalized = keyword.casefold()
+        rows = [item for item in presets if isinstance(item, dict)]
+        matched: Optional[Dict[str, Any]] = None
+        for item in rows:
+            code = str(item.get("code") or item.get("id") or "").strip()
+            if code.casefold() == normalized:
+                matched = item
+                break
+        if matched is None:
+            for item in rows:
+                name = str(
+                    item.get("name") or item.get("displayName") or ""
+                ).strip()
+                if name == keyword:
+                    matched = item
+                    break
+        if matched is None:
+            for item in rows:
+                name = str(
+                    item.get("name") or item.get("displayName") or ""
+                ).strip()
+                if name and (keyword in name or name in keyword):
+                    matched = item
+                    break
+        if matched is None:
+            hints = [
+                f"{item.get('name') or item.get('displayName') or item.get('code')}({item.get('code') or item.get('id')})"
+                for item in rows[:12]
+            ]
+            suffix = f"\n可用预设：{'、'.join(hints)}" if hints else ""
+            return "", "", f"无效的 AI 预设：{keyword}{suffix}"
+        code = str(matched.get("code") or matched.get("id") or "").strip()
+        name = str(
+            matched.get("name") or matched.get("displayName") or code
+        ).strip()
+        if not code:
+            return "", "", "AI 预设缺少可用代码。"
+        return code, name or code, ""
+
+    def _ai_cooldown_remaining(self, key: str) -> int:
+        now = dt.datetime.now().timestamp()
+        cooldowns = getattr(self, "_ai_cooldowns", None)
+        if not isinstance(cooldowns, dict):
+            cooldowns = {}
+            self._ai_cooldowns = cooldowns
+        expired = [item for item, deadline in cooldowns.items() if deadline <= now]
+        for item in expired:
+            cooldowns.pop(item, None)
+        return max(0, int(cooldowns.get(key, 0) - now + 0.999))
+
+    def _set_ai_cooldown(self, key: str, seconds: int) -> None:
+        cooldowns = getattr(self, "_ai_cooldowns", None)
+        if not isinstance(cooldowns, dict):
+            cooldowns = {}
+            self._ai_cooldowns = cooldowns
+        if seconds <= 0:
+            cooldowns.pop(key, None)
+            return
+        cooldowns[key] = dt.datetime.now().timestamp() + seconds
+
     async def _ai_review(
         self,
         event: AstrMessageEvent,
         arg: str,
         preset_required: bool = False,
     ) -> AsyncGenerator[Any, None]:
-        token = await self._need_token(event)
-        if not token:
-            yield event.plain_result("您尚未绑定账号。")
-            return
         mode, _, rest = self._parse_mode_page(arg)
         if arg and not mode:
             yield event.plain_result("无法识别游戏模式，请使用 sol/烽火/4 或 mp/战场/5。")
@@ -8375,17 +8442,61 @@ class DeltaForcePlugin(Star):
             return
         preset = options[0] if options else ""
         voice = options[1] if len(options) > 1 else ""
-        res = await self.client.ai_review(token, mode or "sol", preset)
+        preset_name = "锐评"
+        if preset_required:
+            preset, preset_name, preset_error = await self._resolve_ai_preset(preset)
+            if preset_error:
+                yield event.plain_result(preset_error)
+                return
+
+        mode_value = mode or "sol"
+        mode_name = "烽火地带" if mode_value == "sol" else "全面战场"
+        cooldown_key = f"{event.get_sender_id()}:{mode_value}"
+        if preset_required:
+            cooldown_key += f":{preset}"
+        remaining = self._ai_cooldown_remaining(cooldown_key)
+        if remaining > 0:
+            minutes = max(1, (remaining + 59) // 60)
+            subject = f"【{preset_name}】AI" if preset_required else "AI 大脑"
+            yield event.plain_result(
+                f"{mode_name}模式的{subject}正在冷却中，请在 {minutes} 分钟后重试。"
+            )
+            return
+
+        token = await self._need_token(event)
+        if not token:
+            yield event.plain_result("您尚未绑定账号。")
+            return
+        self._set_ai_cooldown(cooldown_key, 90)
+        try:
+            res = await self.client.ai_review(token, mode_value, preset)
+        except asyncio.CancelledError:
+            self._set_ai_cooldown(cooldown_key, 0)
+            raise
+        except Exception as exc:
+            self._set_ai_cooldown(cooldown_key, 0)
+            yield event.plain_result(f"AI 评价失败: {str(exc) or type(exc).__name__}")
+            return
         if not self._ok(res):
+            self._set_ai_cooldown(cooldown_key, 0)
             yield event.plain_result(f"AI 评价失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
         content = str(data.get("content") or "").strip() if isinstance(data, dict) else ""
         if not content:
+            self._set_ai_cooldown(cooldown_key, 0)
             yield event.plain_result("AI 评价完成，但后端未返回正文。")
             return
-        mode_name = "烽火地带" if (mode or "sol") == "sol" else "全面战场"
-        preset_name = str(data.get("presetName") or preset or "锐评") if isinstance(data, dict) else (preset or "锐评")
+        cooldown_seconds = max(
+            0,
+            int(self.config.get("ai_cooldown_seconds", 3600) or 0),
+        )
+        self._set_ai_cooldown(cooldown_key, cooldown_seconds)
+        preset_name = (
+            str(data.get("presetName") or preset_name or preset or "锐评")
+            if isinstance(data, dict)
+            else preset_name or preset or "锐评"
+        )
         yield event.plain_result(f"【{mode_name} AI{preset_name}】\n{content}")
         if voice:
             async for result in self._tts(

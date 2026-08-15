@@ -90,6 +90,11 @@
     "type": "list",
     "default": []
   },
+  "ai_cooldown_seconds": {
+    "description": "同一用户、游戏模式和 AI 预设组合的评价冷却时间，单位秒；设为 0 可关闭冷却。",
+    "type": "int",
+    "default": 3600
+  },
   "tts_max_length": {
     "description": "TTS 文本最大长度。",
     "type": "int",

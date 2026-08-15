@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.33`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.34`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -56,6 +56,7 @@ playwright install chromium
 - `ai_tts_enabled`: 是否允许 `ai评价` 将评价全文合成为语音。
 - `ai_tts_access_mode`: AI 评价 TTS 访问模式，与普通 TTS 配置相互独立。
 - `ai_tts_group_list` / `ai_tts_user_list`: AI 评价 TTS 的群和用户黑白名单。
+- `ai_cooldown_seconds`: 同一用户、模式和预设组合的 AI 评价冷却时间，默认 3600 秒；设为 0 可关闭。
 - `tts_max_length`: TTS 文本最大长度。
 - `tts_poll_timeout`: TTS 合成任务最长等待时间，默认 450 秒。
 - `tts_poll_interval`: TTS 合成任务状态轮询间隔，默认 5 秒。
@@ -70,7 +71,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.33` 已为 AI 评价语音补齐独立开关和群/用户黑白名单，并允许按原版语义提交评价全文。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.34` 已补齐 AI 预设中文名解析、有效性提示及按用户/模式/预设隔离的评价冷却。
 
 ### 个人类功能
 
