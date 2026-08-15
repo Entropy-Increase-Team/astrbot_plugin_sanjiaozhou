@@ -11,7 +11,9 @@
 
 测试栏中的“待测”表示没有验证证据，不能视为通过。API 栏只填写已经从当前 Go 后端源码或 Swagger 确认的路径；其余项目在后续审计时补全。
 
-2026-08-15 对接最新版改枪社区的我的方案、评论 CRUD、浏览与复制接口：新增 6 个独立命令及“改枪方案”别名，列表和详情展示审核与互动计数，评论限制 500 字并校验 ObjectID；新增命令继续追加在既有命令之后，当前注册结构为 97 个独立 `CommandFilter`、344 个唯一命令名与别名。
+2026-08-15 对接最新版改枪社区收藏夹与被拒方案复审：新增公开/个人收藏夹查询、详情、CRUD、添加/移除方案和作者复审 9 个独立命令及别名；当前注册结构为 106 个独立 `CommandFilter`、362 个唯一命令名与别名。
+
+2026-08-15 对接最新版改枪社区的我的方案、评论 CRUD、浏览与复制接口：新增 6 个独立命令及“改枪方案”别名，列表和详情展示审核与互动计数，评论限制 500 字并校验 ObjectID；新增命令继续追加在既有命令之后，当时注册结构为 97 个独立 `CommandFilter`、344 个唯一命令名与别名。
 
 2026-08-15 将 `藏品`、`资产` 迁移到最新版 `GET /api/v1/df/person/assets`：直接消费后端已补全并去重的典藏枪皮、典藏挂饰与动态普通藏品分组，保留中文类型筛选，卡片与文本按堆叠数量汇总；移除运行时对旧 v2 藏品和公共映射接口的拼接依赖。
 
@@ -76,6 +78,7 @@
 | 工具 | `apps/tools/Room.js` | `getRoomList`、`createRoom`、`joinRoom`、`quitRoom`、`kickMember`、`getRoomInfo`、`getMapList`、`getTagList` | 房间列表、创建、加入、退出、踢人、信息、地图、标签 | 房间信息、房间列表及相关别名 | `_battle_room_info`；`_dispatch` 中房间管理阻塞提示 | `GET /api/v1/df/person/roominfo?roomId=&type=`；最新版没有开黑房间管理路由 | 无 | 有 | 烽火列表、全面嵌套玩家详情及 URL 编码昵称 fixture 通过 | 空成员列表 fixture 通过 | API 错误、模式错误和未绑定 fixture 通过 | 部分（战绩对局房间详情已验证；开黑房间管理因后端无路由而阻塞） |
 | 工具 | `apps/tools/SolutionV2.js` | `uploadSolution`、`getSolutionList`、`getSolutionDetail`、`voteSolution`、`updateSolution`、`deleteSolution`、`collectSolution`、`getCollectList` | 改枪方案上传、列表、详情、投票、更新、删除、收藏、收藏列表 | 上传改枪码、改枪码列表、改枪码详情、改枪码点赞/点踩、更新/删除/收藏改枪码、改枪码收藏列表 | `_solution_upload`、`_solution_list`、`_solution_detail`、`_solution_vote`、`_solution_update`、`_solution_delete`、`_solution_favorite` | `/api/v1/df/gunmod/community/solutions` 及 UUID 子路由；写操作需 `gunmod:community:write`、`X-Client-User-ID`、`X-Client-User-Type` | 无 | 有 | 公开与旧版列表真实字段契约、上传、更新、删除、投票和收藏 fixture 通过 | 普通/收藏列表、详情空数据及参数错误 fixture 通过 | 查询错误与写权限不足 fixture 通过 | 已验证 |
 | API 扩展 | 无（最新版改枪社区） | 无 | 无 Yunzai 旧命令 | 我的改枪码、改枪码评论、评论改枪码、编辑/删除改枪评论、复制改枪码及“改枪方案”别名 | `_solution_list`、`_solution_detail`、`_solution_comments`、`_solution_comment_create`、`_solution_comment_update`、`_solution_comment_delete`、`_solution_copy` | `GET /api/v1/df/gunmod/community/my/solutions`；`GET/POST /solutions/:id/comments`；`PUT/DELETE /comments/:commentId`；`POST /solutions/:id/{view,copy}`；写操作使用 `WritableAuth` | 无 | 有 | 我的方案筛选、评论 CRUD、详情浏览、复制计数和最新互动字段 fixture 通过 | 我的方案、评论列表和无改枪码 fixture 通过 | 写权限不足、服务错误、无效 ID、超长评论及浏览失败隔离 fixture 通过 | 已验证 |
+| API 扩展 | 无（最新版改枪社区） | 无 | 无 Yunzai 旧命令 | 改枪收藏夹列表/详情、我的改枪收藏夹、创建/更新/删除、添加/移除方案、改枪方案复审及别名 | `_community_collection_list`、`_community_collection_detail`、`_community_collection_create`、`_community_collection_update`、`_community_collection_delete`、`_community_collection_solution`、`_community_solution_rereview` | `GET/POST /api/v1/df/gunmod/community/collections`；`GET /my/collections`；`GET/PUT/DELETE /collections/:collectionId`；`POST/DELETE /collections/:collectionId/solutions/:solutionId`；`POST /solutions/:id/re-review`；写操作使用 `WritableAuth` | 无 | 有 | 公开/个人列表、私有作者身份、详情、CRUD、添加/移除、复审与独立命令分发 fixture 通过 | 公开/个人列表和详情空数据 fixture 通过 | 服务错误、权限不足、无效 ID、名称/描述限制、无更新项和非拒绝方案 fixture 通过 | 已验证 |
 | API 扩展 | 无（后端 v3.36.0 新增） | 无 | 无 Yunzai 旧命令 | 活动日历、活动、活动列表 | `_activities`、`_activity_groups`、`_activity_status` | `GET /api/v1/df/activities`；`UnifiedAuth + SubscriptionGuardAuto` | `activities` | 有 | 权威 `groups[].cardRows`、扁平 `tabs/cards`、相对图片地址、四类时间状态与 Playwright fixture 通过 | 空标签、空卡片 fixture 通过 | 503 公共池不可用和响应格式异常 fixture 通过 | 已验证 |
 | API 扩展 | 无（最新版后端 Gamesafe） | 无 | 无 Yunzai 旧命令 | 微信安全中心授权登录、绑定、登录信息、封禁记录、冻结状态、设备、在线状态、安全报告及别名 | `_oauth_login`、`_token_for_type`、`_gamesafe_bindings`、`_gamesafe_query` | `GET/POST /api/v1/login/gamesafe/oauth`；`GET /api/v1/df/gamesafe/{bindinfo,logininfo,punish,frozen,devices,online,report}`；`X-Framework-Token` | 无 | 有 | OAuth 回调、专用凭证、七类权威请求参数与安全字段格式化 fixture 通过 | 未绑定、空绑定和空报告 fixture 通过 | 凭证失效和异常响应 fixture 通过 | 已验证（冻结、解冻和踢下线属于外部状态写操作，本插件未开放） |
 | 工具 | `apps/tools/Tools.js` | `getDailyKeyword`、`getArticleList`、`getArticleDetail` | 每日密码、文章列表、文章详情 | 每日密码、文章列表、文章详情 | `_daily_keyword`、`_article_list`、`_article_detail` | `GET /api/v1/df/tools/dailykeyword`；`GET /api/v1/df/tools/article/list`；`GET /api/v1/df/tools/article/detail?threadID=` | 无 | 有 | 每日密码与文章列表真实字段契约、分类合并、详情正文与请求参数 fixture 通过 | 公共池不可用、空列表与文章缺失 fixture 通过 | API 错误 fixture 通过 | 已验证 |
@@ -128,10 +131,10 @@
 
 ### 第一阶段验证记录
 
-- 真实 AstrBot v4.17.6 源码导入成功；当前注册结构检查为 97 个独立命令 handler、344 个命令名/别名。
+- 真实 AstrBot v4.17.6 源码导入成功；当前注册结构检查为 106 个独立命令 handler、362 个命令名/别名。
 - 注册结果中空格命令、重复命令名和 `RegexFilter` 数量均为 0。
 - 脱敏登录二维码 fixture 为 `328×328` PNG，可由图片解析器识别并通过 `Image.fromBase64()` 路径发送。
-- 帮助菜单已由插件自身的 `DeltaRenderer` 和 Playwright 渲染为 `2560×8156` PNG，已人工检查新增改枪社区命令、中文、背景、图标、换行和底部完整性。
+- 帮助菜单已由插件自身的 `DeltaRenderer` 和 Playwright 渲染为 `2560×8628` PNG，已人工检查新增改枪收藏夹命令、中文、背景、图标、换行和底部完整性。
 
 ## 第二阶段核心查询证据
 

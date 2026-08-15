@@ -492,6 +492,39 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(("复制改枪码", {"复制改枪方案"}), DELTA_COMMAND_SPECS)
         self.assertIn(
+            ("改枪收藏夹列表", {"改枪方案收藏夹列表"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("改枪收藏夹详情", {"改枪方案收藏夹详情"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("我的改枪收藏夹", {"我的改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("创建改枪收藏夹", {"创建改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("更新改枪收藏夹", {"更新改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("删除改枪收藏夹", {"删除改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("添加改枪收藏夹", {"添加改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("移除改枪收藏夹", {"移除改枪方案收藏夹"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(("改枪方案复审", {"改枪码复审"}), DELTA_COMMAND_SPECS)
+        self.assertIn(
             (
                 "微信安全中心授权登录",
                 {"gamesafe授权登录", "gamesafeoauth登录", "微信安全中心oauth登录"},

@@ -265,6 +265,21 @@ helpList:
         - icon: 86
           title: "复制改枪码 [方案ID]"
           desc: "获取改枪码并记录复制次数"
+        - icon: 86
+          title: "改枪收藏夹列表 | 改枪收藏夹详情 [参数]"
+          desc: "浏览公开收藏夹和方案 ID"
+        - icon: 86
+          title: "我的改枪收藏夹"
+          desc: "查看自己的全部收藏夹"
+        - icon: 86
+          title: "创建 | 更新 | 删除改枪收藏夹 [参数]"
+          desc: "管理自己的非默认收藏夹"
+        - icon: 86
+          title: "添加改枪收藏夹 | 移除改枪收藏夹 [收藏夹ID] [方案ID]"
+          desc: "管理收藏夹中的改枪方案"
+        - icon: 86
+          title: "改枪方案复审 [方案ID] [原因]"
+          desc: "为自己被拒的方案申请复审"
         - icon: 78
           title: "网站上传修改"
           desc: "https://df.shallow.ink/solutions"

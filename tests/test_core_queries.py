@@ -450,6 +450,8 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("我的改枪码 [模式/武器ID/审核状态/页码]", titles)
                 self.assertIn("改枪码评论 [方案ID] [页码]", titles)
                 self.assertIn("复制改枪码 [方案ID]", titles)
+                self.assertIn("我的改枪收藏夹", titles)
+                self.assertIn("改枪方案复审 [方案ID] [原因]", titles)
         finally:
             if renderer is not None:
                 await renderer.close()
@@ -513,7 +515,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [item["version"] for item in changelogs],
-            ["0.4.20", "0.4.19"],
+            ["0.4.21", "0.4.20"],
         )
         self.assertEqual(changelogs[0]["sections"][0]["title"], "新增")
         visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
@@ -1186,9 +1188,10 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             params={"page": 3, "pageSize": 20},
         )
 
-        await client.record_community_solution_view("fixture-uuid")
+        await client.record_community_solution_view("fixture-uuid", "fixture-user")
         client.post.assert_awaited_once_with(
             "/api/v1/df/gunmod/community/solutions/fixture-uuid/view",
+            proxy_user_id="fixture-user",
         )
 
         client.post.reset_mock()
@@ -1336,8 +1339,13 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertIn("M4A1", detail[0]["text"])
+        self.assertEqual(
+            client.community_solution_detail.await_args_list[0].args,
+            ("fixture-uuid", "qq_fixture-user"),
+        )
         client.record_community_solution_view.assert_awaited_once_with(
-            "fixture-uuid"
+            "fixture-uuid",
+            "qq_fixture-user",
         )
         self.assertIn("改枪码: CODE123", copied[0]["text"])
         client.record_community_solution_copy.assert_awaited_once_with(
@@ -1452,6 +1460,368 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
 
         detail = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
         self.assertIn("M4A1", detail[0]["text"])
+
+    async def test_community_collection_client_uses_authoritative_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+        client.post = AsyncMock(return_value={"code": 0, "data": {}})
+        client.put = AsyncMock(return_value={"code": 0, "data": {}})
+        client.delete = AsyncMock(return_value={"code": 0, "data": {}})
+        collection_id = "64b64c2f6f1b2c3d4e5f6072"
+
+        await client.community_collections({"page": 2, "pageSize": 20})
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/collections",
+            params={"page": 2, "pageSize": 20},
+        )
+
+        client.get.reset_mock()
+        await client.community_collection_detail(collection_id, "fixture-user")
+        client.get.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            proxy_user_id="fixture-user",
+        )
+
+        client.get.reset_mock()
+        await client.my_community_collections("fixture-user")
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/my/collections",
+            proxy_user_id="fixture-user",
+        )
+
+        payload = {
+            "name": "测试收藏夹",
+            "description": "测试描述",
+            "isPublic": True,
+        }
+        await client.create_community_collection(payload, "fixture-user")
+        client.post.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/collections",
+            json_data=payload,
+            proxy_user_id="fixture-user",
+        )
+
+        await client.update_community_collection(
+            collection_id,
+            {"name": "新名称"},
+            "fixture-user",
+        )
+        client.put.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            json_data={"name": "新名称"},
+            proxy_user_id="fixture-user",
+        )
+
+        await client.delete_community_collection(collection_id, "fixture-user")
+        client.delete.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            proxy_user_id="fixture-user",
+        )
+
+        client.post.reset_mock()
+        await client.set_community_collection_solution(
+            collection_id,
+            "fixture-uuid",
+            True,
+            "fixture-user",
+        )
+        client.post.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}/solutions/fixture-uuid",
+            proxy_user_id="fixture-user",
+        )
+
+        client.delete.reset_mock()
+        await client.set_community_collection_solution(
+            collection_id,
+            "fixture-uuid",
+            False,
+            "fixture-user",
+        )
+        client.delete.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}/solutions/fixture-uuid",
+            proxy_user_id="fixture-user",
+        )
+
+        client.post.reset_mock()
+        await client.request_community_solution_rereview(
+            "fixture-uuid",
+            "已经修改描述",
+            "fixture-user",
+        )
+        client.post.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid/re-review",
+            json_data={"reason": "已经修改描述"},
+            proxy_user_id="fixture-user",
+        )
+
+    async def test_community_collection_commands_cover_query_and_writes(self):
+        collection_id = "64b64c2f6f1b2c3d4e5f6072"
+        collection = {
+            "id": collection_id,
+            "name": "M4A1 配装",
+            "description": "稳定后坐力方案",
+            "isPublic": True,
+            "isDefault": False,
+            "solutionCount": 2,
+            "solutionIds": ["fixture-uuid", "fixture-uuid-2"],
+            "likeCount": 5,
+        }
+        client = SimpleNamespace(
+            community_collections=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"items": [collection], "total": 1},
+                }
+            ),
+            my_community_collections=AsyncMock(
+                return_value={"code": 0, "data": [collection]}
+            ),
+            community_collection_detail=AsyncMock(
+                return_value={"code": 0, "data": collection}
+            ),
+            create_community_collection=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"collectionId": collection_id},
+                }
+            ),
+            update_community_collection=AsyncMock(return_value={"code": 0}),
+            delete_community_collection=AsyncMock(return_value={"code": 0}),
+            set_community_collection_solution=AsyncMock(
+                side_effect=[{"code": 0}, {"code": 0}]
+            ),
+            request_community_solution_rereview=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"reviewStatus": "pending"},
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        public = await _collect(
+            plugin._dispatch(
+                _Event(),
+                "改枪收藏夹列表 页2 作者=qq_author",
+            )
+        )
+        mine = await _collect(
+            plugin._dispatch(_Event(), "我的改枪方案收藏夹")
+        )
+        detail = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"改枪收藏夹详情 {collection_id}",
+            )
+        )
+        created = await _collect(
+            plugin._dispatch(
+                _Event(),
+                "创建改枪收藏夹 最强 AK | 我的 AK 收藏 | 公开",
+            )
+        )
+        updated = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"更新改枪收藏夹 {collection_id} 新名称 | 新描述 | 私有",
+            )
+        )
+        added = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"添加改枪收藏夹 {collection_id} fixture-uuid",
+            )
+        )
+        removed = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"移除改枪收藏夹 {collection_id} fixture-uuid",
+            )
+        )
+        deleted = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"删除改枪收藏夹 {collection_id}",
+            )
+        )
+        rereview = await _collect(
+            plugin._dispatch(
+                _Event(),
+                "改枪码复审 fixture-uuid 已修改描述",
+            )
+        )
+
+        self.assertIn("【公开改枪收藏夹】", public[0]["text"])
+        self.assertIn("M4A1 配装", public[0]["text"])
+        client.community_collections.assert_awaited_once_with(
+            {"page": 2, "pageSize": 20, "authorId": "qq_author"}
+        )
+        self.assertIn("【我的改枪收藏夹】", mine[0]["text"])
+        client.my_community_collections.assert_awaited_once_with(
+            "qq_fixture-user"
+        )
+        self.assertIn("fixture-uuid-2", detail[0]["text"])
+        client.community_collection_detail.assert_awaited_once_with(
+            collection_id,
+            "qq_fixture-user",
+        )
+        self.assertIn(collection_id, created[0]["text"])
+        client.create_community_collection.assert_awaited_once_with(
+            {
+                "name": "最强 AK",
+                "description": "我的 AK 收藏",
+                "isPublic": True,
+            },
+            "qq_fixture-user",
+        )
+        client.update_community_collection.assert_awaited_once_with(
+            collection_id,
+            {
+                "name": "新名称",
+                "description": "新描述",
+                "isPublic": False,
+            },
+            "qq_fixture-user",
+        )
+        self.assertIn("已更新", updated[0]["text"])
+        self.assertIn("添加到", added[0]["text"])
+        self.assertIn("移出", removed[0]["text"])
+        self.assertIn("已删除", deleted[0]["text"])
+        self.assertIn("审核状态: 审核中", rereview[0]["text"])
+
+    async def test_community_collection_commands_handle_boundaries_and_errors(self):
+        collection_id = "64b64c2f6f1b2c3d4e5f6072"
+        denied = {"code": 403, "message": "无权操作该收藏夹"}
+        client = SimpleNamespace(
+            community_collections=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": [], "total": 0}},
+                    {"code": 500, "message": "收藏夹列表服务异常"},
+                ]
+            ),
+            my_community_collections=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": []},
+                    {"code": 500, "message": "我的收藏夹服务异常"},
+                ]
+            ),
+            community_collection_detail=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {}},
+                    {"code": 404, "message": "收藏夹不存在"},
+                ]
+            ),
+            create_community_collection=AsyncMock(return_value=denied),
+            update_community_collection=AsyncMock(return_value=denied),
+            delete_community_collection=AsyncMock(return_value=denied),
+            set_community_collection_solution=AsyncMock(return_value=denied),
+            request_community_solution_rereview=AsyncMock(
+                return_value={
+                    "code": 400,
+                    "message": "仅被拒绝的方案可以申请复审",
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+
+        public_empty = await _collect(
+            plugin._community_collection_list(_Event(), "", own=False)
+        )
+        public_error = await _collect(
+            plugin._community_collection_list(_Event(), "", own=False)
+        )
+        invalid_filter = await _collect(
+            plugin._community_collection_list(_Event(), "未知筛选", own=False)
+        )
+        mine_empty = await _collect(
+            plugin._community_collection_list(_Event(), "", own=True)
+        )
+        mine_error = await _collect(
+            plugin._community_collection_list(_Event(), "", own=True)
+        )
+        detail_empty = await _collect(
+            plugin._community_collection_detail(_Event(), collection_id)
+        )
+        detail_error = await _collect(
+            plugin._community_collection_detail(_Event(), collection_id)
+        )
+        invalid_detail = await _collect(
+            plugin._community_collection_detail(_Event(), "bad-id")
+        )
+        long_name = await _collect(
+            plugin._community_collection_create(_Event(), "名" * 51)
+        )
+        long_description = await _collect(
+            plugin._community_collection_create(
+                _Event(),
+                f"测试 | {'描' * 501} | 私有",
+            )
+        )
+        invalid_visibility = await _collect(
+            plugin._community_collection_create(_Event(), "测试 | 描述 | 未知")
+        )
+        create_denied = await _collect(
+            plugin._community_collection_create(_Event(), "测试 | 描述 | 公开")
+        )
+        no_update = await _collect(
+            plugin._community_collection_update(
+                _Event(),
+                collection_id,
+                "- | - | -",
+            )
+        )
+        update_denied = await _collect(
+            plugin._community_collection_update(
+                _Event(),
+                collection_id,
+                "新名称",
+            )
+        )
+        delete_denied = await _collect(
+            plugin._community_collection_delete(_Event(), collection_id)
+        )
+        add_denied = await _collect(
+            plugin._community_collection_solution(
+                _Event(),
+                collection_id,
+                "fixture-uuid",
+                True,
+            )
+        )
+        invalid_solution = await _collect(
+            plugin._community_collection_solution(
+                _Event(),
+                collection_id,
+                "无效/方案",
+                True,
+            )
+        )
+        rereview_error = await _collect(
+            plugin._community_solution_rereview(
+                _Event(),
+                "fixture-uuid",
+                "再次申请",
+            )
+        )
+
+        self.assertIn("暂无数据", public_empty[0]["text"])
+        self.assertIn("收藏夹列表服务异常", public_error[0]["text"])
+        self.assertIn("格式：改枪收藏夹列表", invalid_filter[0]["text"])
+        self.assertIn("暂无数据", mine_empty[0]["text"])
+        self.assertIn("我的收藏夹服务异常", mine_error[0]["text"])
+        self.assertIn("不存在或暂不可见", detail_empty[0]["text"])
+        self.assertIn("收藏夹不存在", detail_error[0]["text"])
+        self.assertIn("ID 格式无效", invalid_detail[0]["text"])
+        self.assertIn("不能超过 50 字", long_name[0]["text"])
+        self.assertIn("不能超过 500 字", long_description[0]["text"])
+        self.assertIn("只能填写公开或私有", invalid_visibility[0]["text"])
+        self.assertIn("无权操作", create_denied[0]["text"])
+        self.assertIn("至少提供一项", no_update[0]["text"])
+        self.assertIn("无权操作", update_denied[0]["text"])
+        self.assertIn("无权操作", delete_denied[0]["text"])
+        self.assertIn("无权操作", add_denied[0]["text"])
+        self.assertIn("方案 ID 格式无效", invalid_solution[0]["text"])
+        self.assertIn("仅被拒绝的方案", rereview_error[0]["text"])
 
     async def test_record_event_push_is_deduplicated(self):
         plugin = self._plugin()

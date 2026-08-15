@@ -656,8 +656,15 @@ class DeltaForceClient:
     async def community_solutions(self, params: Optional[Dict[str, Any]] = None):
         return await self.get("/api/v1/df/gunmod/community/solutions", params=params or {})
 
-    async def community_solution_detail(self, solution_id: str):
-        return await self.get(f"/api/v1/df/gunmod/community/solutions/{solution_id}")
+    async def community_solution_detail(
+        self,
+        solution_id: str,
+        proxy_user_id: str = "",
+    ):
+        return await self.get(
+            f"/api/v1/df/gunmod/community/solutions/{solution_id}",
+            proxy_user_id=proxy_user_id,
+        )
 
     async def create_community_solution(self, payload: Dict[str, Any], proxy_user_id: str):
         return await self.post(
@@ -718,9 +725,14 @@ class DeltaForceClient:
             proxy_user_id=proxy_user_id,
         )
 
-    async def record_community_solution_view(self, solution_id: str):
+    async def record_community_solution_view(
+        self,
+        solution_id: str,
+        proxy_user_id: str = "",
+    ):
         return await self.post(
             f"/api/v1/df/gunmod/community/solutions/{solution_id}/view",
+            proxy_user_id=proxy_user_id,
         )
 
     async def record_community_solution_copy(
@@ -775,6 +787,91 @@ class DeltaForceClient:
     ):
         return await self.delete(
             f"/api/v1/df/gunmod/community/comments/{comment_id}",
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def community_collections(
+        self,
+        params: Optional[Dict[str, Any]] = None,
+    ):
+        return await self.get(
+            "/api/v1/df/gunmod/community/collections",
+            params=params or {},
+        )
+
+    async def community_collection_detail(
+        self,
+        collection_id: str,
+        proxy_user_id: str = "",
+    ):
+        return await self.get(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def my_community_collections(self, proxy_user_id: str):
+        return await self.get(
+            "/api/v1/df/gunmod/community/my/collections",
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def create_community_collection(
+        self,
+        payload: Dict[str, Any],
+        proxy_user_id: str,
+    ):
+        return await self.post(
+            "/api/v1/df/gunmod/community/collections",
+            json_data=payload,
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def update_community_collection(
+        self,
+        collection_id: str,
+        payload: Dict[str, Any],
+        proxy_user_id: str,
+    ):
+        return await self.put(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            json_data=payload,
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def delete_community_collection(
+        self,
+        collection_id: str,
+        proxy_user_id: str,
+    ):
+        return await self.delete(
+            f"/api/v1/df/gunmod/community/collections/{collection_id}",
+            proxy_user_id=proxy_user_id,
+        )
+
+    async def set_community_collection_solution(
+        self,
+        collection_id: str,
+        solution_id: str,
+        enabled: bool,
+        proxy_user_id: str,
+    ):
+        path = (
+            f"/api/v1/df/gunmod/community/collections/{collection_id}"
+            f"/solutions/{solution_id}"
+        )
+        if enabled:
+            return await self.post(path, proxy_user_id=proxy_user_id)
+        return await self.delete(path, proxy_user_id=proxy_user_id)
+
+    async def request_community_solution_rereview(
+        self,
+        solution_id: str,
+        reason: str,
+        proxy_user_id: str,
+    ):
+        return await self.post(
+            f"/api/v1/df/gunmod/community/solutions/{solution_id}/re-review",
+            json_data={"reason": reason},
             proxy_user_id=proxy_user_id,
         )
 

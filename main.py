@@ -231,6 +231,15 @@ DELTA_COMMAND_SPECS = [
     ("编辑改枪评论", {"编辑改枪方案评论"}),
     ("删除改枪评论", {"删除改枪方案评论"}),
     ("复制改枪码", {"复制改枪方案"}),
+    ("改枪收藏夹列表", {"改枪方案收藏夹列表"}),
+    ("改枪收藏夹详情", {"改枪方案收藏夹详情"}),
+    ("我的改枪收藏夹", {"我的改枪方案收藏夹"}),
+    ("创建改枪收藏夹", {"创建改枪方案收藏夹"}),
+    ("更新改枪收藏夹", {"更新改枪方案收藏夹"}),
+    ("删除改枪收藏夹", {"删除改枪方案收藏夹"}),
+    ("添加改枪收藏夹", {"添加改枪方案收藏夹"}),
+    ("移除改枪收藏夹", {"移除改枪方案收藏夹"}),
+    ("改枪方案复审", {"改枪码复审"}),
 ]
 
 
@@ -1672,6 +1681,111 @@ class DeltaForcePlugin(Star):
         }
         if body in social_help:
             yield event.plain_result(social_help[body])
+            return
+        collection_help = {
+            "改枪收藏夹详情": "格式：改枪收藏夹详情 <收藏夹ID>",
+            "改枪方案收藏夹详情": "格式：改枪方案收藏夹详情 <收藏夹ID>",
+            "创建改枪收藏夹": "格式：创建改枪收藏夹 <名称> [| 描述] [| 公开/私有]",
+            "创建改枪方案收藏夹": "格式：创建改枪方案收藏夹 <名称> [| 描述] [| 公开/私有]",
+            "更新改枪收藏夹": "格式：更新改枪收藏夹 <收藏夹ID> <名称或-> [| 描述或-] [| 公开/私有/-]",
+            "更新改枪方案收藏夹": "格式：更新改枪方案收藏夹 <收藏夹ID> <名称或-> [| 描述或-] [| 公开/私有/-]",
+            "删除改枪收藏夹": "格式：删除改枪收藏夹 <收藏夹ID>",
+            "删除改枪方案收藏夹": "格式：删除改枪方案收藏夹 <收藏夹ID>",
+            "添加改枪收藏夹": "格式：添加改枪收藏夹 <收藏夹ID> <方案ID>",
+            "添加改枪方案收藏夹": "格式：添加改枪方案收藏夹 <收藏夹ID> <方案ID>",
+            "移除改枪收藏夹": "格式：移除改枪收藏夹 <收藏夹ID> <方案ID>",
+            "移除改枪方案收藏夹": "格式：移除改枪方案收藏夹 <收藏夹ID> <方案ID>",
+            "改枪方案复审": "格式：改枪方案复审 <方案ID> [原因]",
+            "改枪码复审": "格式：改枪码复审 <方案ID> [原因]",
+        }
+        if body in collection_help:
+            yield event.plain_result(collection_help[body])
+            return
+        if m := re.fullmatch(
+            r"改枪(?:方案)?收藏夹列表\s*(.*)",
+            body,
+        ):
+            async for r in self._community_collection_list(
+                event,
+                m.group(1).strip(),
+                own=False,
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"改枪(?:方案)?收藏夹详情\s+(\S+)",
+            body,
+        ):
+            async for r in self._community_collection_detail(
+                event,
+                m.group(1),
+            ):
+                yield r
+            return
+        if re.fullmatch(r"我的改枪(?:方案)?收藏夹", body):
+            async for r in self._community_collection_list(
+                event,
+                "",
+                own=True,
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"创建改枪(?:方案)?收藏夹\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._community_collection_create(
+                event,
+                m.group(1).strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"更新改枪(?:方案)?收藏夹\s+(\S+)\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._community_collection_update(
+                event,
+                m.group(1),
+                m.group(2).strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"删除改枪(?:方案)?收藏夹\s+(\S+)",
+            body,
+        ):
+            async for r in self._community_collection_delete(
+                event,
+                m.group(1),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(添加|移除)改枪(?:方案)?收藏夹\s+(\S+)\s+(\S+)",
+            body,
+        ):
+            async for r in self._community_collection_solution(
+                event,
+                m.group(2),
+                m.group(3),
+                m.group(1) == "添加",
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(改枪方案|改枪码)复审\s+(\S+)(?:\s+(.+))?",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._community_solution_rereview(
+                event,
+                m.group(2),
+                (m.group(3) or "").strip(),
+            ):
+                yield r
             return
         if m := re.fullmatch(r"我的(改枪码|改枪方案)\s*(.*)", body):
             async for r in self._solution_list(
@@ -5174,7 +5288,11 @@ class DeltaForcePlugin(Star):
         if not self._valid_solution_id(solution_id):
             yield event.plain_result("改枪方案 ID 格式无效。")
             return
-        response = await self.client.community_solution_detail(solution_id)
+        user_identifier = self._user_identifier(event)
+        response = await self.client.community_solution_detail(
+            solution_id,
+            user_identifier,
+        )
         if not self._ok(response):
             yield event.plain_result(f"查询改枪方案失败：{self._message_of(response)}")
             return
@@ -5208,7 +5326,7 @@ class DeltaForcePlugin(Star):
         record_view = getattr(self.client, "record_community_solution_view", None)
         if callable(record_view):
             try:
-                await record_view(solution_id)
+                await record_view(solution_id, user_identifier)
             except Exception:
                 pass
         yield event.plain_result("\n".join(lines))
@@ -5221,7 +5339,10 @@ class DeltaForcePlugin(Star):
         if not self._valid_solution_id(solution_id):
             yield event.plain_result("改枪方案 ID 格式无效。")
             return
-        detail = await self.client.community_solution_detail(solution_id)
+        detail = await self.client.community_solution_detail(
+            solution_id,
+            self._user_identifier(event),
+        )
         if not self._ok(detail):
             yield event.plain_result(
                 f"获取改枪方案失败：{self._message_of(detail)}"
@@ -5404,6 +5525,328 @@ class DeltaForcePlugin(Star):
             "评论已删除。"
             if self._ok(response)
             else f"删除评论失败：{self._message_of(response)}"
+        )
+
+    @staticmethod
+    def _valid_community_collection_id(value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-fA-F]{24}", str(value or "")))
+
+    @staticmethod
+    def _community_collection_rows(response: Any) -> List[Dict[str, Any]]:
+        data = DeltaForcePlugin._data(response, {}) or {}
+        if isinstance(data, list):
+            rows = data
+        else:
+            rows = DeltaForcePlugin._first_list(
+                data,
+                ("items", "list", "collections", "data"),
+            )
+        return [item for item in rows if isinstance(item, dict)]
+
+    def _community_collection_list_text(
+        self,
+        title: str,
+        rows: List[Dict[str, Any]],
+        total: Any = None,
+    ) -> str:
+        lines = [
+            f"【{title}】"
+            + (f" 共 {total} 个" if total not in (None, "") else "")
+        ]
+        for index, item in enumerate(rows, 1):
+            visibility = "公开" if item.get("isPublic") else "私有"
+            if item.get("isDefault"):
+                visibility += "、默认"
+            lines.append(
+                f"{index}. {item.get('name') or '未命名收藏夹'}｜{visibility}\n"
+                f"收藏夹 ID: {item.get('id') or '-'}\n"
+                f"方案 {item.get('solutionCount') or 0} 个｜获赞 {item.get('likeCount') or 0}\n"
+                f"{item.get('description') or '暂无描述'}"
+            )
+        return "\n\n".join(lines)
+
+    async def _community_collection_list(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        own: bool,
+    ) -> AsyncGenerator[Any, None]:
+        params: Dict[str, Any] = {"page": 1, "pageSize": 20}
+        if not own:
+            for part in str(arg or "").split():
+                low = part.lower()
+                if match := re.fullmatch(r"(?:page|页)?(\d+)", low):
+                    params["page"] = max(1, int(match.group(1)))
+                elif match := re.fullmatch(r"(?:author|作者)[=:](\S{1,100})", part):
+                    params["authorId"] = match.group(1)
+                else:
+                    yield event.plain_result(
+                        "格式：改枪收藏夹列表 [页码] [作者=用户ID]"
+                    )
+                    return
+        if own:
+            response = await self.client.my_community_collections(
+                self._user_identifier(event)
+            )
+            title = "我的改枪收藏夹"
+        else:
+            response = await self.client.community_collections(params)
+            title = "公开改枪收藏夹"
+        if not self._ok(response):
+            yield event.plain_result(
+                f"查询{title}失败：{self._message_of(response)}"
+            )
+            return
+        rows = self._community_collection_rows(response)
+        if not rows:
+            yield event.plain_result(f"{title}暂无数据。")
+            return
+        data = self._data(response, {}) or {}
+        total = data.get("total") if isinstance(data, dict) else len(rows)
+        yield event.plain_result(
+            self._community_collection_list_text(title, rows, total)
+        )
+
+    async def _community_collection_detail(
+        self,
+        event: AstrMessageEvent,
+        collection_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_community_collection_id(collection_id):
+            yield event.plain_result("改枪收藏夹 ID 格式无效。")
+            return
+        response = await self.client.community_collection_detail(
+            collection_id,
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"查询改枪收藏夹失败：{self._message_of(response)}"
+            )
+            return
+        item = self._data(response, {}) or {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("改枪收藏夹不存在或暂不可见。")
+            return
+        solution_ids = [
+            str(value).strip()
+            for value in item.get("solutionIds") or []
+            if str(value or "").strip()
+        ]
+        visibility = "公开" if item.get("isPublic") else "私有"
+        if item.get("isDefault"):
+            visibility += "、默认"
+        lines = [
+            "【改枪收藏夹详情】",
+            f"名称: {item.get('name') or '未命名收藏夹'}",
+            f"收藏夹 ID: {item.get('id') or collection_id}",
+            f"状态: {visibility}",
+            f"方案数: {item.get('solutionCount') or len(solution_ids)}",
+            f"获赞: {item.get('likeCount') or 0}",
+            f"描述: {item.get('description') or '暂无'}",
+        ]
+        if solution_ids:
+            lines.append("方案 ID:")
+            lines.extend(f"- {value}" for value in solution_ids[:30])
+            if len(solution_ids) > 30:
+                lines.append(f"另有 {len(solution_ids) - 30} 个方案未展开。")
+        yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _community_collection_visibility(value: str) -> Optional[bool]:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"公开", "public", "是", "true"}:
+            return True
+        if normalized in {"私有", "private", "否", "false"}:
+            return False
+        return None
+
+    @staticmethod
+    def _validate_community_collection_text(
+        name: Optional[str],
+        description: Optional[str],
+    ) -> str:
+        if name is not None and not name.strip():
+            return "收藏夹名称不能为空。"
+        if name is not None and len(name.strip()) > 50:
+            return "收藏夹名称不能超过 50 字。"
+        if description is not None and len(description.strip()) > 500:
+            return "收藏夹描述不能超过 500 字。"
+        return ""
+
+    async def _community_collection_create(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        segments = [part.strip() for part in str(arg or "").split("|")]
+        if not segments or len(segments) > 3:
+            yield event.plain_result(
+                "格式：创建改枪收藏夹 <名称> [| 描述] [| 公开/私有]"
+            )
+            return
+        name = segments[0]
+        description = segments[1] if len(segments) > 1 else ""
+        visibility_text = segments[2] if len(segments) > 2 else "私有"
+        if len(segments) == 2:
+            inline_visibility = self._community_collection_visibility(segments[1])
+            if inline_visibility is not None:
+                description = ""
+                visibility_text = segments[1]
+        validation_error = self._validate_community_collection_text(
+            name,
+            description,
+        )
+        if validation_error:
+            yield event.plain_result(validation_error)
+            return
+        visibility = self._community_collection_visibility(visibility_text)
+        if visibility is None:
+            yield event.plain_result("收藏夹可见性只能填写公开或私有。")
+            return
+        response = await self.client.create_community_collection(
+            {
+                "name": name,
+                "description": description,
+                "isPublic": visibility,
+            },
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"创建改枪收藏夹失败：{self._message_of(response)}"
+            )
+            return
+        data = self._data(response, {}) or {}
+        collection_id = data.get("collectionId") if isinstance(data, dict) else ""
+        yield event.plain_result(
+            "改枪收藏夹已创建。"
+            + (f"\n收藏夹 ID: {collection_id}" if collection_id else "")
+        )
+
+    async def _community_collection_update(
+        self,
+        event: AstrMessageEvent,
+        collection_id: str,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_community_collection_id(collection_id):
+            yield event.plain_result("改枪收藏夹 ID 格式无效。")
+            return
+        segments = [part.strip() for part in str(arg or "").split("|")]
+        if not segments or len(segments) > 3:
+            yield event.plain_result(
+                "格式：更新改枪收藏夹 <收藏夹ID> <名称或-> [| 描述或-] [| 公开/私有/-]"
+            )
+            return
+        payload: Dict[str, Any] = {}
+        name = segments[0] if segments[0] not in {"", "-"} else None
+        description = None
+        if len(segments) > 1 and segments[1] != "-":
+            description = segments[1]
+        validation_error = self._validate_community_collection_text(
+            name,
+            description,
+        )
+        if validation_error:
+            yield event.plain_result(validation_error)
+            return
+        if name is not None:
+            payload["name"] = name
+        if description is not None:
+            payload["description"] = description
+        if len(segments) > 2 and segments[2] not in {"", "-"}:
+            visibility = self._community_collection_visibility(segments[2])
+            if visibility is None:
+                yield event.plain_result("收藏夹可见性只能填写公开或私有。")
+                return
+            payload["isPublic"] = visibility
+        if not payload:
+            yield event.plain_result("请至少提供一项要更新的内容。")
+            return
+        response = await self.client.update_community_collection(
+            collection_id,
+            payload,
+            self._user_identifier(event),
+        )
+        yield event.plain_result(
+            "改枪收藏夹已更新。"
+            if self._ok(response)
+            else f"更新改枪收藏夹失败：{self._message_of(response)}"
+        )
+
+    async def _community_collection_delete(
+        self,
+        event: AstrMessageEvent,
+        collection_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_community_collection_id(collection_id):
+            yield event.plain_result("改枪收藏夹 ID 格式无效。")
+            return
+        response = await self.client.delete_community_collection(
+            collection_id,
+            self._user_identifier(event),
+        )
+        yield event.plain_result(
+            "改枪收藏夹已删除。"
+            if self._ok(response)
+            else f"删除改枪收藏夹失败：{self._message_of(response)}"
+        )
+
+    async def _community_collection_solution(
+        self,
+        event: AstrMessageEvent,
+        collection_id: str,
+        solution_id: str,
+        enabled: bool,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_community_collection_id(collection_id):
+            yield event.plain_result("改枪收藏夹 ID 格式无效。")
+            return
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.set_community_collection_solution(
+            collection_id,
+            solution_id,
+            enabled,
+            self._user_identifier(event),
+        )
+        action = "添加到" if enabled else "移出"
+        yield event.plain_result(
+            f"已将方案{action}改枪收藏夹。"
+            if self._ok(response)
+            else f"{action}收藏夹失败：{self._message_of(response)}"
+        )
+
+    async def _community_solution_rereview(
+        self,
+        event: AstrMessageEvent,
+        solution_id: str,
+        reason: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        response = await self.client.request_community_solution_rereview(
+            solution_id,
+            str(reason or "").strip(),
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"改枪方案复审申请失败：{self._message_of(response)}"
+            )
+            return
+        data = self._data(response, {}) or {}
+        status = (
+            self._solution_review_status_text(data.get("reviewStatus"))
+            if isinstance(data, dict) and data.get("reviewStatus")
+            else ""
+        )
+        yield event.plain_result(
+            "改枪方案复审申请已提交。"
+            + (f"\n审核状态: {status}" if status else "")
         )
 
     async def _solution_upload(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:

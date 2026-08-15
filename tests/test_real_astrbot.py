@@ -96,8 +96,8 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
                 )
                 hit_counts.append(hits)
 
-            assert len(handlers) == len(DELTA_COMMAND_SPECS) == 97
-            assert len(command_filters) == 97
+            assert len(handlers) == len(DELTA_COMMAND_SPECS) == 106
+            assert len(command_filters) == 106
             assert not regex_filters
             assert not duplicates
             assert not spaced_names
