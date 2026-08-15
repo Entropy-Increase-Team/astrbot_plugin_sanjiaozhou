@@ -21,20 +21,26 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
             import asyncio
             import importlib
             from collections import Counter
+            from pathlib import Path
             from types import SimpleNamespace
-            from unittest.mock import patch
+            from unittest.mock import AsyncMock, patch
 
             from astrbot_plugin_sanjiaozhou.core.version import PLUGIN_VERSION
             from astrbot_plugin_sanjiaozhou.main import (
                 DELTA_COMMAND_SPECS,
                 DeltaForcePlugin,
             )
+            from astrbot_plugin_sanjiaozhou.core.data import DeltaDataManager
             from astrbot.core.star.filter.command import CommandFilter
             from astrbot.core.star.filter.regex import RegexFilter
             from astrbot.core.star import command_management
+            from astrbot.core.star.context import Context
             from astrbot.core.star.star import star_registry
             from astrbot.core.star.star_handler import star_handlers_registry
             from astrbot.core.pipeline.waking_check.stage import WakingCheckStage
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_platform_adapter import (
+                AiocqhttpAdapter,
+            )
             from astrbot.core.star.session_plugin_manager import SessionPluginManager
 
 
@@ -319,11 +325,102 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
                 assert len(plugin_hits(await wake("三角洲干员列表"))) == 1
 
 
+            async def verify_record_push_platform_delivery():
+                adapter = AiocqhttpAdapter(
+                    {
+                        "id": "fixture-aiocqhttp",
+                        "ws_reverse_host": "127.0.0.1",
+                        "ws_reverse_port": 0,
+                        "ws_reverse_token": "",
+                    },
+                    {},
+                    asyncio.Queue(),
+                )
+                bot = SimpleNamespace(
+                    send_group_msg=AsyncMock(),
+                    send_private_msg=AsyncMock(),
+                )
+                adapter.bot = bot
+
+                context = object.__new__(Context)
+                context.platform_manager = SimpleNamespace(platform_insts=[adapter])
+
+                plugin = object.__new__(DeltaForcePlugin)
+                plugin.context = context
+                plugin.config = {"enable_image_render": True}
+                plugin_path = Path(importlib.import_module(module_name).__file__).resolve().parent
+                plugin.renderer = SimpleNamespace(
+                    render_html=AsyncMock(
+                        return_value=str(plugin_path / "resources" / "imgs" / "others" / "logo.png")
+                    )
+                )
+                plugin.subscriptions = SimpleNamespace(
+                    all=lambda: [
+                        {
+                            "subscription_id": "fixture-subscription",
+                            "targets": {
+                                "fixture-aiocqhttp:GroupMessage:123": {"group": True},
+                                "fixture-aiocqhttp:FriendMessage:456": {"private": True},
+                            },
+                        }
+                    ]
+                )
+                plugin._seen_record_events = {}
+
+                event_data = {
+                    "subscription_id": "fixture-subscription",
+                    "record_id": "fixture-record",
+                    "record_type": "sol",
+                    "event_time": "2026-08-15T10:00:00Z",
+                    "display_name": "真实路由测试玩家",
+                    "is_recent": True,
+                    "record": {
+                        "MapId": "100",
+                        "MapName": "零号大坝-常规",
+                        "ArmedForceId": "10",
+                        "EscapeFailReason": 1,
+                        "DurationS": 125,
+                        "FinalPrice": 250000,
+                        "flowCalGainedPrice": 100000,
+                        "KillCount": 3,
+                    },
+                }
+
+                plugin.data_mgr = DeltaDataManager(
+                    str(plugin_path),
+                    str(plugin_path / "config"),
+                )
+                with patch(
+                    "astrbot.core.platform.platform.Metric.upload",
+                    new=AsyncMock(),
+                ):
+                    await plugin._push_record_event(event_data)
+                    await plugin._push_record_event(event_data)
+
+                bot.send_group_msg.assert_awaited_once()
+                bot.send_private_msg.assert_awaited_once()
+                assert bot.send_group_msg.await_args.kwargs["group_id"] == 123
+                assert bot.send_private_msg.await_args.kwargs["user_id"] == 456
+
+                for call in (
+                    bot.send_group_msg.await_args,
+                    bot.send_private_msg.await_args,
+                ):
+                    payload = call.kwargs["message"]
+                    assert [item["type"] for item in payload] == ["text", "image"]
+                    assert "真实路由测试玩家" in payload[0]["data"]["text"]
+                    assert "零号大坝" in payload[0]["data"]["text"]
+                    assert payload[1]["data"]["file"].startswith("base64://")
+                    assert len(payload[1]["data"]["file"]) > 100
+
+
             asyncio.run(verify_wake_prefix())
             asyncio.run(verify_cross_plugin_conflict_resolution())
+            asyncio.run(verify_record_push_platform_delivery())
             print("REAL_ASTRBOT_REGISTRATION_OK")
             print("REAL_ASTRBOT_WAKE_PREFIX_OK")
             print("REAL_ASTRBOT_CONFLICT_RESOLUTION_OK")
+            print("REAL_ASTRBOT_RECORD_PUSH_DELIVERY_OK")
             """
         )
         env = os.environ.copy()
@@ -351,6 +448,7 @@ class RealAstrBotRegistrationTests(unittest.TestCase):
         self.assertIn("REAL_ASTRBOT_REGISTRATION_OK", result.stdout)
         self.assertIn("REAL_ASTRBOT_WAKE_PREFIX_OK", result.stdout)
         self.assertIn("REAL_ASTRBOT_CONFLICT_RESOLUTION_OK", result.stdout)
+        self.assertIn("REAL_ASTRBOT_RECORD_PUSH_DELIVERY_OK", result.stdout)
 
 
 if __name__ == "__main__":
