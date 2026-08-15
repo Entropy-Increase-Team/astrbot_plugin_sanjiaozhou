@@ -245,7 +245,7 @@ class DeltaRenderer:
         try:
             width = int(options.get("viewport_width") or options.get("width") or 1400)
             height = int(options.get("viewport_height") or options.get("height") or 1200)
-            scale = float(options.get("device_scale_factor") or options.get("scale") or 2.0)
+            scale = float(options.get("device_scale_factor") or options.get("scale") or 1.0)
             context = await self._browser.new_context(
                 viewport={"width": width, "height": height},
                 device_scale_factor=scale,

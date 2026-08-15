@@ -242,6 +242,7 @@ DELTA_COMMAND_SPECS = [
     ("添加改枪收藏夹", {"添加改枪方案收藏夹"}),
     ("移除改枪收藏夹", {"移除改枪方案收藏夹"}),
     ("改枪方案复审", {"改枪码复审"}),
+    ("研究中心", {"个人研究", "研究列表"}),
 ]
 
 
@@ -1537,6 +1538,10 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(?:成就|荣誉|徽章)\s*(.*)", body):
             async for r in self._honors(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:研究中心|个人研究|研究列表)\s*(.*)", body):
+            async for r in self._research(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(出红记录|大红记录|藏品记录|大红收藏|大红藏品|大红海报|藏品海报)(?:\s+(.+))?", body):
@@ -4149,6 +4154,146 @@ class DeltaForcePlugin(Star):
             )
         yield event.plain_result("\n\n".join(lines))
 
+    @staticmethod
+    def _research_args(arg: str) -> Tuple[str, int, str]:
+        status = "all"
+        page = 1
+        status_seen = False
+        status_aliases = {
+            "全部": "all",
+            "all": "all",
+            "未购买": "unbought",
+            "未购": "unbought",
+            "已购买": "bought",
+            "已购": "bought",
+            "大赚": "great",
+        }
+        for part in str(arg or "").split():
+            low = part.casefold()
+            if match := re.fullmatch(r"(?:page|页)?(\d+)", low):
+                page = max(1, int(match.group(1)))
+            elif low in status_aliases and not status_seen:
+                status = status_aliases[low]
+                status_seen = True
+            else:
+                return status, page, "格式：研究中心 [全部/未购买/已购买/大赚] [页码]"
+        return status, page, ""
+
+    @staticmethod
+    def _research_rows(response: Any) -> List[Dict[str, Any]]:
+        data = DeltaForcePlugin._data(response, {}) or {}
+        return [
+            item
+            for item in DeltaForcePlugin._first_list(data, ("list", "items", "offers"))
+            if isinstance(item, dict)
+        ]
+
+    @staticmethod
+    def _research_object(item: Any) -> Tuple[str, int]:
+        if not isinstance(item, dict):
+            return "", 0
+        object_id = str(
+            item.get("objectID")
+            or item.get("objectId")
+            or item.get("id")
+            or ""
+        ).strip()
+        count = max(1, int(DeltaForcePlugin._num(item.get("count"))))
+        return object_id, count
+
+    async def _research(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        status, page, error = self._research_args(arg)
+        if error:
+            yield event.plain_result(error)
+            return
+        token = await self._need_token(event)
+        if not token:
+            yield event.plain_result("您尚未绑定账号，请先使用 登录 或 绑定 <token>。")
+            return
+        response = await self.client.research(token)
+        if not self._ok(response):
+            yield event.plain_result(f"查询个人研究中心失败：{self._message_of(response)}")
+            return
+        rows = self._research_rows(response)
+        if not rows:
+            yield event.plain_result("当前研究中心暂无可用方案。")
+            return
+
+        if status == "unbought":
+            rows = [item for item in rows if self._num(item.get("Bought")) <= 0]
+        elif status == "bought":
+            rows = [item for item in rows if self._num(item.get("Bought")) > 0]
+        elif status == "great":
+            rows = [item for item in rows if self._num(item.get("IsGreatEarn")) > 0]
+        if not rows:
+            yield event.plain_result("当前筛选条件下暂无研究方案。")
+            return
+
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        start = (page - 1) * page_size
+        page_rows = rows[start : start + page_size]
+
+        object_ids: List[str] = []
+        for item in page_rows:
+            target_id, _ = self._research_object(item.get("Item") or item.get("item"))
+            if target_id:
+                object_ids.append(target_id)
+            materials = item.get("ExchangedProps") or item.get("exchangedProps") or []
+            if isinstance(materials, list):
+                object_ids.extend(
+                    object_id
+                    for object_id, _ in (self._research_object(value) for value in materials)
+                    if object_id
+                )
+        info_map = await self._object_info_map(list(dict.fromkeys(object_ids)))
+
+        status_names = {
+            "all": "全部",
+            "unbought": "未购买",
+            "bought": "已购买",
+            "great": "大赚",
+        }
+        lines = [
+            f"【个人研究中心｜{status_names[status]}】第 {page}/{total_pages} 页，共 {len(rows)} 项"
+        ]
+        for index, item in enumerate(page_rows, start + 1):
+            target_id, target_count = self._research_object(item.get("Item") or item.get("item"))
+            target_info = info_map.get(target_id) or {}
+            target_name = str(
+                target_info.get("objectName") or target_info.get("name") or target_id or "未知物品"
+            ).strip()
+            bought = self._num(item.get("Bought")) > 0
+            great = self._num(item.get("IsGreatEarn")) > 0
+            flags = "[大赚] " if great else ""
+            materials_text: List[str] = []
+            materials = item.get("ExchangedProps") or item.get("exchangedProps") or []
+            if isinstance(materials, list):
+                for material in materials:
+                    material_id, material_count = self._research_object(material)
+                    if not material_id:
+                        continue
+                    material_info = info_map.get(material_id) or {}
+                    material_name = str(
+                        material_info.get("objectName")
+                        or material_info.get("name")
+                        or material_id
+                    ).strip()
+                    materials_text.append(f"{material_name} ×{material_count}")
+            lines.append(
+                f"{index}. {flags}{target_name} ×{target_count}\n"
+                f"物品 ID: {target_id or '-'}｜价格: {self.data_mgr.fmt_num(item.get('Price'))}｜状态: {'已购买' if bought else '未购买'}\n"
+                f"所需材料: {'、'.join(materials_text) if materials_text else '无'}"
+            )
+        yield event.plain_result("\n\n".join(lines))
+
     async def _collection(self, event: AstrMessageEvent, kind: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
@@ -4918,15 +5063,15 @@ class DeltaForcePlugin(Star):
         type_names: Dict[str, str],
     ) -> List[Dict[str, Any]]:
         type_images = {
-            "storage": "仓库.png",
-            "control": "指挥中心.png",
-            "workbench": "工作台.png",
-            "tech": "技术中心.png",
-            "shoot": "靶场.png",
-            "training": "训练中心.png",
-            "pharmacy": "制药台.png",
-            "armory": "防具台.png",
-            "diving": "潜水中心.png",
+            "storage": "仓库.webp",
+            "control": "指挥中心.webp",
+            "workbench": "工作台.webp",
+            "tech": "技术中心.webp",
+            "shoot": "靶场.webp",
+            "training": "训练中心.webp",
+            "pharmacy": "制药台.webp",
+            "armory": "防具台.webp",
+            "diving": "潜水中心.webp",
         }
         result = []
         for place in places:
@@ -5100,7 +5245,7 @@ class DeltaForcePlugin(Star):
         render_data = {
             "operatorName": op_name,
             "fullName": target.get("fullName") or target.get("englishName") or "",
-            "operatorPic": target.get("pic") or target.get("operatorPic") or (self.renderer.res_path.as_uri() + f"/imgs/operator/{op_name}.jpg"),
+            "operatorPic": target.get("pic") or target.get("operatorPic") or (self.renderer.res_path.as_uri() + f"/imgs/operator/{op_name}.webp"),
             "armyType": target.get("armyType") or target.get("type") or "",
             "armyTypeDesc": target.get("armyTypeDesc") or "",
             "abilitiesList": abilities,

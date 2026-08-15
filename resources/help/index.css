@@ -3,7 +3,7 @@ body {
   transform-origin: 0 0;
   width: 1280px;
   margin: 0;
-  background: #081011 url("./imgs/default/bg.jpg") center top / cover no-repeat;
+  background: #081011 url("./imgs/default/bg.webp") center top / cover no-repeat;
   color: #eef6f2;
 }
 
@@ -14,7 +14,7 @@ body {
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(6, 11, 12, 0.9) 0%, rgba(9, 15, 16, 0.94) 40%, rgba(6, 9, 10, 0.98) 100%),
-    url("./imgs/default/bg.jpg") center top / cover no-repeat;
+    url("./imgs/default/bg.webp") center top / cover no-repeat;
 }
 
 .container::before {

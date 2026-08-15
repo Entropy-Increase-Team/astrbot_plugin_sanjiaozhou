@@ -411,6 +411,12 @@ class DeltaForceClient:
             framework_token=framework_token,
         )
 
+    async def research(self, framework_token: str):
+        return await self.get(
+            "/api/v1/df/person/research",
+            framework_token=framework_token,
+        )
+
     async def red_list(self, framework_token: str):
         return await self.get("/api/v1/df/person/redlist", framework_token=framework_token)
 

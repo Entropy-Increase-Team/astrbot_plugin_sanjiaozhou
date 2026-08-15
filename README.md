@@ -1,12 +1,13 @@
 # sanjiaozhou
 
-<img decoding="async" align="right" src="resources/imgs/readme/hz.png" width="35%">
+<img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.22`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.23`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
-- 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
+- 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
 - 使用插件内 Playwright 渲染 HTML 模板，帮助菜单和数据面板以图片形式返回。
+- 发布包会清理测试与开发专用文件，并压缩图片素材；渲染默认使用 `1×` 像素倍率，兼顾聊天预览清晰度与传输带宽。
 
 > [!TIP]
 > 三角洲行动是一款由腾讯琳琅天上工作室开发的 FPS 游戏。本插件用于在 AstrBot 中查询游戏数据、生成战报图片和使用常用工具。
@@ -62,7 +63,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.21` 接入改枪收藏夹管理和方案复审；`0.4.22` 新增个人成就与成就分类查询。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.22` 新增个人成就与成就分类查询；`0.4.23` 新增个人研究中心查询。
 
 ### 个人类功能
 
@@ -82,6 +83,7 @@ playwright install chromium
 - [x] 战绩查询
 - [x] 聚合藏品/资产查询（典藏枪皮、典藏挂饰、动态普通藏品分类和堆叠数量）
 - [x] 个人成就与成就分类查询（模式、分类筛选和分页）
+- [x] 个人研究中心查询（购买状态、大赚筛选、分页和物品名称补全）
 - [x] 货币信息查询
 - [x] 流水查询（货币流水包含资产余额变化趋势图）
 - [x] 出红记录/大红收藏海报
@@ -168,6 +170,7 @@ playwright install chromium
 | `藏品 [类型]` / `资产 [类型]` | 聚合查询藏品与资产，可按枪皮、挂饰、干员皮肤等类型筛选 | `藏品 枪皮` |
 | `成就 [模式] [分类名或分类=ID] [页码]` | 查询已解锁成就、徽章等级与解锁条件 | `成就 全面 分类=1002 页2` |
 | `成就分类 [模式]` | 查询成就分类名称和 ID | `成就分类 烽火` |
+| `研究中心 [全部/未购买/已购买/大赚] [页码]` | 查询个人研究方案、价格与交换材料 | `研究中心 大赚 页2` |
 | `出红记录 [物品名]` | 查询藏品解锁记录 | `出红记录` |
 | `大红收藏 [赛季数字]` | 生成大红收藏海报 | `大红收藏 4` |
 | `封号记录` | 查询当前账号的 QQ 安全中心违规记录 | `封号记录` |
@@ -227,34 +230,6 @@ playwright install chromium
 | `tts上传` / `tts重播` | 发送最近五分钟内合成的文件或语音 | `tts上传` |
 
 </details>
-
-## 开发验证
-
-快速回归会编译全部业务模板和版本卡片：
-
-```powershell
-python -m pytest -q -p no:cacheprovider
-```
-
-发布前可启用全模板 Playwright 视觉验收；该模式会真实渲染 19 张 PNG，检查尺寸、文件体积、透明度和非白像素，并在检查后删除截图：
-
-```powershell
-$env:DELTA_VISUAL_TESTS = "1"
-python -m pytest -q -p no:cacheprovider tests/test_core_queries.py -k core_templates
-```
-
-真实后端联调默认不会联网；仅在安全环境中注入 `DELTA_LIVE_API_KEY` 后启用，`DELTA_LIVE_CLIENT_ID` 和 `DELTA_LIVE_FRAMEWORK_TOKEN` 分别控制 WebSocket 与已有绑定测试。联调覆盖登录初始化、实时订阅以及公共元数据、活动日历、物品、价格、音频、TTS、文章、AI 和改枪方案字段契约。测试会压制底层网络调试日志，且不会输出 Header、Token、客户端 ID、二维码或 OAuth 链接：
-
-```powershell
-python -m unittest tests.test_live_backend -v
-```
-
-使用 AstrBot 自身 Python 环境可启用隔离子进程测试，验证真实框架导入、插件元数据、标准命令过滤器、别名唯一性、单消息单 handler 匹配、WebUI 自定义触发符去除后的参数保留、跨插件冲突经 AstrBot 原生命令管理改名后的唯一激活，以及战绩事件通过真实 `Context`、UMO 和 OneBot 适配器下发为群聊/私聊消息：
-
-```powershell
-$env:DELTA_REAL_ASTRBOT_TESTS = "1"
-python -m unittest tests.test_real_astrbot -v
-```
 
 ## 与 Yunzai 版的关系
 

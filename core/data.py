@@ -231,19 +231,19 @@ class DeltaDataManager:
         prefix = "全面-" if mode_key == "mp" else "烽火-"
         if mode_key == "mp":
             base = clean.split("-")[0].strip()
-            return f"imgs/map/{prefix}{base}.jpg"
+            return f"imgs/map/{prefix}{base}.webp"
         base, _, difficulty = clean.partition("-")
         map_dir = self.resources / "imgs" / "map"
         candidates = []
         if difficulty:
-            candidates.append(f"{prefix}{base}-{difficulty}.png")
+            candidates.append(f"{prefix}{base}-{difficulty}.webp")
         for diff in ("常规", "机密", "绝密", "适应", "普通", "困难", "极限"):
-            candidates.append(f"{prefix}{base}-{diff}.png")
-        candidates.append(f"{prefix}{base}.png")
+            candidates.append(f"{prefix}{base}-{diff}.webp")
+        candidates.append(f"{prefix}{base}.webp")
         for name in candidates:
             if (map_dir / name).exists():
                 return f"imgs/map/{name}"
-        return f"imgs/map/{prefix}{base}-常规.png"
+        return f"imgs/map/{prefix}{base}-常规.webp"
 
     @staticmethod
     def get_random_background() -> str:

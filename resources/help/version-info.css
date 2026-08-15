@@ -18,7 +18,7 @@ body {
   min-height: 1000px;
   padding: 34px;
   overflow: hidden;
-  background-image: linear-gradient(rgba(9, 12, 13, 0.3), rgba(9, 12, 13, 0.96)), url("version-bg.jpg");
+  background-image: linear-gradient(rgba(9, 12, 13, 0.3), rgba(9, 12, 13, 0.96)), url("version-bg.webp");
   background-position: center top;
   background-size: cover;
 }
