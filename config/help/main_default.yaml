@@ -73,7 +73,7 @@ helpList:
           desc: "解除后端绑定并移除本地记录"
         - icon: 47
           title: "删除 [序号]"
-          desc: "删除QQ/微信登录数据"
+          desc: "删除QQ/微信/Gamesafe登录数据"
         - icon: 49
           title: "(微信/QQ)刷新"
           desc: "刷新当前微信/QQ登录凭证"
@@ -85,10 +85,13 @@ helpList:
           desc: "登录WeGame（QQ/微信扫码）"
         - icon: 61
           title: "安全中心登陆"
-          desc: "通过安全中心扫码登录"
+          desc: "通过 QQSafe 安全中心扫码登录"
         - icon: 71
           title: "(QQ/微信)授权登录 [回调URL]"
           desc: "授权后提交浏览器最终停留的完整回调URL"
+        - icon: 71
+          title: "微信安全中心授权登录 [回调URL]"
+          desc: "通过 Gamesafe 微信授权并绑定安全中心账号"
         - icon: 52
           title: "网页登陆"
           desc: "在授权页选择已有账号，批准后自动绑定"
@@ -265,6 +268,15 @@ helpList:
         - icon: 41
           title: "违规记录"
           desc: "登录QQ安全中心后可查询历史违规"
+        - icon: 41
+          title: "微信安全中心绑定 | 登录信息"
+          desc: "查看 Gamesafe 绑定账号和登录状态"
+        - icon: 41
+          title: "微信安全中心封禁记录 | 冻结状态"
+          desc: "查询 Gamesafe 账号处罚与冻结状态"
+        - icon: 41
+          title: "微信安全中心设备 | 在线状态 | 安全报告"
+          desc: "查询 Gamesafe 设备、在线状态和安全报告"
         - icon: 48
           title: "特勤处状态"
           desc: "查询特勤处制造状态"

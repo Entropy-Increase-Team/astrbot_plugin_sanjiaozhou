@@ -11,7 +11,7 @@
 
 测试栏中的“待测”表示没有验证证据，不能视为通过。API 栏只填写已经从当前 Go 后端源码或 Swagger 确认的路径；其余项目在后续审计时补全。
 
-2026-08-15 再次通过已登录的 GitHub 仓库页面确认 API `main` 最新提交为 `fbd0eb1`；接入该版本新增的活动日历接口。新增 `活动日历`、`活动`、`活动列表` 三个标准命令名，注册结构扩展为 83 个独立 `CommandFilter`、311 个唯一命令名与别名；新命令追加在原有命令之后，不改变既有处理器顺序。
+2026-08-15 从 GitHub 拉取并确认 API `main` 最新提交仍为 `fbd0eb1`；在活动日历之外继续接入该版本的 Gamesafe 微信安全中心 OAuth 与七类只读查询。新增命令继续追加在原有命令之后，注册结构扩展为 91 个独立 `CommandFilter`、332 个唯一命令名与别名，不改变既有处理器顺序。
 
 2026-08-15 使用本地 AstrBot v4.17.6 实际注册表验证：本插件的 `干员列表` 与终末地插件同名，`tts` 与 AstrBot 内置命令同名，帮助命令的 `help` 别名还会与内置帮助冲突。使用 AstrBot 原生命令管理移除本插件 `help` 别名，并将本插件的两个命令改为 `三角洲干员列表`、`三角洲tts` 后，三个三角洲入口均只激活一个 handler；插件源码仍保留完整 Yunzai 命令语义。战争雷霆的 `help` 实为 `wt help` 子命令，不属于根命令冲突。
 
@@ -70,6 +70,7 @@
 | 工具 | `apps/tools/Room.js` | `getRoomList`、`createRoom`、`joinRoom`、`quitRoom`、`kickMember`、`getRoomInfo`、`getMapList`、`getTagList` | 房间列表、创建、加入、退出、踢人、信息、地图、标签 | 房间信息、房间列表及相关别名 | `_battle_room_info`；`_dispatch` 中房间管理阻塞提示 | `GET /api/v1/df/person/roominfo?roomId=&type=`；最新版没有开黑房间管理路由 | 无 | 有 | 烽火列表、全面嵌套玩家详情及 URL 编码昵称 fixture 通过 | 空成员列表 fixture 通过 | API 错误、模式错误和未绑定 fixture 通过 | 部分（战绩对局房间详情已验证；开黑房间管理因后端无路由而阻塞） |
 | 工具 | `apps/tools/SolutionV2.js` | `uploadSolution`、`getSolutionList`、`getSolutionDetail`、`voteSolution`、`updateSolution`、`deleteSolution`、`collectSolution`、`getCollectList` | 改枪方案上传、列表、详情、投票、更新、删除、收藏、收藏列表 | 上传改枪码、改枪码列表、改枪码详情、改枪码点赞/点踩、更新/删除/收藏改枪码、改枪码收藏列表 | `_solution_upload`、`_solution_list`、`_solution_detail`、`_solution_vote`、`_solution_update`、`_solution_delete`、`_solution_favorite` | `/api/v1/df/gunmod/community/solutions` 及 UUID 子路由；写操作需 `gunmod:community:write`、`X-Client-User-ID`、`X-Client-User-Type` | 无 | 有 | 公开与旧版列表真实字段契约、上传、更新、删除、投票和收藏 fixture 通过 | 普通/收藏列表、详情空数据及参数错误 fixture 通过 | 查询错误与写权限不足 fixture 通过 | 已验证 |
 | API 扩展 | 无（后端 v3.36.0 新增） | 无 | 无 Yunzai 旧命令 | 活动日历、活动、活动列表 | `_activities`、`_activity_groups`、`_activity_status` | `GET /api/v1/df/activities`；`UnifiedAuth + SubscriptionGuardAuto` | `activities` | 有 | 权威 `groups[].cardRows`、扁平 `tabs/cards`、相对图片地址、四类时间状态与 Playwright fixture 通过 | 空标签、空卡片 fixture 通过 | 503 公共池不可用和响应格式异常 fixture 通过 | 已验证 |
+| API 扩展 | 无（最新版后端 Gamesafe） | 无 | 无 Yunzai 旧命令 | 微信安全中心授权登录、绑定、登录信息、封禁记录、冻结状态、设备、在线状态、安全报告及别名 | `_oauth_login`、`_token_for_type`、`_gamesafe_bindings`、`_gamesafe_query` | `GET/POST /api/v1/login/gamesafe/oauth`；`GET /api/v1/df/gamesafe/{bindinfo,logininfo,punish,frozen,devices,online,report}`；`X-Framework-Token` | 无 | 有 | OAuth 回调、专用凭证、七类权威请求参数与安全字段格式化 fixture 通过 | 未绑定、空绑定和空报告 fixture 通过 | 凭证失效和异常响应 fixture 通过 | 已验证（冻结、解冻和踢下线属于外部状态写操作，本插件未开放） |
 | 工具 | `apps/tools/Tools.js` | `getDailyKeyword`、`getArticleList`、`getArticleDetail` | 每日密码、文章列表、文章详情 | 每日密码、文章列表、文章详情 | `_daily_keyword`、`_article_list`、`_article_detail` | `GET /api/v1/df/tools/dailykeyword`；`GET /api/v1/df/tools/article/list`；`GET /api/v1/df/tools/article/detail?threadID=` | 无 | 有 | 每日密码与文章列表真实字段契约、分类合并、详情正文与请求参数 fixture 通过 | 公共池不可用、空列表与文章缺失 fixture 通过 | API 错误 fixture 通过 | 已验证 |
 
 ## 第一阶段接口证据
@@ -120,7 +121,7 @@
 
 ### 第一阶段验证记录
 
-- 真实 AstrBot v4.17.6 源码导入成功；当前注册结构检查为 83 个独立命令 handler、311 个命令名/别名。
+- 真实 AstrBot v4.17.6 源码导入成功；当前注册结构检查为 91 个独立命令 handler、332 个命令名/别名。
 - 注册结果中空格命令、重复命令名和 `RegexFilter` 数量均为 0。
 - 脱敏登录二维码 fixture 为 `328×328` PNG，可由图片解析器识别并通过 `Image.fromBase64()` 路径发送。
 - 帮助菜单已由插件自身的 `DeltaRenderer` 和 Playwright 渲染为 `2560×6090` PNG，已人工检查中文、背景、图标、换行和底部完整性。
@@ -153,5 +154,5 @@
 - 登录专项覆盖二维码有效期的未来、已过期、缺失、非法值，以及 Unix 秒、Unix 毫秒和 ISO 时间格式。
 - 扫码、Cookie、OAuth 的收尾提示覆盖后端账号绑定成功/失败与角色绑定成功/失败组合；后端未确认时只说明本地暂存，不再误报完整绑定成功。
 - 网页授权覆盖权威请求体、相对授权链接、批准领取、拒绝、过期、重复领取缺失凭证及连续状态查询失败。
-- 使用 AstrBot v4.17.6 真实源码重新导入插件：83 个处理器均为 `CommandFilter`，`RegexFilter` 和无过滤器处理器均为 0。
+- 使用 AstrBot v4.17.6 真实源码重新导入插件：91 个处理器均为 `CommandFilter`，`RegexFilter` 和无过滤器处理器均为 0。
 - 后台任务使用事件循环级登记表防止插件重载或重复初始化产生重复推送；终止流程覆盖任务回收、关闭超时、资源异常隔离与幂等调用。

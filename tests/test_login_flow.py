@@ -479,6 +479,13 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicates)
         self.assertIn(("订阅", {"取消订阅", "订阅状态"}), DELTA_COMMAND_SPECS)
         self.assertIn(("活动日历", {"活动", "活动列表"}), DELTA_COMMAND_SPECS)
+        self.assertIn(
+            (
+                "微信安全中心授权登录",
+                {"gamesafe授权登录", "gamesafeoauth登录", "微信安全中心oauth登录"},
+            ),
+            DELTA_COMMAND_SPECS,
+        )
 
     def test_yunzai_literal_command_aliases_are_registered(self):
         command_aliases = {
@@ -518,6 +525,12 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
                 for prefix in ("微信", "wx", "WX")
                 for method in ("授权", "auth", "oauth")
                 for suffix in ("登陆", "登录")
+            },
+            "微信安全中心授权登录": {
+                "微信安全中心授权登录",
+                "gamesafe授权登录",
+                "gamesafeoauth登录",
+                "微信安全中心oauth登录",
             },
             "更新": {
                 "更新",
@@ -568,6 +581,7 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
             ("娱乐功能", ("help", "entertainment")),
             ("qq登陆", ("login", "qq登陆")),
             ("WXoauth登陆 callback", ("oauth", "WX", "callback")),
+            ("gamesafeoauth登录 callback", ("oauth", "gamesafe", "callback")),
             ("插件更新日志", ("update_log",)),
             ("插件强制更新", ("update", True)),
         )
@@ -630,6 +644,24 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("账号和游戏角色均已绑定", results[-1]["text"])
         self.assertIn("手动撤回", results[-1]["text"])
         self.assertNotIn(("mock-user", "qq"), plugin._oauth_sessions)
+
+    async def test_gamesafe_oauth_uses_dedicated_session_and_skips_character_binding(self):
+        client = _OAuthClient()
+        plugin = self._plugin(client)
+        started = await _collect(plugin._oauth_login(_Event(), "gamesafe", ""))
+        callback = "https://wx.gamesafe.qq.com/do_offlin?code=mock-code&state=mock-state"
+
+        completed = await _collect(plugin._oauth_login(_Event(), "gamesafe", callback))
+
+        self.assertIn("微信安全中心授权登录", started[0]["text"])
+        self.assertEqual(client.submit_payload["callbackUrl"], callback)
+        self.assertIn("已绑定为当前账号", completed[-1]["text"])
+        self.assertNotIn("游戏角色", completed[-1]["text"])
+        self.assertEqual(
+            plugin._save_binding.await_args.args[1:],
+            ("mock-final-token", "gamesafe"),
+        )
+        self.assertNotIn(("mock-user", "gamesafe"), plugin._oauth_sessions)
 
     async def test_oauth_recalls_sensitive_callback_on_aiocqhttp(self):
         client = _OAuthClient()
@@ -1021,8 +1053,110 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
 
         result = await _collect(plugin._delete_account(_Event(), 1, True))
 
-        self.assertIn("仅支持 QQ 和微信账号", result[0]["text"])
+        self.assertIn("仅支持 QQ、微信和微信安全中心账号", result[0]["text"])
         client.login_delete.assert_not_awaited()
+
+    async def test_account_login_delete_supports_gamesafe(self):
+        class Bindings:
+            def __init__(self):
+                self.deleted = 0
+
+            async def get_user_bindings(self, _user_id):
+                return [
+                    {
+                        "binding_id": "fixture-gamesafe-binding",
+                        "framework_token": "fixture-gamesafe-token",
+                        "login_type": "gamesafe",
+                    }
+                ]
+
+            async def delete_binding(self, _user_id, _index):
+                self.deleted += 1
+                return {"framework_token": "fixture-gamesafe-token"}
+
+        client = SimpleNamespace(
+            login_delete=AsyncMock(return_value={"code": 0, "data": {"success": True}}),
+            delete_binding=AsyncMock(),
+        )
+        plugin = self._plugin(client)
+        plugin.bindings = Bindings()
+
+        result = await _collect(plugin._delete_account(_Event(), 1, True))
+
+        self.assertIn("登录数据已删除", result[0]["text"])
+        client.login_delete.assert_awaited_once_with(
+            "gamesafe", "fixture-gamesafe-token"
+        )
+        self.assertEqual(plugin.bindings.deleted, 1)
+
+    async def test_gamesafe_token_selection_ignores_primary_game_account(self):
+        plugin = self._plugin(SimpleNamespace())
+        plugin.bindings = SimpleNamespace(
+            get_user_bindings=AsyncMock(
+                return_value=[
+                    {
+                        "framework_token": "fixture-qq-token",
+                        "token_type": "qq",
+                        "is_primary": True,
+                        "is_valid": True,
+                    },
+                    {
+                        "framework_token": "fixture-expired-gamesafe",
+                        "token_type": "gamesafe",
+                        "is_valid": False,
+                    },
+                    {
+                        "framework_token": "fixture-gamesafe-token",
+                        "login_type": "gamesafe",
+                        "is_valid": True,
+                    },
+                ]
+            )
+        )
+
+        token = await plugin._token_for_type(_Event(), "gamesafe")
+
+        self.assertEqual(token, "fixture-gamesafe-token")
+
+    async def test_gamesafe_binding_skips_game_character_lookup(self):
+        client = SimpleNamespace(
+            create_binding=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "binding": {
+                            "id": "fixture-gamesafe-binding",
+                            "framework_token": "fixture-gamesafe-token",
+                            "token_type": "gamesafe",
+                            "login_type": "gamesafe",
+                        }
+                    },
+                }
+            )
+        )
+        plugin = self._plugin(client)
+        del plugin._save_binding
+        plugin.config["client_id"] = "mock-bot"
+        plugin.bindings = SimpleNamespace(
+            upsert_binding=AsyncMock(
+                return_value={
+                    "binding_id": "fixture-gamesafe-binding",
+                    "framework_token": "fixture-gamesafe-token",
+                    "token_type": "gamesafe",
+                    "login_type": "gamesafe",
+                }
+            )
+        )
+        plugin._fill_binding_info = AsyncMock()
+
+        binding, remote_ok, message = await plugin._save_binding(
+            _Event(), "fixture-gamesafe-token", "gamesafe"
+        )
+
+        self.assertTrue(remote_ok)
+        self.assertEqual(message, "")
+        self.assertEqual(binding["token_type"], "gamesafe")
+        plugin._fill_binding_info.assert_not_awaited()
 
     async def test_account_refresh_uses_login_route_and_checks_account_type(self):
         class Bindings:

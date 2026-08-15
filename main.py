@@ -214,6 +214,17 @@ DELTA_COMMAND_SPECS = [
     ("房间列表", {"创建房间", "加入房间", "退出房间", "解散房间", "踢人", "房间信息", "房间地图列表", "房间标签列表"}),
     ("更新", {"强制更新", "插件更新", "插件强制更新", "更新日志", "插件更新日志", "update", "update_log"}),
     ("活动日历", {"活动", "活动列表"}),
+    (
+        "微信安全中心授权登录",
+        {"gamesafe授权登录", "gamesafeoauth登录", "微信安全中心oauth登录"},
+    ),
+    ("微信安全中心绑定", {"gamesafe绑定", "微信安全中心账号"}),
+    ("微信安全中心登录信息", {"gamesafe登录信息"}),
+    ("微信安全中心封禁记录", {"gamesafe封禁记录", "微信安全中心处罚记录"}),
+    ("微信安全中心冻结状态", {"gamesafe冻结状态"}),
+    ("微信安全中心设备", {"gamesafe设备", "微信安全中心设备列表"}),
+    ("微信安全中心在线状态", {"gamesafe在线状态"}),
+    ("微信安全中心安全报告", {"gamesafe安全报告"}),
 ]
 
 
@@ -628,6 +639,26 @@ class DeltaForcePlugin(Star):
         if not token:
             return None
         return token
+
+    async def _token_for_type(
+        self,
+        event: AstrMessageEvent,
+        token_type: str,
+    ) -> Optional[str]:
+        bindings = await self.bindings.get_user_bindings(event.get_sender_id())
+        expected = str(token_type or "").strip().lower()
+        candidates = [
+            item
+            for item in bindings
+            if str(item.get("token_type") or item.get("login_type") or "").lower()
+            == expected
+            and item.get("is_valid", True)
+            and item.get("framework_token")
+        ]
+        if not candidates:
+            return None
+        primary = next((item for item in candidates if item.get("is_primary")), None)
+        return str((primary or candidates[0]).get("framework_token") or "") or None
 
     async def _render_or_text(
         self,
@@ -1374,6 +1405,14 @@ class DeltaForcePlugin(Star):
             async for r in self._oauth_login(event, m.group(1), m.group(2).strip()):
                 yield r
             return
+        if m := re.fullmatch(
+            r"(?:微信安全中心授权登录|gamesafe授权登录|gamesafeoauth登录|微信安全中心oauth登录)\s*(.*)",
+            body,
+            flags=re.I | re.S,
+        ):
+            async for r in self._oauth_login(event, "gamesafe", m.group(1).strip()):
+                yield r
+            return
         if re.fullmatch(r"(网页|web|网站)(登陆|登录)", body):
             async for r in self._web_login(event):
                 yield r
@@ -1454,6 +1493,50 @@ class DeltaForcePlugin(Star):
             return
         if re.fullmatch(r"(封号记录|违规记录|违规历史|封号历史)", body):
             async for r in self._ban_history(event):
+                yield r
+            return
+        if re.fullmatch(r"(微信安全中心绑定|gamesafe绑定|微信安全中心账号)", body, flags=re.I):
+            async for r in self._gamesafe_bindings(event):
+                yield r
+            return
+        if re.fullmatch(r"(微信安全中心登录信息|gamesafe登录信息)", body, flags=re.I):
+            async for r in self._gamesafe_query(event, "login"):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(?:微信安全中心封禁记录|gamesafe封禁记录|微信安全中心处罚记录)(?:\s+(\d{5,20}))?",
+            body,
+            flags=re.I,
+        ):
+            async for r in self._gamesafe_query(event, "punish", m.group(1) or ""):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(?:微信安全中心冻结状态|gamesafe冻结状态)(?:\s+(\d{5,20}))?",
+            body,
+            flags=re.I,
+        ):
+            async for r in self._gamesafe_query(event, "frozen", m.group(1) or ""):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(?:微信安全中心设备|gamesafe设备|微信安全中心设备列表)(?:\s+(\d{5,20}))?",
+            body,
+            flags=re.I,
+        ):
+            async for r in self._gamesafe_query(event, "devices", m.group(1) or ""):
+                yield r
+            return
+        if re.fullmatch(r"(微信安全中心在线状态|gamesafe在线状态)", body, flags=re.I):
+            async for r in self._gamesafe_query(event, "online"):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(?:微信安全中心安全报告|gamesafe安全报告)(?:\s+(\d{5,20}))?",
+            body,
+            flags=re.I,
+        ):
+            async for r in self._gamesafe_query(event, "report", m.group(1) or ""):
                 yield r
             return
         if re.fullmatch(r"(特勤处状态|placestatus)", body):
@@ -1988,9 +2071,18 @@ class DeltaForcePlugin(Star):
         yield event.plain_result(message)
 
     async def _oauth_login(self, event: AstrMessageEvent, platform: str, extra: str) -> AsyncGenerator[Any, None]:
-        pf = "wechat" if platform.lower() in {"微信", "wx"} else "qq"
+        platform_key = platform.lower()
+        if platform_key in {"微信", "wx", "wechat"}:
+            pf = "wechat"
+        elif platform_key == "gamesafe":
+            pf = "gamesafe"
+        else:
+            pf = "qq"
         session_key = (str(event.get_sender_id()), pf)
-        command_name = "微信授权登录" if pf == "wechat" else "qq授权登录"
+        command_name = {
+            "wechat": "微信授权登录",
+            "gamesafe": "微信安全中心授权登录",
+        }.get(pf, "qq授权登录")
 
         if not extra:
             res = await self.client.oauth_url(pf, platform_id=self._user_identifier(event), bot_id=self._client_id(event))
@@ -2200,7 +2292,11 @@ class DeltaForcePlugin(Star):
                 "is_primary": True,
             },
         )
-        await self._fill_binding_info(event, binding)
+        binding_type = str(
+            binding.get("token_type") or binding.get("login_type") or login_type
+        ).lower()
+        if binding_type != "gamesafe":
+            await self._fill_binding_info(event, binding)
         return binding, remote_ok, "" if remote_ok else self._message_of(res)
 
     async def _finish_login(
@@ -2334,10 +2430,10 @@ class DeltaForcePlugin(Star):
         login_deleted = False
 
         if delete_login_data:
-            if login_type not in {"qq", "wechat"}:
+            if login_type not in {"qq", "wechat", "gamesafe"}:
                 yield event.plain_result(
                     f"该账号类型（{login_type or '未知'}）不支持删除登录数据；"
-                    "删除功能仅支持 QQ 和微信账号。"
+                    "删除功能仅支持 QQ、微信和微信安全中心账号。"
                 )
                 return
             if not token:
@@ -4014,6 +4110,183 @@ class DeltaForcePlugin(Star):
             if record.get("cheat_date"):
                 lines.append(f"作弊时间: {self._fmt_time(record.get('cheat_date'))}")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _gamesafe_records(data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("records", "list", "items", "data", "result"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+        return [data] if data else []
+
+    @staticmethod
+    def _gamesafe_record_lines(record: Dict[str, Any]) -> List[str]:
+        labels = {
+            "uin": "账号",
+            "user_id": "账号",
+            "nickname": "昵称",
+            "game_id": "游戏 ID",
+            "gameid": "游戏 ID",
+            "game_name": "游戏",
+            "status": "状态",
+            "online": "在线",
+            "frozen": "冻结",
+            "is_frozen": "冻结",
+            "punish_type": "处罚类型",
+            "reason": "原因",
+            "start_time": "开始时间",
+            "end_time": "结束时间",
+            "device_name": "设备",
+            "device_type": "设备类型",
+            "last_login_time": "最近登录",
+            "login_time": "登录时间",
+            "login_ip": "登录 IP",
+            "location": "地点",
+            "is_trusted": "信任设备",
+        }
+        sensitive_parts = (
+            "token",
+            "cookie",
+            "openid",
+            "open_id",
+            "credential",
+            "secret",
+            "auth",
+            "callback",
+            "state",
+        )
+        lines: List[str] = []
+        for key, value in record.items():
+            normalized = str(key).strip().lower()
+            if any(part in normalized for part in sensitive_parts):
+                continue
+            if value in (None, "", [], {}):
+                continue
+            if isinstance(value, bool):
+                display = "是" if value else "否"
+            elif isinstance(value, list) and all(
+                not isinstance(item, (dict, list)) for item in value
+            ):
+                display = "、".join(str(item) for item in value[:10])
+            elif isinstance(value, (dict, list)):
+                continue
+            else:
+                display = str(value)
+            if len(display) > 240:
+                display = display[:240].rstrip() + "..."
+            label = labels.get(normalized, str(key))
+            lines.append(f"{label}: {display}")
+            if len(lines) >= 10:
+                break
+        return lines
+
+    async def _gamesafe_token(self, event: AstrMessageEvent) -> Optional[str]:
+        return await self._token_for_type(event, "gamesafe")
+
+    async def _gamesafe_bindings(
+        self,
+        event: AstrMessageEvent,
+    ) -> AsyncGenerator[Any, None]:
+        token = await self._gamesafe_token(event)
+        if not token:
+            yield event.plain_result(
+                "尚未绑定微信安全中心账号，请先发送 微信安全中心授权登录。"
+            )
+            return
+        res = await self.client.gamesafe_bindings(token)
+        if not self._ok(res):
+            yield event.plain_result(f"微信安全中心绑定列表查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {}) or {}
+        if not isinstance(data, dict):
+            yield event.plain_result("微信安全中心绑定列表返回格式异常。")
+            return
+        accounts = [
+            str(item).strip()
+            for item in data.get("list") or []
+            if re.fullmatch(r"\d{5,20}", str(item).strip())
+        ]
+        default = str(data.get("default") or "").strip()
+        if not accounts:
+            yield event.plain_result("微信安全中心当前没有可用的绑定账号。")
+            return
+        lines = [f"【微信安全中心绑定】共 {len(accounts)} 个账号"]
+        for index, account in enumerate(accounts, 1):
+            lines.append(f"{'★' if account == default else ' '} {index}. {account}")
+        yield event.plain_result("\n".join(lines))
+
+    async def _gamesafe_query(
+        self,
+        event: AstrMessageEvent,
+        kind: str,
+        account: str = "",
+    ) -> AsyncGenerator[Any, None]:
+        token = await self._gamesafe_token(event)
+        if not token:
+            yield event.plain_result(
+                "尚未绑定微信安全中心账号，请先发送 微信安全中心授权登录。"
+            )
+            return
+
+        requests = {
+            "login": ("登录信息", lambda: self.client.gamesafe_login_info(token)),
+            "punish": (
+                "封禁记录",
+                lambda: self.client.gamesafe_punishments(token, account, 10),
+            ),
+            "frozen": (
+                "冻结状态",
+                lambda: self.client.gamesafe_frozen(token, account),
+            ),
+            "devices": (
+                "设备列表",
+                lambda: self.client.gamesafe_devices(token, account),
+            ),
+            "online": ("在线状态", lambda: self.client.gamesafe_online(token)),
+            "report": (
+                "安全报告",
+                lambda: self.client.gamesafe_report(token, account),
+            ),
+        }
+        if kind not in requests:
+            yield event.plain_result("不支持的微信安全中心查询类型。")
+            return
+        title, request = requests[kind]
+        res = await request()
+        if not self._ok(res):
+            yield event.plain_result(f"微信安全中心{title}查询失败: {self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        records = self._gamesafe_records(data)
+        if not records:
+            yield event.plain_result(f"微信安全中心当前没有可显示的{title}。")
+            return
+
+        lines = [f"【微信安全中心{title}】"]
+        if account:
+            lines.append(f"查询账号: {account}")
+        shown = 0
+        for index, record in enumerate(records[:20], 1):
+            details = self._gamesafe_record_lines(record)
+            if not details:
+                continue
+            shown += 1
+            if len(records) > 1:
+                lines.append(f"\n--- 第 {index} 项 ---")
+            lines.extend(details)
+        if shown == 0:
+            yield event.plain_result(f"微信安全中心{title}响应中没有可安全展示的字段。")
+            return
+        if len(records) > 20:
+            lines.append(f"\n结果较多，仅展示前 20 项，共 {len(records)} 项。")
+        text = "\n".join(lines)
+        if len(text) > 3500:
+            text = text[:3500].rstrip() + "\n\n结果较长，已截断显示。"
+        yield event.plain_result(text)
 
     async def _place_status(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

@@ -413,6 +413,43 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("读取帮助配置失败", result[0]["text"])
         self.assertIn("帮助配置不可读", result[0]["text"])
 
+    async def test_main_help_contains_gamesafe_commands_and_optionally_renders(self):
+        plugin = self._plugin()
+        plugin.plugin_path = str(PLUGIN_DIR)
+        plugin.config["enable_image_render"] = True
+        visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
+        renderer = None
+        if visual_enabled:
+            renderer = DeltaRenderer(str(PLUGIN_DIR / "resources"))
+            plugin.renderer = renderer
+        else:
+            plugin.renderer = SimpleNamespace(
+                render_html=AsyncMock(return_value="D:/fixture-help.png")
+            )
+
+        try:
+            result = await _collect(plugin._help(_Event(), "main"))
+            self.assertEqual(result[0]["type"], "image")
+            if visual_enabled:
+                path = Path(result[0]["path"])
+                self.assertTrue(path.is_file())
+                with PillowImage.open(path) as image:
+                    self.assertGreater(image.width, 1000)
+                    self.assertGreater(image.height, 1000)
+                path.unlink(missing_ok=True)
+            else:
+                render_data = plugin.renderer.render_html.await_args.args[1]
+                titles = {
+                    item.get("title")
+                    for group in render_data["helpGroup"]
+                    for item in group.get("list") or []
+                }
+                self.assertIn("微信安全中心授权登录 [回调URL]", titles)
+                self.assertIn("微信安全中心设备 | 在线状态 | 安全报告", titles)
+        finally:
+            if renderer is not None:
+                await renderer.close()
+
     async def test_update_commands_use_native_manager_and_report_errors(self):
         manager = SimpleNamespace(
             update_plugin=AsyncMock(side_effect=[None, RuntimeError("远端更新失败")])
@@ -479,7 +516,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(render_call.args[1]["currentVersion"], PLUGIN_VERSION)
         self.assertEqual(
             [item["version"] for item in render_call.args[1]["changelogs"]],
-            ["0.4.16", "0.4.15"],
+            ["0.4.17", "0.4.16"],
         )
         self.assertEqual(render_call.args[1]["changelogs"][0]["sections"][0]["title"], "新增")
 
@@ -650,6 +687,38 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         await client.activities()
         self.assertEqual(client.get.await_args.args[0], "/api/v1/df/activities")
         self.assertEqual(client.get.await_args.kwargs, {})
+
+        await client.gamesafe_bindings("fixture-gamesafe")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/bindinfo")
+        self.assertEqual(client.get.await_args.kwargs["framework_token"], "fixture-gamesafe")
+
+        await client.gamesafe_login_info("fixture-gamesafe")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/logininfo")
+
+        await client.gamesafe_punishments("fixture-gamesafe", "123456789", 100)
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/punish")
+        self.assertEqual(
+            client.get.await_args.kwargs["params"],
+            {"user_id": "123456789", "query_type": 3, "limit": 50, "appeal_type": 3},
+        )
+
+        await client.gamesafe_frozen("fixture-gamesafe", "123456789")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/frozen")
+        self.assertEqual(client.get.await_args.kwargs["params"], {"uin": "123456789"})
+
+        await client.gamesafe_devices("fixture-gamesafe", "123456789")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/devices")
+        self.assertEqual(
+            client.get.await_args.kwargs["params"],
+            {"user_id": "123456789", "game_id": "2706"},
+        )
+
+        await client.gamesafe_online("fixture-gamesafe")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/online")
+
+        await client.gamesafe_report("fixture-gamesafe", "123456789")
+        self.assertEqual(client.get.await_args.args[0], "/api/v1/df/gamesafe/report")
+        self.assertEqual(client.get.await_args.kwargs["params"], {"user_id": "123456789"})
 
         client.put = AsyncMock(return_value={"code": 0, "data": {}})
         await client.update_community_solution("fixture-uuid", {"description": "新描述"}, "qq_fixture")
@@ -2973,6 +3042,121 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("暂无活动日历数据", empty[0]["text"])
         self.assertIn("响应格式异常", invalid[0]["text"])
         self.assertIn("公共账号池暂无可用凭证", error[0]["text"])
+
+    async def test_gamesafe_bindings_and_queries_format_authoritative_fields(self):
+        client = SimpleNamespace(
+            gamesafe_bindings=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"list": ["123456789", "987654321"], "default": "123456789"},
+                }
+            ),
+            gamesafe_login_info=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "status": "online",
+                        "nickname": "安全中心账号",
+                        "openId": "sensitive-open-id",
+                        "accessToken": "sensitive-access-token",
+                    },
+                }
+            ),
+            gamesafe_punishments=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": [
+                        {
+                            "punish_type": "封号",
+                            "game_name": "三角洲行动",
+                            "start_time": "2026-08-01",
+                            "end_time": "2026-08-02",
+                        }
+                    ],
+                }
+            ),
+            gamesafe_frozen=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": [{"frozen": False, "game_id": "2706", "game_name": "三角洲行动"}],
+                }
+            ),
+            gamesafe_devices=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "records": [
+                            {
+                                "device_name": "测试手机",
+                                "device_type": "Android",
+                                "last_login_time": "2026-08-15 12:00:00",
+                                "is_trusted": True,
+                            }
+                        ]
+                    },
+                }
+            ),
+            gamesafe_online=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": [{"online": True, "game_name": "三角洲行动", "location": "测试地区"}],
+                }
+            ),
+            gamesafe_report=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": [{"status": "正常", "game_name": "三角洲行动"}],
+                }
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin._gamesafe_token = AsyncMock(return_value="fixture-gamesafe-token")
+
+        bindings = await _collect(plugin._gamesafe_bindings(_Event()))
+        login = await _collect(plugin._gamesafe_query(_Event(), "login"))
+        punish = await _collect(plugin._gamesafe_query(_Event(), "punish", "123456789"))
+        frozen = await _collect(plugin._gamesafe_query(_Event(), "frozen", "123456789"))
+        devices = await _collect(plugin._gamesafe_query(_Event(), "devices", "123456789"))
+        online = await _collect(plugin._gamesafe_query(_Event(), "online"))
+        report = await _collect(plugin._gamesafe_query(_Event(), "report", "123456789"))
+
+        self.assertIn("★ 1. 123456789", bindings[0]["text"])
+        self.assertIn("状态: online", login[0]["text"])
+        self.assertIn("昵称: 安全中心账号", login[0]["text"])
+        self.assertNotIn("sensitive", login[0]["text"])
+        self.assertIn("处罚类型: 封号", punish[0]["text"])
+        self.assertIn("冻结: 否", frozen[0]["text"])
+        self.assertIn("设备: 测试手机", devices[0]["text"])
+        self.assertIn("在线: 是", online[0]["text"])
+        self.assertIn("状态: 正常", report[0]["text"])
+        client.gamesafe_punishments.assert_awaited_once_with(
+            "fixture-gamesafe-token", "123456789", 10
+        )
+
+    async def test_gamesafe_queries_handle_missing_binding_empty_and_error(self):
+        missing_plugin = self._plugin(SimpleNamespace())
+        missing_plugin._gamesafe_token = AsyncMock(return_value=None)
+        missing = await _collect(missing_plugin._gamesafe_query(_Event(), "online"))
+
+        client = SimpleNamespace(
+            gamesafe_bindings=AsyncMock(return_value={"code": 0, "data": {"list": []}}),
+            gamesafe_report=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": []},
+                    {"code": 401, "message": "Gamesafe 登录凭证无效", "data": None},
+                ]
+            ),
+        )
+        plugin = self._plugin(client)
+        plugin._gamesafe_token = AsyncMock(return_value="fixture-gamesafe-token")
+        empty_bindings = await _collect(plugin._gamesafe_bindings(_Event()))
+        empty = await _collect(plugin._gamesafe_query(_Event(), "report"))
+        error = await _collect(plugin._gamesafe_query(_Event(), "report"))
+
+        self.assertIn("先发送 微信安全中心授权登录", missing[0]["text"])
+        self.assertIn("没有可用的绑定账号", empty_bindings[0]["text"])
+        self.assertIn("没有可显示的安全报告", empty[0]["text"])
+        self.assertIn("Gamesafe 登录凭证无效", error[0]["text"])
 
     async def test_articles_format_latest_fields_and_handle_empty_and_error(self):
         client = SimpleNamespace(

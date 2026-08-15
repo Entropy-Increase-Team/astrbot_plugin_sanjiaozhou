@@ -416,6 +416,62 @@ class DeltaForceClient:
     async def ban_history(self, framework_token: str):
         return await self.get("/api/v1/df/qqsafe/ban", framework_token=framework_token)
 
+    async def gamesafe_bindings(self, framework_token: str):
+        return await self.get(
+            "/api/v1/df/gamesafe/bindinfo",
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_login_info(self, framework_token: str):
+        return await self.get(
+            "/api/v1/df/gamesafe/logininfo",
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_punishments(
+        self,
+        framework_token: str,
+        user_id: str = "",
+        limit: int = 10,
+    ):
+        return await self.get(
+            "/api/v1/df/gamesafe/punish",
+            params={
+                "user_id": user_id,
+                "query_type": 3,
+                "limit": max(1, min(int(limit), 50)),
+                "appeal_type": 3,
+            },
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_frozen(self, framework_token: str, uin: str = ""):
+        return await self.get(
+            "/api/v1/df/gamesafe/frozen",
+            params={"uin": uin},
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_devices(self, framework_token: str, user_id: str = ""):
+        return await self.get(
+            "/api/v1/df/gamesafe/devices",
+            params={"user_id": user_id, "game_id": "2706"},
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_online(self, framework_token: str):
+        return await self.get(
+            "/api/v1/df/gamesafe/online",
+            framework_token=framework_token,
+        )
+
+    async def gamesafe_report(self, framework_token: str, user_id: str = ""):
+        return await self.get(
+            "/api/v1/df/gamesafe/report",
+            params={"user_id": user_id},
+            framework_token=framework_token,
+        )
+
     async def daily_keyword(self):
         return await self.get("/api/v1/df/tools/dailykeyword")
 
