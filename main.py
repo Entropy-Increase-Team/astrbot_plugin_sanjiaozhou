@@ -243,6 +243,10 @@ DELTA_COMMAND_SPECS = [
     ("移除改枪收藏夹", {"移除改枪方案收藏夹"}),
     ("改枪方案复审", {"改枪码复审"}),
     ("研究中心", {"个人研究", "研究列表"}),
+    ("任务线", {"任务线列表"}),
+    ("任务搜索", {"搜索任务"}),
+    ("任务详情", {"任务资料"}),
+    ("赛季任务", {"赛季任务线"}),
 ]
 
 
@@ -1542,6 +1546,22 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(?:研究中心|个人研究|研究列表)\s*(.*)", body):
             async for r in self._research(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务线|任务线列表)\s*(.*)", body):
+            async for r in self._quest_lines(event, m.group(1).strip(), season=False):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:赛季任务|赛季任务线)\s*(.*)", body):
+            async for r in self._quest_lines(event, m.group(1).strip(), season=True):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务搜索|搜索任务)\s*(.*)", body):
+            async for r in self._quest_search(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:任务详情|任务资料)\s*(.*)", body):
+            async for r in self._quest_detail(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(出红记录|大红记录|藏品记录|大红收藏|大红藏品|大红海报|藏品海报)(?:\s+(.+))?", body):
@@ -4293,6 +4313,274 @@ class DeltaForcePlugin(Star):
                 f"所需材料: {'、'.join(materials_text) if materials_text else '无'}"
             )
         yield event.plain_result("\n\n".join(lines))
+
+    @staticmethod
+    def _quest_text(value: Any, fallback: str = "") -> str:
+        if isinstance(value, dict):
+            value = (
+                value.get("localizedString")
+                or value.get("sourceString")
+                or value.get("key")
+                or fallback
+            )
+        elif value is None:
+            value = fallback
+        text = unescape(str(value or fallback)).replace("\r", " ").replace("\n", " ")
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _quest_page_arg(arg: str, usage: str) -> Tuple[int, str]:
+        raw = str(arg or "").strip().casefold()
+        if not raw:
+            return 1, ""
+        match = re.fullmatch(r"(?:page|p|页)?\s*(\d+)", raw)
+        if not match:
+            return 1, usage
+        page = int(match.group(1))
+        if page < 1 or page > 10000:
+            return 1, "页码必须在 1 到 10000 之间。"
+        return page, ""
+
+    @staticmethod
+    def _quest_search_args(
+        arg: str,
+    ) -> Tuple[str, Optional[int], Optional[int], Optional[int], int, str]:
+        keyword_parts: List[str] = []
+        quest_type: Optional[int] = None
+        min_level: Optional[int] = None
+        max_level: Optional[int] = None
+        page = 1
+        parts = str(arg or "").split()
+        for index, part in enumerate(parts):
+            low = part.casefold().replace("：", "=")
+            if match := re.fullmatch(r"(?:page|p|页)=?(\d+)", low):
+                page = int(match.group(1))
+            elif index == len(parts) - 1 and re.fullmatch(r"\d+", low):
+                page = int(low)
+            elif match := re.fullmatch(r"(?:类型|type)=?(\d+)", low):
+                quest_type = int(match.group(1))
+            elif match := re.fullmatch(r"(?:等级|level)=(\d+)(?:[-~至](\d+))?", low):
+                min_level = int(match.group(1))
+                max_level = int(match.group(2) or match.group(1))
+            elif match := re.fullmatch(r"(?:最低|min)=?(\d+)", low):
+                min_level = int(match.group(1))
+            elif match := re.fullmatch(r"(?:最高|max)=?(\d+)", low):
+                max_level = int(match.group(1))
+            else:
+                keyword_parts.append(part)
+        if page < 1 or page > 10000:
+            return "", None, None, None, 1, "页码必须在 1 到 10000 之间。"
+        if quest_type is not None and quest_type > 10000:
+            return "", None, None, None, 1, "任务类型必须在 0 到 10000 之间。"
+        if min_level is not None and min_level > 1000:
+            return "", None, None, None, 1, "任务等级必须在 0 到 1000 之间。"
+        if max_level is not None and max_level > 1000:
+            return "", None, None, None, 1, "任务等级必须在 0 到 1000 之间。"
+        if min_level is not None and max_level is not None and min_level > max_level:
+            return "", None, None, None, 1, "最低等级不能高于最高等级。"
+        keyword = " ".join(keyword_parts).strip()
+        if len(keyword) > 100:
+            return "", None, None, None, 1, "搜索关键词不能超过 100 个字符。"
+        return keyword, quest_type, min_level, max_level, page, ""
+
+    async def _quest_lines(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        season: bool,
+    ) -> AsyncGenerator[Any, None]:
+        usage = "格式：赛季任务 [页码]" if season else "格式：任务线 [页码]"
+        page, error = self._quest_page_arg(arg, usage)
+        if error:
+            yield event.plain_result(error)
+            return
+        response = (
+            await self.client.season_quest_lines()
+            if season
+            else await self.client.quest_lines()
+        )
+        title = "赛季任务线" if season else "任务线"
+        if not self._ok(response):
+            yield event.plain_result(f"查询{title}失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("data", "list", "items"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result(f"当前暂无{title}数据。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        start = (page - 1) * page_size
+        lines = [f"【{title}】第 {page}/{total_pages} 页，共 {len(rows)} 条"]
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            item_id = item.get("lineId") if season else item.get("questLineId")
+            name = self._quest_text(
+                item.get("name") if season else item.get("lineName"),
+                "未命名任务线",
+            )[:80]
+            level = int(self._num(item.get("openLevel")))
+            seasons = item.get("seasonIdArr") or (
+                [item.get("seasonId")] if item.get("seasonId") else []
+            )
+            season_text = "、".join(str(value) for value in seasons if value is not None)
+            detail = [f"ID: {item_id or '-'}"]
+            if level > 0:
+                detail.append(f"开放等级: {level}")
+            if season_text:
+                detail.append(f"赛季: {season_text}")
+            if season and item.get("finalQuestId"):
+                detail.append(f"最终任务: {item.get('finalQuestId')}")
+            if not season:
+                detail.append(f"任务类型: {int(self._num(item.get('questType')))}")
+                if item.get("rootQuestId"):
+                    detail.append(f"根任务: {item.get('rootQuestId')}")
+            lines.append(f"{index}. {name}\n" + "｜".join(detail))
+        hint = "发送 任务搜索 <关键词> 查找具体任务及任务 ID。" if not season else ""
+        if hint:
+            lines.append(hint)
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_search(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        keyword, quest_type, min_level, max_level, page, error = self._quest_search_args(arg)
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.quest_search(
+            keyword=keyword,
+            quest_type=quest_type,
+            min_level=min_level,
+            max_level=max_level,
+            page=page,
+            limit=8,
+        )
+        if not self._ok(response):
+            yield event.plain_result(f"搜索任务失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("data", "list", "items"))
+            if isinstance(item, dict)
+        ]
+        pagination = data.get("pagination") if isinstance(data, dict) else {}
+        pagination = pagination if isinstance(pagination, dict) else {}
+        total = max(len(rows), int(self._num(pagination.get("total"))))
+        total_pages = max(1, int(self._num(pagination.get("pages"))), page)
+        if not rows:
+            yield event.plain_result("没有找到符合条件的任务。")
+            return
+        filters = []
+        if keyword:
+            filters.append(f"关键词: {keyword}")
+        if quest_type is not None:
+            filters.append(f"类型: {quest_type}")
+        if min_level is not None or max_level is not None:
+            filters.append(f"等级: {min_level or 0}-{max_level if max_level is not None else '不限'}")
+        heading = "｜".join(filters) if filters else "全部任务"
+        lines = [f"【任务搜索｜{heading}】第 {page}/{max(1, total_pages)} 页，共 {total} 条"]
+        start = (page - 1) * 8
+        for index, item in enumerate(rows, start + 1):
+            name = self._quest_text(item.get("name"), "未命名任务")[:80]
+            desc = self._quest_text(item.get("desc"))[:120]
+            lines.append(
+                f"{index}. {name}\n"
+                f"任务 ID: {item.get('questId') or '-'}｜类型: {int(self._num(item.get('questType')))}｜"
+                f"需求等级: {int(self._num(item.get('acceptRequiredLevel')))}"
+                + (f"\n{desc}" if desc else "")
+            )
+        lines.append("发送 任务详情 <任务ID> 查看完整资料。")
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _quest_detail(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not re.fullmatch(r"\d{1,12}", str(arg or "").strip()):
+            yield event.plain_result("格式：任务详情 <任务ID>")
+            return
+        quest_id = int(arg)
+        response = await self.client.quest_detail(quest_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询任务详情失败：{self._message_of(response)}")
+            return
+        item = self._data(response, {}) or {}
+        if not isinstance(item, dict) or not item:
+            yield event.plain_result("任务详情为空。")
+            return
+        name = self._quest_text(item.get("name"), "未命名任务")[:100]
+        desc = self._quest_text(item.get("desc"))[:360]
+        lines = [
+            f"【任务详情｜{name}】",
+            f"任务 ID: {item.get('questId') or quest_id}｜类型: {int(self._num(item.get('questType')))}｜"
+            f"分类: {int(self._num(item.get('questClass')))}｜需求等级: {int(self._num(item.get('acceptRequiredLevel')))}",
+        ]
+        if desc:
+            lines.append(desc)
+        objectives = [
+            value for value in (item.get("objectivesDetail") or []) if isinstance(value, dict)
+        ]
+        lines.append(f"目标（{len(objectives)}）")
+        if objectives:
+            for index, objective in enumerate(objectives[:12], 1):
+                objective_text = self._quest_text(
+                    objective.get("objectiveDesc") or objective.get("briefObjectiveDesc"),
+                    f"目标 {objective.get('objectiveId') or index}",
+                )[:180]
+                required = int(self._num(objective.get("requiredCount")))
+                lines.append(
+                    f"{index}. {objective_text}"
+                    + (f"（数量 {required}）" if required > 0 else "")
+                )
+            if len(objectives) > 12:
+                lines.append(f"另有 {len(objectives) - 12} 项目标未展开。")
+        else:
+            lines.append("暂无目标资料。")
+        rewards = [value for value in (item.get("rewardsDetail") or []) if isinstance(value, dict)]
+        lines.append(f"奖励（{len(rewards)}）")
+        if rewards:
+            for index, reward in enumerate(rewards[:12], 1):
+                label = self._quest_text(reward.get("rowDescription"))[:120]
+                item_id = reward.get("itemId") or "-"
+                count = int(self._num(reward.get("number")))
+                lines.append(
+                    f"{index}. {label or f'物品 {item_id}'} ×{max(1, count)}"
+                    f"｜奖励 ID: {reward.get('rewardId') or '-'}"
+                )
+            if len(rewards) > 12:
+                lines.append(f"另有 {len(rewards) - 12} 项奖励未展开。")
+        else:
+            lines.append("暂无奖励资料。")
+        previous_rows = [value for value in (item.get("previousQuestsDetail") or []) if isinstance(value, dict)]
+        next_rows = [value for value in (item.get("nextQuestsDetail") or []) if isinstance(value, dict)]
+        if previous_rows:
+            lines.append(
+                "前置任务: "
+                + "、".join(
+                    f"{self._quest_text(value.get('name'), '未命名')[:60]}({value.get('questId') or '-'})"
+                    for value in previous_rows[:8]
+                )
+            )
+        if next_rows:
+            lines.append(
+                "后续任务: "
+                + "、".join(
+                    f"{self._quest_text(value.get('name'), '未命名')[:60]}({value.get('questId') or '-'})"
+                    for value in next_rows[:8]
+                )
+            )
+        yield event.plain_result("\n".join(lines))
 
     async def _collection(self, event: AstrMessageEvent, kind: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

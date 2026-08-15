@@ -417,6 +417,36 @@ class DeltaForceClient:
             framework_token=framework_token,
         )
 
+    async def quest_lines(self):
+        return await self.get("/api/v1/df/quest/lines")
+
+    async def quest_search(
+        self,
+        keyword: str = "",
+        quest_type: Optional[int] = None,
+        min_level: Optional[int] = None,
+        max_level: Optional[int] = None,
+        page: int = 1,
+        limit: int = 8,
+    ):
+        return await self.get(
+            "/api/v1/df/quest/search",
+            params={
+                "keyword": keyword,
+                "type": quest_type,
+                "minLevel": min_level,
+                "maxLevel": max_level,
+                "page": max(1, int(page)),
+                "limit": max(1, min(int(limit), 100)),
+            },
+        )
+
+    async def quest_detail(self, quest_id: int):
+        return await self.get(f"/api/v1/df/quest/{int(quest_id)}")
+
+    async def season_quest_lines(self):
+        return await self.get("/api/v1/df/quest/season/lines")
+
     async def red_list(self, framework_token: str):
         return await self.get("/api/v1/df/person/redlist", framework_token=framework_token)
 
