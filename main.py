@@ -225,6 +225,12 @@ DELTA_COMMAND_SPECS = [
     ("微信安全中心设备", {"gamesafe设备", "微信安全中心设备列表"}),
     ("微信安全中心在线状态", {"gamesafe在线状态"}),
     ("微信安全中心安全报告", {"gamesafe安全报告"}),
+    ("我的改枪码", {"我的改枪方案"}),
+    ("改枪码评论", {"改枪方案评论"}),
+    ("评论改枪码", {"评论改枪方案"}),
+    ("编辑改枪评论", {"编辑改枪方案评论"}),
+    ("删除改枪评论", {"删除改枪方案评论"}),
+    ("复制改枪码", {"复制改枪方案"}),
 ]
 
 
@@ -1650,6 +1656,73 @@ class DeltaForcePlugin(Star):
             return
         if re.fullmatch(r"(改枪码|改枪方案)收藏列表", body):
             async for r in self._solution_list(event, "", favorites=True):
+                yield r
+            return
+        social_help = {
+            "改枪码评论": "格式：改枪码评论 <方案ID> [页码]",
+            "改枪方案评论": "格式：改枪方案评论 <方案ID> [页码]",
+            "评论改枪码": "格式：评论改枪码 <方案ID> <内容>",
+            "评论改枪方案": "格式：评论改枪方案 <方案ID> <内容>",
+            "编辑改枪评论": "格式：编辑改枪评论 <评论ID> <内容>",
+            "编辑改枪方案评论": "格式：编辑改枪方案评论 <评论ID> <内容>",
+            "删除改枪评论": "格式：删除改枪评论 <评论ID>",
+            "删除改枪方案评论": "格式：删除改枪方案评论 <评论ID>",
+            "复制改枪码": "格式：复制改枪码 <方案ID>",
+            "复制改枪方案": "格式：复制改枪方案 <方案ID>",
+        }
+        if body in social_help:
+            yield event.plain_result(social_help[body])
+            return
+        if m := re.fullmatch(r"我的(改枪码|改枪方案)\s*(.*)", body):
+            async for r in self._solution_list(
+                event,
+                m.group(2).strip(),
+                favorites=False,
+                own=True,
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"(改枪码|改枪方案)评论\s+(\S+)(?:\s+(.+))?",
+            body,
+        ):
+            async for r in self._solution_comments(
+                event,
+                m.group(2),
+                (m.group(3) or "").strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"评论(改枪码|改枪方案)\s+(\S+)\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._solution_comment_create(
+                event,
+                m.group(2),
+                m.group(3).strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"编辑改枪(?:方案)?评论\s+(\S+)\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._solution_comment_update(
+                event,
+                m.group(1),
+                m.group(2).strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(r"删除改枪(?:方案)?评论\s+(\S+)", body):
+            async for r in self._solution_comment_delete(event, m.group(1)):
+                yield r
+            return
+        if m := re.fullmatch(r"复制(改枪码|改枪方案)\s+(\S+)", body):
+            async for r in self._solution_copy(event, m.group(2)):
                 yield r
             return
 
@@ -5001,28 +5074,67 @@ class DeltaForcePlugin(Star):
     def _valid_solution_id(value: str) -> bool:
         return bool(re.fullmatch(r"[A-Za-z0-9-]{1,80}", str(value or "")))
 
+    @staticmethod
+    def _valid_solution_comment_id(value: str) -> bool:
+        return bool(re.fullmatch(r"[0-9a-fA-F]{24}", str(value or "")))
+
+    @staticmethod
+    def _solution_review_status_text(value: Any) -> str:
+        raw = str(value or "").strip()
+        return {
+            "pending": "审核中",
+            "approved": "已通过",
+            "rejected": "未通过",
+            "manual_pending": "待人工审核",
+        }.get(raw.lower(), raw or "未知")
+
     def _solution_list_text(self, title: str, rows: List[Dict[str, Any]], total: Any = None) -> str:
         lines = [f"【{title}】" + (f" 共 {total} 条" if total not in (None, "") else "")]
         for index, item in enumerate(rows, 1):
             solution_id = item.get("solutionId") or item.get("id") or "未知"
+            review_status = self._solution_review_status_text(
+                item.get("reviewStatus") or item.get("status")
+            )
             lines.append(
                 f"{index}. {item.get('weaponName') or '未知武器'}｜{item.get('type') or 'sol'}｜"
                 f"{self.data_mgr.fmt_price(item.get('totalPrice') or 0)}\n"
                 f"ID: {solution_id}\n"
                 f"改枪码: {item.get('solutionCode') or '-'}\n"
-                f"作者: {item.get('authorNickname') or '匿名'}｜赞 {item.get('likes') or 0}｜收藏 {item.get('favoriteCount') or 0}"
+                f"作者: {item.get('authorNickname') or '匿名'}｜审核: {review_status}\n"
+                f"互动: 赞 {item.get('likes') or 0}｜收藏 {item.get('favoriteCount') or 0}｜"
+                f"评论 {item.get('commentCount') or 0}｜浏览 {item.get('views') or 0}｜复制 {item.get('copyCount') or 0}"
             )
         return "\n\n".join(lines)
 
-    async def _solution_list(self, event: AstrMessageEvent, arg: str, favorites: bool) -> AsyncGenerator[Any, None]:
+    async def _solution_list(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+        favorites: bool,
+        own: bool = False,
+    ) -> AsyncGenerator[Any, None]:
         params: Dict[str, Any] = {"page": 1, "pageSize": 20}
         keywords = []
+        status_aliases = {
+            "待审核": "pending",
+            "pending": "pending",
+            "已通过": "approved",
+            "通过": "approved",
+            "approved": "approved",
+            "未通过": "rejected",
+            "拒绝": "rejected",
+            "rejected": "rejected",
+            "人工审核": "manual_pending",
+            "manual_pending": "manual_pending",
+        }
         for part in str(arg or "").split():
             low = part.lower()
             if low in SOL_ALIASES:
                 params["type"] = "sol"
             elif low in MP_ALIASES:
                 params["type"] = "mp"
+            elif low in status_aliases:
+                params["status"] = status_aliases[low]
             elif match := re.fullmatch(r"(?:page|页)(\d+)", low):
                 params["page"] = max(1, int(match.group(1)))
             elif match := re.fullmatch(r"(?:weapon|武器)(?:id)?[=:]?(\d+)", low):
@@ -5031,9 +5143,18 @@ class DeltaForcePlugin(Star):
                 keywords.append(part)
         if keywords:
             params["keyword"] = " ".join(keywords)
-        if favorites:
+        if own:
+            response = await self.client.my_community_solutions(
+                self._user_identifier(event),
+                params,
+            )
+            title = "我的改枪方案"
+        elif favorites:
             response = await self.client.my_community_favorites(
-                self._user_identifier(event), int(params["page"]), int(params["pageSize"])
+                self._user_identifier(event),
+                int(params["page"]),
+                int(params["pageSize"]),
+                params=params,
             )
             title = "我的改枪码收藏"
         else:
@@ -5071,8 +5192,10 @@ class DeltaForcePlugin(Star):
             f"改枪码: {item.get('solutionCode') or '-'}",
             f"总价: {self.data_mgr.fmt_price(item.get('totalPrice') or 0)}",
             f"作者: {item.get('authorNickname') or '匿名'}",
-            f"状态: {item.get('reviewStatus') or item.get('status') or '未知'}",
-            f"互动: 赞 {item.get('likes') or 0} / 踩 {item.get('dislikes') or 0} / 收藏 {item.get('favoriteCount') or 0}",
+            f"状态: {self._solution_review_status_text(item.get('reviewStatus') or item.get('status'))}",
+            f"互动: 赞 {item.get('likes') or 0} / 踩 {item.get('dislikes') or 0} / "
+            f"收藏 {item.get('favoriteCount') or 0} / 评论 {item.get('commentCount') or 0} / "
+            f"浏览 {item.get('views') or 0} / 复制 {item.get('copyCount') or 0}",
         ]
         if item.get("description"):
             lines.append(f"描述: {item['description']}")
@@ -5082,7 +5205,206 @@ class DeltaForcePlugin(Star):
                 f"- {part.get('slotId') or '未知槽位'}: {part.get('objectName') or part.get('objectId') or '未知配件'}"
                 for part in attachments
             )
+        record_view = getattr(self.client, "record_community_solution_view", None)
+        if callable(record_view):
+            try:
+                await record_view(solution_id)
+            except Exception:
+                pass
         yield event.plain_result("\n".join(lines))
+
+    async def _solution_copy(
+        self,
+        event: AstrMessageEvent,
+        solution_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        detail = await self.client.community_solution_detail(solution_id)
+        if not self._ok(detail):
+            yield event.plain_result(
+                f"获取改枪方案失败：{self._message_of(detail)}"
+            )
+            return
+        data = self._data(detail, {}) or {}
+        item = (
+            data.get("solution")
+            if isinstance(data, dict) and isinstance(data.get("solution"), dict)
+            else data
+        )
+        solution_code = (
+            str(item.get("solutionCode") or "").strip()
+            if isinstance(item, dict)
+            else ""
+        )
+        if not solution_code:
+            yield event.plain_result("该方案没有可复制的改枪码。")
+            return
+        response = await self.client.record_community_solution_copy(
+            solution_id,
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"记录复制操作失败：{self._message_of(response)}"
+            )
+            return
+        yield event.plain_result(
+            "【改枪码复制】\n"
+            f"方案 ID: {solution_id}\n"
+            f"武器: {item.get('weaponName') or '未知'}\n"
+            f"改枪码: {solution_code}"
+        )
+
+    async def _solution_comments(
+        self,
+        event: AstrMessageEvent,
+        solution_id: str,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        page = 1
+        if arg:
+            match = re.fullmatch(r"(?:page|页)?(\d+)", arg.strip().lower())
+            if not match:
+                yield event.plain_result(
+                    "格式：改枪码评论 <方案ID> [页码]"
+                )
+                return
+            page = max(1, int(match.group(1)))
+        response = await self.client.community_solution_comments(
+            solution_id,
+            page,
+            20,
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"查询改枪方案评论失败：{self._message_of(response)}"
+            )
+            return
+        data = self._data(response, {}) or {}
+        rows = [
+            item
+            for item in self._first_list(data, ("items", "list", "comments", "data"))
+            if isinstance(item, dict)
+        ]
+        if not rows:
+            yield event.plain_result("该改枪方案暂无公开评论。")
+            return
+        total = data.get("total") if isinstance(data, dict) else None
+        lines = [
+            f"【改枪方案评论】第 {page} 页"
+            + (f"｜共 {total} 条" if total not in (None, "") else "")
+        ]
+        for index, item in enumerate(rows, 1):
+            lines.extend(
+                [
+                    f"{index}. {item.get('authorNickname') or '匿名用户'}｜{self._fmt_time(item.get('createdAt'))}",
+                    f"评论 ID: {item.get('id') or '-'}",
+                    str(item.get("content") or "（空评论）"),
+                ]
+            )
+        yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _solution_comment_content(content: str) -> Tuple[str, str]:
+        normalized = str(content or "").strip()
+        if not normalized:
+            return "", "评论内容不能为空。"
+        if len(normalized) > 500:
+            return "", "评论内容不能超过 500 字。"
+        return normalized, ""
+
+    async def _solution_comment_create(
+        self,
+        event: AstrMessageEvent,
+        solution_id: str,
+        content: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_id(solution_id):
+            yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        normalized, error = self._solution_comment_content(content)
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.create_community_solution_comment(
+            solution_id,
+            {"content": normalized},
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"发表评论失败：{self._message_of(response)}"
+            )
+            return
+        data = self._data(response, {}) or {}
+        status = (
+            self._solution_review_status_text(data.get("status"))
+            if isinstance(data, dict) and data.get("status")
+            else ""
+        )
+        comment_id = data.get("commentId") if isinstance(data, dict) else ""
+        yield event.plain_result(
+            "评论已提交。"
+            + (f"\n评论 ID: {comment_id}" if comment_id else "")
+            + (f"\n审核状态: {status}" if status else "")
+        )
+
+    async def _solution_comment_update(
+        self,
+        event: AstrMessageEvent,
+        comment_id: str,
+        content: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_comment_id(comment_id):
+            yield event.plain_result("改枪评论 ID 格式无效。")
+            return
+        normalized, error = self._solution_comment_content(content)
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.update_community_solution_comment(
+            comment_id,
+            normalized,
+            self._user_identifier(event),
+        )
+        if not self._ok(response):
+            yield event.plain_result(
+                f"编辑评论失败：{self._message_of(response)}"
+            )
+            return
+        data = self._data(response, {}) or {}
+        status = (
+            self._solution_review_status_text(data.get("status"))
+            if isinstance(data, dict) and data.get("status")
+            else ""
+        )
+        yield event.plain_result(
+            "评论已编辑。"
+            + (f"\n审核状态: {status}" if status else "")
+        )
+
+    async def _solution_comment_delete(
+        self,
+        event: AstrMessageEvent,
+        comment_id: str,
+    ) -> AsyncGenerator[Any, None]:
+        if not self._valid_solution_comment_id(comment_id):
+            yield event.plain_result("改枪评论 ID 格式无效。")
+            return
+        response = await self.client.delete_community_solution_comment(
+            comment_id,
+            self._user_identifier(event),
+        )
+        yield event.plain_result(
+            "评论已删除。"
+            if self._ok(response)
+            else f"删除评论失败：{self._message_of(response)}"
+        )
 
     async def _solution_upload(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         help_text = (

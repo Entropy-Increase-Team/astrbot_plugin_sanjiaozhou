@@ -230,7 +230,7 @@ helpList:
       group: "社区改枪码"
       list:
         - icon: 86
-          title: "改枪码上传 [改枪码] [描述] [模式] [是否公开] [配件信息]"
+          title: "上传改枪码 [改枪码] [武器ID] [模式] [描述] [配件JSON]"
           desc: "上传改枪方案"
         - icon: 86
           title: "改枪码列表 [武器名]"
@@ -248,8 +248,23 @@ helpList:
           title: "改枪码收藏列表"
           desc: "查看已收藏的改枪方案"
         - icon: 86
-          title: "改枪码更新 | 改枪码删除 [方案ID] [参数]"
+          title: "更新改枪码 | 删除改枪码 [方案ID] [参数]"
           desc: "更新/删除已上传的改枪方案"
+        - icon: 86
+          title: "我的改枪码 [模式/武器ID/审核状态/页码]"
+          desc: "查看自己提交的改枪方案"
+        - icon: 86
+          title: "改枪码评论 [方案ID] [页码]"
+          desc: "查看方案的公开评论"
+        - icon: 86
+          title: "评论改枪码 [方案ID] [内容]"
+          desc: "发表评论并等待审核"
+        - icon: 86
+          title: "编辑改枪评论 | 删除改枪评论 [评论ID] [内容]"
+          desc: "管理自己的评论"
+        - icon: 86
+          title: "复制改枪码 [方案ID]"
+          desc: "获取改枪码并记录复制次数"
         - icon: 78
           title: "网站上传修改"
           desc: "https://df.shallow.ink/solutions"

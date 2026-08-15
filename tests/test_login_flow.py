@@ -479,6 +479,18 @@ class LoginFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(duplicates)
         self.assertIn(("订阅", {"取消订阅", "订阅状态"}), DELTA_COMMAND_SPECS)
         self.assertIn(("活动日历", {"活动", "活动列表"}), DELTA_COMMAND_SPECS)
+        self.assertIn(("我的改枪码", {"我的改枪方案"}), DELTA_COMMAND_SPECS)
+        self.assertIn(("改枪码评论", {"改枪方案评论"}), DELTA_COMMAND_SPECS)
+        self.assertIn(("评论改枪码", {"评论改枪方案"}), DELTA_COMMAND_SPECS)
+        self.assertIn(
+            ("编辑改枪评论", {"编辑改枪方案评论"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(
+            ("删除改枪评论", {"删除改枪方案评论"}),
+            DELTA_COMMAND_SPECS,
+        )
+        self.assertIn(("复制改枪码", {"复制改枪方案"}), DELTA_COMMAND_SPECS)
         self.assertIn(
             (
                 "微信安全中心授权登录",

@@ -413,7 +413,7 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("读取帮助配置失败", result[0]["text"])
         self.assertIn("帮助配置不可读", result[0]["text"])
 
-    async def test_main_help_contains_gamesafe_commands_and_optionally_renders(self):
+    async def test_main_help_contains_latest_commands_and_optionally_renders(self):
         plugin = self._plugin()
         plugin.plugin_path = str(PLUGIN_DIR)
         plugin.config["enable_image_render"] = True
@@ -447,6 +447,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
                 }
                 self.assertIn("微信安全中心授权登录 [回调URL]", titles)
                 self.assertIn("微信安全中心设备 | 在线状态 | 安全报告", titles)
+                self.assertIn("我的改枪码 [模式/武器ID/审核状态/页码]", titles)
+                self.assertIn("改枪码评论 [方案ID] [页码]", titles)
+                self.assertIn("复制改枪码 [方案ID]", titles)
         finally:
             if renderer is not None:
                 await renderer.close()
@@ -510,9 +513,9 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [item["version"] for item in changelogs],
-            ["0.4.19", "0.4.18"],
+            ["0.4.20", "0.4.19"],
         )
-        self.assertEqual(changelogs[0]["sections"][0]["title"], "改进")
+        self.assertEqual(changelogs[0]["sections"][0]["title"], "新增")
         visual_enabled = os.environ.get("DELTA_VISUAL_TESTS") == "1"
         renderer = None
         if visual_enabled:
@@ -1158,6 +1161,297 @@ class CoreQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("gunmod:community:write", vote_error[0]["text"])
         self.assertIn("已收藏", favorite_ok[0]["text"])
         self.assertIn("gunmod:community:write", favorite_error[0]["text"])
+
+    async def test_community_social_client_uses_authoritative_routes(self):
+        client = object.__new__(DeltaForceClient)
+        client.get = AsyncMock(return_value={"code": 0, "data": {}})
+        client.post = AsyncMock(return_value={"code": 0, "data": {}})
+        client.put = AsyncMock(return_value={"code": 0, "data": {}})
+        client.delete = AsyncMock(return_value={"code": 0, "data": {}})
+
+        await client.my_community_solutions(
+            "fixture-user",
+            {"page": 2, "pageSize": 20, "status": "pending"},
+        )
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/my/solutions",
+            params={"page": 2, "pageSize": 20, "status": "pending"},
+            proxy_user_id="fixture-user",
+        )
+
+        client.get.reset_mock()
+        await client.community_solution_comments("fixture-uuid", 3, 20)
+        client.get.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid/comments",
+            params={"page": 3, "pageSize": 20},
+        )
+
+        await client.record_community_solution_view("fixture-uuid")
+        client.post.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid/view",
+        )
+
+        client.post.reset_mock()
+        await client.record_community_solution_copy("fixture-uuid", "fixture-user")
+        client.post.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid/copy",
+            proxy_user_id="fixture-user",
+        )
+
+        client.post.reset_mock()
+        await client.create_community_solution_comment(
+            "fixture-uuid",
+            {"content": "测试评论"},
+            "fixture-user",
+        )
+        client.post.assert_awaited_once_with(
+            "/api/v1/df/gunmod/community/solutions/fixture-uuid/comments",
+            json_data={"content": "测试评论"},
+            proxy_user_id="fixture-user",
+        )
+
+        comment_id = "64b64c2f6f1b2c3d4e5f6071"
+        await client.update_community_solution_comment(
+            comment_id,
+            "更新评论",
+            "fixture-user",
+        )
+        client.put.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/comments/{comment_id}",
+            json_data={"content": "更新评论"},
+            proxy_user_id="fixture-user",
+        )
+
+        await client.delete_community_solution_comment(comment_id, "fixture-user")
+        client.delete.assert_awaited_once_with(
+            f"/api/v1/df/gunmod/community/comments/{comment_id}",
+            proxy_user_id="fixture-user",
+        )
+
+    async def test_solution_social_interactions_format_latest_fields(self):
+        solution = {
+            "solutionId": "fixture-uuid",
+            "solutionCode": "CODE123",
+            "weaponId": 180100001,
+            "weaponName": "M4A1",
+            "type": "sol",
+            "reviewStatus": "pending",
+            "likes": 8,
+            "favoriteCount": 4,
+            "commentCount": 3,
+            "views": 20,
+            "copyCount": 6,
+        }
+        comment_id = "64b64c2f6f1b2c3d4e5f6071"
+        client = SimpleNamespace(
+            my_community_solutions=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"items": [solution], "total": 1},
+                }
+            ),
+            community_solution_detail=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"solution": solution}},
+                    {"code": 0, "data": {"solution": solution}},
+                ]
+            ),
+            record_community_solution_view=AsyncMock(
+                return_value={"code": 0, "data": {"message": "已记录"}}
+            ),
+            record_community_solution_copy=AsyncMock(
+                return_value={"code": 0, "data": {"message": "已记录"}}
+            ),
+            community_solution_comments=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {
+                        "items": [
+                            {
+                                "id": comment_id,
+                                "authorNickname": "评论玩家",
+                                "content": "这套配置很好用",
+                                "createdAt": "2026-08-15T12:00:00Z",
+                            }
+                        ],
+                        "total": 1,
+                    },
+                }
+            ),
+            create_community_solution_comment=AsyncMock(
+                return_value={
+                    "code": 0,
+                    "data": {"commentId": comment_id, "status": "pending"},
+                }
+            ),
+            update_community_solution_comment=AsyncMock(
+                return_value={"code": 0, "data": {"status": "pending"}}
+            ),
+            delete_community_solution_comment=AsyncMock(
+                return_value={"code": 0, "data": {"message": "删除成功"}}
+            ),
+        )
+        plugin = self._plugin(client)
+
+        mine = await _collect(
+            plugin._dispatch(
+                _Event(),
+                "我的改枪码 烽火 pending 页2 武器180100001",
+            )
+        )
+        detail = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
+        copied = await _collect(
+            plugin._dispatch(_Event(), "复制改枪码 fixture-uuid")
+        )
+        comments = await _collect(
+            plugin._dispatch(_Event(), "改枪码评论 fixture-uuid 页2")
+        )
+        created = await _collect(
+            plugin._dispatch(
+                _Event(),
+                "评论改枪码 fixture-uuid 这套配置很好用",
+            )
+        )
+        updated = await _collect(
+            plugin._dispatch(
+                _Event(),
+                f"编辑改枪评论 {comment_id} 更新后的评论",
+            )
+        )
+        deleted = await _collect(
+            plugin._dispatch(_Event(), f"删除改枪评论 {comment_id}")
+        )
+
+        self.assertIn("【我的改枪方案】", mine[0]["text"])
+        self.assertIn("审核: 审核中", mine[0]["text"])
+        self.assertIn("评论 3｜浏览 20｜复制 6", mine[0]["text"])
+        self.assertEqual(
+            client.my_community_solutions.await_args.args[1],
+            {
+                "page": 2,
+                "pageSize": 20,
+                "type": "sol",
+                "status": "pending",
+                "weaponId": 180100001,
+            },
+        )
+        self.assertIn("M4A1", detail[0]["text"])
+        client.record_community_solution_view.assert_awaited_once_with(
+            "fixture-uuid"
+        )
+        self.assertIn("改枪码: CODE123", copied[0]["text"])
+        client.record_community_solution_copy.assert_awaited_once_with(
+            "fixture-uuid",
+            "qq_fixture-user",
+        )
+        self.assertIn("评论玩家", comments[0]["text"])
+        self.assertIn(comment_id, comments[0]["text"])
+        self.assertIn("审核状态: 审核中", created[0]["text"])
+        self.assertIn("评论已编辑", updated[0]["text"])
+        self.assertIn("评论已删除", deleted[0]["text"])
+
+    async def test_solution_social_interactions_handle_empty_and_errors(self):
+        denied = {"code": 403, "message": "缺少 gunmod:community:write 权限"}
+        comment_id = "64b64c2f6f1b2c3d4e5f6071"
+        client = SimpleNamespace(
+            my_community_solutions=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": [], "total": 0}},
+                    {"code": 500, "message": "我的方案服务异常"},
+                ]
+            ),
+            community_solution_comments=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"items": [], "total": 0}},
+                    {"code": 500, "message": "评论服务异常"},
+                ]
+            ),
+            create_community_solution_comment=AsyncMock(return_value=denied),
+            update_community_solution_comment=AsyncMock(return_value=denied),
+            delete_community_solution_comment=AsyncMock(return_value=denied),
+            community_solution_detail=AsyncMock(
+                side_effect=[
+                    {"code": 0, "data": {"solution": {"solutionCode": ""}}},
+                    {"code": 404, "message": "方案不存在"},
+                    {
+                        "code": 0,
+                        "data": {
+                            "solution": {
+                                "solutionCode": "CODE123",
+                                "weaponName": "M4A1",
+                            }
+                        },
+                    },
+                    {
+                        "code": 0,
+                        "data": {
+                            "solution": {
+                                "solutionCode": "CODE123",
+                                "weaponName": "M4A1",
+                            }
+                        },
+                    },
+                ]
+            ),
+            record_community_solution_copy=AsyncMock(return_value=denied),
+            record_community_solution_view=AsyncMock(
+                side_effect=RuntimeError("浏览计数暂不可用")
+            ),
+        )
+        plugin = self._plugin(client)
+
+        mine_empty = await _collect(
+            plugin._solution_list(_Event(), "", favorites=False, own=True)
+        )
+        mine_error = await _collect(
+            plugin._solution_list(_Event(), "", favorites=False, own=True)
+        )
+        comments_empty = await _collect(
+            plugin._solution_comments(_Event(), "fixture-uuid", "")
+        )
+        comments_error = await _collect(
+            plugin._solution_comments(_Event(), "fixture-uuid", "")
+        )
+        invalid_page = await _collect(
+            plugin._solution_comments(_Event(), "fixture-uuid", "第二页")
+        )
+        create_denied = await _collect(
+            plugin._solution_comment_create(_Event(), "fixture-uuid", "评论")
+        )
+        create_too_long = await _collect(
+            plugin._solution_comment_create(_Event(), "fixture-uuid", "测" * 501)
+        )
+        update_denied = await _collect(
+            plugin._solution_comment_update(_Event(), comment_id, "更新")
+        )
+        delete_denied = await _collect(
+            plugin._solution_comment_delete(_Event(), comment_id)
+        )
+        invalid_comment = await _collect(
+            plugin._solution_comment_delete(_Event(), "not-an-object-id")
+        )
+        copy_empty = await _collect(plugin._solution_copy(_Event(), "fixture-uuid"))
+        copy_missing = await _collect(
+            plugin._solution_copy(_Event(), "fixture-uuid")
+        )
+        copy_denied = await _collect(plugin._solution_copy(_Event(), "fixture-uuid"))
+
+        self.assertIn("未找到符合条件", mine_empty[0]["text"])
+        self.assertIn("我的方案服务异常", mine_error[0]["text"])
+        self.assertIn("暂无公开评论", comments_empty[0]["text"])
+        self.assertIn("评论服务异常", comments_error[0]["text"])
+        self.assertIn("格式：改枪码评论", invalid_page[0]["text"])
+        self.assertIn("gunmod:community:write", create_denied[0]["text"])
+        self.assertIn("不能超过 500 字", create_too_long[0]["text"])
+        self.assertIn("gunmod:community:write", update_denied[0]["text"])
+        self.assertIn("gunmod:community:write", delete_denied[0]["text"])
+        self.assertIn("ID 格式无效", invalid_comment[0]["text"])
+        self.assertIn("没有可复制", copy_empty[0]["text"])
+        self.assertIn("方案不存在", copy_missing[0]["text"])
+        self.assertIn("gunmod:community:write", copy_denied[0]["text"])
+
+        detail = await _collect(plugin._solution_detail(_Event(), "fixture-uuid"))
+        self.assertIn("M4A1", detail[0]["text"])
 
     async def test_record_event_push_is_deduplicated(self):
         plugin = self._plugin()
