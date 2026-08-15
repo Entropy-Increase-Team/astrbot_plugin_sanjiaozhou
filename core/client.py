@@ -473,6 +473,21 @@ class DeltaForceClient:
         params = {"seasonId": int(season_id)} if season_id is not None else {}
         return await self.get("/api/v1/df/quest/fate", params=params)
 
+    async def collector_groups(self, group_type: Optional[int] = None):
+        params = {"type": int(group_type)} if group_type is not None else {}
+        return await self.get("/api/v1/df/quest/collector/groups", params=params)
+
+    async def collector_rewards(self, season_id: Optional[int] = None):
+        params = {"seasonId": int(season_id)} if season_id is not None else {}
+        return await self.get("/api/v1/df/quest/collector/rewards", params=params)
+
+    async def collector_slots(self):
+        return await self.get("/api/v1/df/quest/collector/slots")
+
+    async def random_collector_tasks(self, slot_id: Optional[int] = None):
+        params = {"slotId": int(slot_id)} if slot_id is not None else {}
+        return await self.get("/api/v1/df/quest/collector/random", params=params)
+
     async def quest_stats(self):
         return await self.get("/api/v1/df/quest/stats")
 

@@ -256,6 +256,10 @@ DELTA_COMMAND_SPECS = [
     ("赛季任务组", {"赛季分组", "赛季任务分组"}),
     ("命运契约", {"命运任务", "命运契约任务"}),
     ("任务统计", {"任务库统计"}),
+    ("收集任务组", {"收集者任务组", "收集分组"}),
+    ("收集任务奖励", {"收集者奖励", "收集奖励"}),
+    ("收集任务槽位", {"收集者槽位", "收集槽位"}),
+    ("随机收集任务", {"随机收集者任务", "收集任务随机"}),
 ]
 
 
@@ -1591,6 +1595,22 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(?:任务统计|任务库统计)\s*(.*)", body):
             async for r in self._quest_stats(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:收集任务组|收集者任务组|收集分组)\s*(.*)", body):
+            async for r in self._collector_groups(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:收集任务奖励|收集者奖励|收集奖励)\s*(.*)", body):
+            async for r in self._collector_rewards(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:收集任务槽位|收集者槽位|收集槽位)\s*(.*)", body):
+            async for r in self._collector_slots(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:随机收集任务|随机收集者任务|收集任务随机)\s*(.*)", body):
+            async for r in self._random_collector_tasks(event, m.group(1).strip()):
                 yield r
             return
         if m := re.fullmatch(r"(?:任务线|任务线列表)\s*(.*)", body):
@@ -4418,12 +4438,15 @@ class DeltaForcePlugin(Star):
     ) -> Tuple[Optional[int], int, str]:
         filter_value: Optional[int] = None
         page = 1
-        for part in str(arg or "").split():
+        parts = str(arg or "").split()
+        for index, part in enumerate(parts):
             low = part.casefold().replace("：", "=")
             if match := re.fullmatch(r"(?:page|p|页)=?(\d+)", low):
                 page = int(match.group(1))
             elif match := re.fullmatch(rf"(?:{filter_pattern})=?(\d+)", low):
                 filter_value = int(match.group(1))
+            elif index == len(parts) - 1 and re.fullmatch(r"\d+", low):
+                page = int(low)
             else:
                 return None, 1, usage
         if page < 1 or page > 10000:
@@ -5111,6 +5134,234 @@ class DeltaForcePlugin(Star):
                 for key, label in entries
             )
         yield event.plain_result("\n".join(lines))
+
+    async def _collector_groups(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        group_type, page, error = self._quest_filter_page_args(
+            arg,
+            "类型|type",
+            "格式：收集任务组 [类型=1/2/3] [页码]",
+            minimum=1,
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        if group_type is not None and group_type not in {1, 2, 3}:
+            yield event.plain_result("收集任务类型必须是 1、2 或 3。")
+            return
+        response = await self.client.collector_groups(group_type)
+        if not self._ok(response):
+            yield event.plain_result(f"查询收集任务组失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, {}) or {}
+        rows = [
+            value
+            for value in self._first_list(data, ("data", "list", "items"))
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("没有找到符合条件的收集任务组。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        heading = f"类型 {group_type}" if group_type is not None else "全部类型"
+        lines = [f"【收集任务组｜{heading}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        type_stats = data.get("typeStats") if isinstance(data, dict) else {}
+        if isinstance(type_stats, dict) and group_type is None:
+            lines.append(
+                "类型统计: "
+                + "｜".join(
+                    f"类型{index}: {int(self._num(type_stats.get(f'type{index}')))}"
+                    for index in range(1, 4)
+                )
+            )
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            name = self._quest_text(
+                item.get("collectorGroupName"),
+                "未命名收集任务组",
+            )[:100]
+            desc = self._quest_text(item.get("collectorGroupDesc"))[:160]
+            item_ids = item.get("itemListArr") or []
+            item_counts = item.get("itemCountArr") or []
+            if not isinstance(item_ids, list):
+                item_ids = [item_ids]
+            if not isinstance(item_counts, list):
+                item_counts = [item_counts]
+            item_text = "、".join(
+                f"{item_id} ×{max(0, int(self._num(item_counts[position])))}"
+                if position < len(item_counts)
+                else str(item_id)
+                for position, item_id in enumerate(item_ids[:8])
+            )
+            probability = self._num(item.get("prob"))
+            details = [
+                f"分组 ID: {item.get('collectorGroupId') or '-'}",
+                f"类型: {int(self._num(item.get('collectorGroupType')))}",
+                f"权重: {probability:g}",
+                f"物品数: {len(item_ids)}",
+            ]
+            lines.append(
+                f"{index}. {name}\n"
+                + "｜".join(details)
+                + (f"\n{desc}" if desc else "")
+                + (f"\n物品: {item_text}" if item_text else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _collector_rewards(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        season_id, page, error = self._quest_filter_page_args(
+            arg,
+            "赛季|season|seasonid",
+            "格式：收集任务奖励 [赛季=数字] [页码]",
+            minimum=1,
+        )
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.collector_rewards(season_id)
+        if not self._ok(response):
+            yield event.plain_result(f"查询收集任务奖励失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, {}),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("没有找到符合条件的收集任务奖励。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        heading = f"赛季 {season_id}" if season_id is not None else "全部赛季"
+        lines = [f"【收集任务奖励｜{heading}】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            reward_ids = item.get("rewardIdArr") or []
+            if not isinstance(reward_ids, list):
+                reward_ids = [reward_ids]
+            reward_text = "、".join(str(value) for value in reward_ids[:8])
+            lines.append(
+                f"{index}. 奖励配置 {item.get('collectorRewardId') or '-'}\n"
+                f"赛季: {item.get('seasonId') or '-'}｜所需收集数: {max(0, int(self._num(item.get('collectorCount'))))}"
+                + (f"｜奖励数: {len(reward_ids)}" if reward_ids else "")
+                + (f"\n奖励 ID: {reward_text}" if reward_text else "")
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _collector_slots(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        page, error = self._quest_page_arg(arg, "格式：收集任务槽位 [页码]")
+        if error:
+            yield event.plain_result(error)
+            return
+        response = await self.client.collector_slots()
+        if not self._ok(response):
+            yield event.plain_result(f"查询收集任务槽位失败：{self._message_of(response)}")
+            return
+        rows = [
+            value
+            for value in self._first_list(
+                self._payload(response, {}),
+                ("data", "list", "items"),
+            )
+            if isinstance(value, dict)
+        ]
+        if not rows:
+            yield event.plain_result("暂无收集任务槽位资料。")
+            return
+        page_size = 8
+        total_pages = max(1, (len(rows) + page_size - 1) // page_size)
+        if page > total_pages:
+            yield event.plain_result(f"页码超出范围，当前共 {total_pages} 页。")
+            return
+        lines = [f"【收集任务槽位】第 {page}/{total_pages} 页，共 {len(rows)} 项"]
+        start = (page - 1) * page_size
+        for index, item in enumerate(rows[start : start + page_size], start + 1):
+            probabilities = [self._num(item.get(f"groupProb{kind}")) for kind in range(1, 4)]
+            lines.append(
+                f"{index}. 槽位 {item.get('collectorSlotId') or '-'}\n"
+                + "｜".join(
+                    f"类型{kind}权重: {probability:g}"
+                    for kind, probability in enumerate(probabilities, 1)
+                )
+            )
+        yield event.plain_result("\n\n".join(lines))
+
+    async def _random_collector_tasks(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        raw = str(arg or "").strip().casefold().replace("：", "=")
+        slot_id: Optional[int] = None
+        if raw:
+            match = re.fullmatch(r"(?:(?:槽位|slot|slotid)=?)?(\d{1,12})", raw)
+            if not match or int(match.group(1)) <= 0:
+                yield event.plain_result("格式：随机收集任务 [槽位=数字]")
+                return
+            slot_id = int(match.group(1))
+        response = await self.client.random_collector_tasks(slot_id)
+        if not self._ok(response):
+            yield event.plain_result(f"生成随机收集任务失败：{self._message_of(response)}")
+            return
+        data = self._payload(response, [])
+        if isinstance(data, dict) and "slotId" in data:
+            rows = [data]
+        else:
+            rows = [
+                value
+                for value in self._first_list(data, ("data", "list", "items"))
+                if isinstance(value, dict)
+            ]
+        if not rows:
+            yield event.plain_result("没有生成可用的收集任务。")
+            return
+        visible_rows = rows[:12]
+        lines = [f"【随机收集任务】共生成 {len(rows)} 个槽位结果"]
+        for index, item in enumerate(visible_rows, 1):
+            group = item.get("group") if isinstance(item.get("group"), dict) else {}
+            name = self._quest_text(
+                group.get("collectorGroupName"),
+                "未抽中可用分组",
+            )[:100]
+            desc = self._quest_text(group.get("collectorGroupDesc"))[:120]
+            values = item.get("items") or []
+            values = values if isinstance(values, list) else []
+            item_text = "、".join(
+                f"{self._quest_text(value.get('name') or value.get('shortName'), str(value.get('itemId') or '-'))[:50]}"
+                f"({value.get('itemId') or '-'}) ×{max(0, int(self._num(value.get('count'))))}"
+                for value in values[:8]
+                if isinstance(value, dict)
+            )
+            lines.append(
+                f"{index}. 槽位 {item.get('slotId') or '-'}｜类型 {int(self._num(item.get('selectedType')))}｜{name}"
+                + (f"\n{desc}" if desc else "")
+                + (f"\n物品: {item_text}" if item_text else "")
+            )
+        if len(rows) > len(visible_rows):
+            lines.append(f"结果较多，仅展示前 {len(visible_rows)} 项。")
+        lines.append("结果由后端按当前槽位概率即时随机生成。")
+        yield event.plain_result("\n\n".join(lines))
 
     async def _quest_search(
         self,
