@@ -43,7 +43,7 @@ entertainmentHelpList:
         desc: "随机播放/搜索播放音乐"
       - icon: 88
         title: "鼠鼠音乐列表 [页码]"
-        desc: "查看热度排行榜"
+        desc: "每页 10 首；点歌列表 2 分钟内有效"
       - icon: 98
         title: "鼠鼠语音"
         desc: "播放鼠鼠语音"
@@ -52,10 +52,10 @@ entertainmentHelpList:
         desc: "查看指定歌单"
       - icon: 90
         title: "点歌 [序号]"
-        desc: "播放列表中的歌曲"
+        desc: "按当前页显示的全局序号播放歌曲"
       - icon: 45
         title: "歌词"
-        desc: "查看鼠鼠音乐歌词"
+        desc: "查看 2 分钟内最近播放的歌曲歌词"
       - icon: 78
         title: "音乐缓存统计"
         desc: "查看音乐缓存统计"

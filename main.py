@@ -77,6 +77,8 @@ VOICE_TAG_PATTERN = re.compile(
     r"(?:boss-|task-|evac-|eggs-|bf-).+|BF_.+|haavk|commander|babel|Beginner",
     re.I,
 )
+MUSIC_MEMORY_TTL_SECONDS = 2 * 60
+MUSIC_LIST_PAGE_SIZE = 10
 
 
 class _ScheduledEvent:
@@ -10344,7 +10346,11 @@ class DeltaForcePlugin(Star):
         yield await self._music_result(event, songs[0])
 
     async def _music_list(self, event: AstrMessageEvent, page: str) -> AsyncGenerator[Any, None]:
-        async for result in self._music_list_query(event, {"page": page, "limit": "20"}, "鼠鼠音乐排行榜"):
+        async for result in self._music_list_query(
+            event,
+            {"page": page, "limit": str(MUSIC_LIST_PAGE_SIZE)},
+            "鼠鼠音乐排行榜",
+        ):
             yield result
 
     async def _music_playlist(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
@@ -10352,7 +10358,7 @@ class DeltaForcePlugin(Star):
         if not keyword:
             yield event.plain_result("请指定歌单名称、ID 或艺术家。")
             return
-        params = {"page": "1", "limit": "20"}
+        params = {"page": "1", "limit": str(MUSIC_LIST_PAGE_SIZE)}
         if keyword.isdigit():
             params["playlistId"] = keyword
             async for result in self._music_list_query(event, params, f"鼠鼠歌单 {keyword}"):
@@ -10373,10 +10379,15 @@ class DeltaForcePlugin(Star):
             song for song in all_songs if keyword.casefold() in str(song.get("playlistName") or "").casefold()
         ]
         if matched:
-            page_songs = matched[:20]
+            page_songs = matched[:MUSIC_LIST_PAGE_SIZE]
             response = {
                 "code": 0,
-                "data": {"songs": page_songs, "total": len(matched), "page": 1, "limit": 20},
+                "data": {
+                    "songs": page_songs,
+                    "total": len(matched),
+                    "page": 1,
+                    "limit": MUSIC_LIST_PAGE_SIZE,
+                },
             }
             title = str(page_songs[0].get("playlistName") or f"鼠鼠歌单 {keyword}")
             async for result in self._music_list_query(event, params, title, response=response):
@@ -10404,13 +10415,26 @@ class DeltaForcePlugin(Star):
             for song in self._first_list(data, ("songs", "musics", "items", "list", "data"))
             if isinstance(song, dict)
         ]
+        page = max(1, int(self._num(data.get("page") or params.get("page") or 1)))
+        total = max(0, int(self._num(data.get("total") or len(songs))))
+        limit = max(1, int(self._num(data.get("limit") or params.get("limit") or MUSIC_LIST_PAGE_SIZE)))
         if not songs:
+            total_pages = max(1, (total + limit - 1) // limit)
+            if total and page > total_pages:
+                yield event.plain_result(f"页码超出范围，共 {total_pages} 页。")
+                return
             yield event.plain_result(f"{title}暂无歌曲。")
             return
         user_key = self._user_identifier(event)
-        self._music_lists[user_key] = {"created_at": dt.datetime.now().timestamp(), "songs": songs}
+        start_index = (page - 1) * limit
+        total = max(total, start_index + len(songs))
+        self._music_lists[user_key] = {
+            "created_at": dt.datetime.now().timestamp(),
+            "songs": songs,
+            "start_index": start_index,
+        }
         music_list = []
-        for index, song in enumerate(songs, 1):
+        for index, song in enumerate(songs, start_index + 1):
             metadata = song.get("metadata") if isinstance(song.get("metadata"), dict) else {}
             music_list.append({
                 "index": index,
@@ -10420,45 +10444,59 @@ class DeltaForcePlugin(Star):
                 "playlist": song.get("playlistName") or song.get("playlist") or "",
                 "hot": song.get("hot") or metadata.get("hot") or "",
             })
-        total = int(self._num(data.get("total") or len(songs)))
-        page = str(data.get("page") or params.get("page") or "1")
+        total_pages = max(1, (total + limit - 1) // limit)
         render_data = {
             "listTitle": title,
-            "subtitle": f"第 {page} 页",
+            "subtitle": f"第 {page}/{total_pages} 页",
             "totalCount": total,
             "musicList": music_list,
         }
         text = "\n".join(
-            [f"【{title}】第 {page} 页，共 {total} 首"]
+            [f"【{title}】第 {page}/{total_pages} 页，共 {total} 首"]
             + [f"{item['index']}. {item['name']} - {item['artist']}" for item in music_list]
-            + ["发送 点歌 <序号> 播放本页歌曲。"]
+            + ["发送 点歌 <序号> 播放本页歌曲，列表 2 分钟内有效。"]
         )
         async for r in self._render_or_text(event, "Template/musicList/musicList.html", render_data, text):
             yield r
 
     async def _music_select(self, event: AstrMessageEvent, index: int) -> AsyncGenerator[Any, None]:
-        memory = self._music_lists.get(self._user_identifier(event))
-        if not memory or dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > 600:
-            yield event.plain_result("音乐列表已失效，请先发送 鼠鼠音乐列表。")
+        user_key = self._user_identifier(event)
+        memory = self._music_lists.get(user_key)
+        if not memory:
+            yield event.plain_result("您还没有获取音乐列表，请先发送 鼠鼠音乐列表 或 鼠鼠歌单 <名称>。")
+            return
+        if dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > MUSIC_MEMORY_TTL_SECONDS:
+            self._music_lists.pop(user_key, None)
+            yield event.plain_result("音乐列表已过期（超过 2 分钟），请重新获取列表。")
             return
         songs = memory.get("songs") or []
-        if index < 1 or index > len(songs):
-            yield event.plain_result(f"序号超出范围，请输入 1-{len(songs)}。")
+        start_index = max(0, int(self._num(memory.get("start_index"))))
+        first_index = start_index + 1
+        last_index = start_index + len(songs)
+        if index < first_index or index > last_index:
+            yield event.plain_result(f"序号超出范围，请输入 {first_index}-{last_index}。")
             return
-        yield await self._music_result(event, songs[index - 1])
+        yield await self._music_result(event, songs[index - first_index])
 
     async def _music_replay(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        memory = self._music_last.get(self._user_identifier(event))
-        if memory and dt.datetime.now().timestamp() - self._num(memory.get("created_at")) <= 600:
+        user_key = self._user_identifier(event)
+        memory = self._music_last.get(user_key)
+        if memory and dt.datetime.now().timestamp() - self._num(memory.get("created_at")) <= MUSIC_MEMORY_TTL_SECONDS:
             yield await self._music_result(event, memory.get("song") or {})
             return
+        self._music_last.pop(user_key, None)
         async for result in self._music(event, ""):
             yield result
 
     async def _music_lyrics(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        memory = self._music_last.get(self._user_identifier(event))
-        if not memory or dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > 600:
+        user_key = self._user_identifier(event)
+        memory = self._music_last.get(user_key)
+        if not memory:
             yield event.plain_result("暂无最近播放的歌曲，请先发送 鼠鼠音乐。")
+            return
+        if dt.datetime.now().timestamp() - self._num(memory.get("created_at")) > MUSIC_MEMORY_TTL_SECONDS:
+            self._music_last.pop(user_key, None)
+            yield event.plain_result("音乐记录已过期（超过 2 分钟），请重新播放音乐。")
             return
         song = memory.get("song") or {}
         if not isinstance(song, dict):
