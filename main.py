@@ -226,6 +226,13 @@ DELTA_COMMAND_SPECS = [
     ("取消收藏改枪码", {"取消收藏改枪方案"}),
     ("改枪码收藏列表", {"改枪方案收藏列表"}),
     ("集市兑换", {"集市", "兑换列表"}),
+    ("主播巅峰赛", {"巅峰赛", "主播榜"}),
+    ("巅峰赛搜索", {"主播搜索"}),
+    ("巅峰赛竞猜", {"竞猜候选"}),
+    ("巅峰赛快照", {"主播榜快照"}),
+    ("巅峰赛快照详情", {"主播榜快照详情"}),
+    ("主播历史", {"巅峰赛历史"}),
+    ("主播统计", {"巅峰赛主播统计"}),
     ("每日密码", {"今日密码"}),
     ("文章列表", set()),
     ("文章详情", {"文章"}),
@@ -2185,6 +2192,34 @@ class DeltaForcePlugin(Star):
 
         if re.fullmatch(r"(每日密码|今日密码)", body):
             async for r in self._daily_keyword(event):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:主播巅峰赛|巅峰赛|主播榜)(?:\s+(.*))?", body):
+            async for r in self._competition_leaderboard(event, (m.group(1) or "").strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:巅峰赛搜索|主播搜索)\s*(.*)", body):
+            async for r in self._competition_search(event, m.group(1).strip()):
+                yield r
+            return
+        if re.fullmatch(r"(?:巅峰赛竞猜|竞猜候选)", body):
+            async for r in self._competition_candidates(event):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:巅峰赛快照详情|主播榜快照详情)\s*(.*)", body):
+            async for r in self._competition_snapshot_detail(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:巅峰赛快照|主播榜快照)(?:\s+(.*))?", body):
+            async for r in self._competition_snapshots(event, (m.group(1) or "").strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:主播历史|巅峰赛历史)\s*(.*)", body):
+            async for r in self._competition_streamer_history(event, m.group(1).strip()):
+                yield r
+            return
+        if m := re.fullmatch(r"(?:主播统计|巅峰赛主播统计)\s*(.*)", body):
+            async for r in self._competition_streamer_stats(event, m.group(1).strip()):
                 yield r
             return
         if re.fullmatch(r"(活动日历|活动列表|活动)", body):
@@ -9265,6 +9300,575 @@ class DeltaForcePlugin(Star):
         if not groups and cards:
             groups.append({"id": "all", "name": "全部活动", "icon": "", "cards": cards})
         return groups
+
+    @staticmethod
+    def _competition_type_value(value: str, allow_all: bool = False) -> Tuple[Optional[int], str]:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"积分", "积分榜", "仓库", "仓库榜", "score", "1"}:
+            return 1, ""
+        if normalized in {"击杀", "击杀榜", "kill", "2"}:
+            return 2, ""
+        if allow_all and normalized in {"全部", "所有", "all", "0", ""}:
+            return None, ""
+        return None, "榜单类型仅支持积分或击杀。"
+
+    @staticmethod
+    def _competition_period_value(value: str) -> Tuple[str, str]:
+        normalized = str(value or "").strip().lower()
+        mapping = {
+            "今日": "today",
+            "今天": "today",
+            "today": "today",
+            "昨日": "yesterday",
+            "昨天": "yesterday",
+            "yesterday": "yesterday",
+            "上周": "last_week",
+            "last_week": "last_week",
+            "lastweek": "last_week",
+            "历史": "history",
+            "全部": "history",
+            "history": "history",
+        }
+        if normalized in mapping:
+            return mapping[normalized], ""
+        return "", "统计周期仅支持今日、昨日、上周或历史。"
+
+    @staticmethod
+    def _competition_granularity_value(value: str) -> Tuple[str, str]:
+        normalized = str(value or "").strip().lower()
+        mapping = {
+            "分钟": "minute",
+            "minute": "minute",
+            "1m": "minute",
+            "30分钟": "30m",
+            "30m": "30m",
+            "半小时": "30m",
+            "小时": "1h",
+            "1h": "1h",
+        }
+        if normalized in mapping:
+            return mapping[normalized], ""
+        return "", "采样粒度仅支持分钟、30m 或 1h。"
+
+    @classmethod
+    def _competition_options(
+        cls,
+        arg: str,
+        *,
+        keyword_required: bool = False,
+        allow_all_type: bool = False,
+        allow_platform: bool = False,
+        allow_trend: bool = False,
+        allow_period: bool = False,
+        allow_granularity: bool = False,
+        allow_time_range: bool = False,
+        default_page_size: int = 0,
+        max_page_size: int = 100,
+    ) -> Tuple[str, Dict[str, Any], str]:
+        params: Dict[str, Any] = {}
+        keyword_parts: List[str] = []
+        known_platforms = {"抖音", "斗鱼", "虎牙", "b站", "快手", "小红书"}
+
+        def positive_int(raw: str, label: str, maximum: int) -> Tuple[Optional[int], str]:
+            try:
+                value = int(str(raw).strip())
+            except (TypeError, ValueError):
+                return None, f"{label}必须是整数。"
+            if not 1 <= value <= maximum:
+                return None, f"{label}需在 1-{maximum} 之间。"
+            return value, ""
+
+        for token in str(arg or "").split():
+            raw = token.strip()
+            lowered = raw.lower()
+            key = ""
+            value = ""
+            for separator in ("=", ":", "："):
+                if separator in raw:
+                    key, value = raw.split(separator, 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    break
+
+            if key:
+                if key in {"关键词", "主播", "search", "keyword"}:
+                    if not value:
+                        return "", {}, "关键词不能为空。"
+                    keyword_parts.append(value)
+                    continue
+                if key in {"类型", "榜单", "type"}:
+                    rank_type, error = cls._competition_type_value(value, allow_all_type)
+                    if error:
+                        return "", {}, error
+                    if rank_type is not None:
+                        params["type"] = rank_type
+                    else:
+                        params.pop("type", None)
+                    continue
+                if key in {"周", "赛制周", "week"}:
+                    week, error = positive_int(value, "赛制周", 2)
+                    if error:
+                        return "", {}, error
+                    params["week"] = week
+                    continue
+                if key in {"页", "页码", "page"}:
+                    page, error = positive_int(value, "页码", 1000)
+                    if error:
+                        return "", {}, error
+                    params["page"] = page
+                    continue
+                if key in {"每页", "数量", "pagesize", "limit"}:
+                    page_size, error = positive_int(value, "每页数量", max_page_size)
+                    if error:
+                        return "", {}, error
+                    params["pageSize"] = page_size
+                    continue
+                if key in {"平台", "platname"} and allow_platform:
+                    if not value:
+                        return "", {}, "平台不能为空。"
+                    params["platName"] = value
+                    continue
+                if key in {"趋势", "withtrend"} and allow_trend:
+                    params["withTrend"] = str(value).lower() not in {"0", "false", "否", "关闭"}
+                    continue
+                if key in {"周期", "period"} and allow_period:
+                    period, error = cls._competition_period_value(value)
+                    if error:
+                        return "", {}, error
+                    params["period"] = period
+                    continue
+                if key in {"粒度", "granularity"} and allow_granularity:
+                    granularity, error = cls._competition_granularity_value(value)
+                    if error:
+                        return "", {}, error
+                    params["granularity"] = granularity
+                    continue
+                if key in {"开始", "from"} and allow_time_range:
+                    params["from"] = value
+                    continue
+                if key in {"结束", "to"} and allow_time_range:
+                    params["to"] = value
+                    continue
+                return "", {}, f"不支持的参数：{key}"
+
+            # 需要关键词的命令约定首个位置参数就是主播昵称或 OpenID。
+            # 这样昵称恰好为“抖音”“积分”等选项词时，也不会被误判为筛选条件。
+            if keyword_required and not keyword_parts:
+                keyword_parts.append(raw)
+                continue
+
+            rank_type, rank_error = cls._competition_type_value(raw, allow_all_type)
+            if not rank_error:
+                if rank_type is not None:
+                    params["type"] = rank_type
+                else:
+                    params.pop("type", None)
+                continue
+            week_match = re.fullmatch(r"(?:第)?([12])周|周([12])|week([12])", lowered)
+            if week_match:
+                params["week"] = int(next(value for value in week_match.groups() if value))
+                continue
+            page_match = re.fullmatch(r"(?:第)?(\d+)页|页(\d+)", lowered)
+            if page_match:
+                page, error = positive_int(
+                    next(value for value in page_match.groups() if value),
+                    "页码",
+                    1000,
+                )
+                if error:
+                    return "", {}, error
+                params["page"] = page
+                continue
+            page_size_match = re.fullmatch(r"每页(\d+)", lowered)
+            if page_size_match:
+                page_size, error = positive_int(page_size_match.group(1), "每页数量", max_page_size)
+                if error:
+                    return "", {}, error
+                params["pageSize"] = page_size
+                continue
+            if allow_platform and raw in known_platforms:
+                params["platName"] = raw
+                continue
+            if allow_trend and lowered in {"趋势", "trend", "withtrend"}:
+                params["withTrend"] = True
+                continue
+            if allow_period:
+                period, error = cls._competition_period_value(raw)
+                if not error:
+                    params["period"] = period
+                    continue
+            if allow_granularity:
+                granularity, error = cls._competition_granularity_value(raw)
+                if not error:
+                    params["granularity"] = granularity
+                    continue
+            if keyword_required:
+                keyword_parts.append(raw)
+                continue
+            return "", {}, f"无法识别参数：{raw}"
+
+        keyword = " ".join(keyword_parts).strip()
+        if keyword_required and not keyword:
+            return "", {}, "缺少主播昵称或 OpenID。"
+        if default_page_size and "pageSize" not in params:
+            params["pageSize"] = default_page_size
+        return keyword, params, ""
+
+    @staticmethod
+    def _competition_trend_text(value: Any) -> str:
+        if not isinstance(value, dict):
+            return ""
+        status = str(value.get("status") or "").lower()
+        change = abs(int(DeltaForcePlugin._number(value.get("rankChange"))))
+        if status == "up":
+            return f" ↑{change}"
+        if status == "down":
+            return f" ↓{change}"
+        if status == "new":
+            return " 新上榜"
+        if status == "same":
+            return " 持平"
+        return ""
+
+    @classmethod
+    def _competition_rank_text(cls, data: Dict[str, Any], title: str) -> str:
+        rows = data.get("list") if isinstance(data.get("list"), list) else []
+        if not rows:
+            return f"当前暂无{title}数据。"
+        rank_type = int(cls._number(data.get("type") or 1))
+        type_name = "击杀榜" if rank_type == 2 else "积分榜"
+        page = int(cls._number(data.get("page") or 1))
+        total_page = int(cls._number(data.get("totalPage") or 1))
+        week = int(cls._number(data.get("week") or 2))
+        lines = [f"【{title} · 第{week}周{type_name}】第 {page}/{max(total_page, 1)} 页"]
+        updated = data.get("curDateTime")
+        if updated:
+            lines.append(f"榜单时间：{updated}")
+        for item in rows[:20]:
+            if not isinstance(item, dict):
+                continue
+            rank = int(cls._number(item.get("rank")))
+            name = str(item.get("userName") or "未知主播")
+            platform = str(item.get("platName") or "未知平台")
+            openid = str(item.get("openId") or "-")
+            trend = cls._competition_trend_text(item.get("trend"))
+            metric = (
+                f"击败干员 {int(cls._number(item.get('defeatedAgents'))):,}"
+                if rank_type == 2
+                else f"仓库价值 {item.get('warehouseValue') or '-'}"
+            )
+            lines.append(f"{rank or '-'}名{trend}｜{name}（{platform}）")
+            lines.append(
+                f"   {metric}｜破译 {int(cls._number(item.get('decryptedBricks'))):,}｜"
+                f"对局 {int(cls._number(item.get('totalRounds'))):,}｜OpenID {openid}"
+            )
+        if len(rows) > 20:
+            lines.append(f"本页仅展示前 20 名，另有 {len(rows) - 20} 条未显示。")
+        return "\n".join(lines)
+
+    async def _competition_leaderboard(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        _, params, error = self._competition_options(
+            arg,
+            allow_platform=True,
+            allow_trend=True,
+        )
+        if error:
+            yield event.plain_result(
+                f"{error}\n格式：主播巅峰赛 [积分/击杀] [周1/周2] [页码] [平台=名称] [趋势]"
+            )
+            return
+        res = await self.client.competition_leaderboard(params)
+        if not self._ok(res):
+            yield event.plain_result(f"主播巅峰赛查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("主播巅峰赛响应格式异常。")
+            return
+        yield event.plain_result(self._competition_rank_text(data, "主播巅峰赛"))
+
+    async def _competition_search(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        keyword, params, error = self._competition_options(
+            arg,
+            keyword_required=True,
+            allow_platform=True,
+            allow_trend=True,
+        )
+        if error:
+            yield event.plain_result(
+                f"{error}\n格式：巅峰赛搜索 <主播昵称> [积分/击杀] [周1/周2] [页码] [平台=名称] [趋势]"
+            )
+            return
+        params["search"] = keyword
+        res = await self.client.competition_search(params)
+        if not self._ok(res):
+            yield event.plain_result(f"主播搜索失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("主播搜索响应格式异常。")
+            return
+        yield event.plain_result(self._competition_rank_text(data, f"主播搜索：{keyword}"))
+
+    async def _competition_candidates(
+        self,
+        event: AstrMessageEvent,
+    ) -> AsyncGenerator[Any, None]:
+        res = await self.client.competition_candidates()
+        if not self._ok(res):
+            yield event.plain_result(f"竞猜候选查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("竞猜候选响应格式异常。")
+            return
+        questions = data.get("questions") if isinstance(data.get("questions"), list) else []
+        candidates = data.get("candidates") if isinstance(data.get("candidates"), list) else []
+        if not questions and not candidates:
+            yield event.plain_result("当前暂无巅峰赛竞猜题目或候选主播。")
+            return
+        week = int(self._number(data.get("week") or 2))
+        config = data.get("config") if isinstance(data.get("config"), dict) else {}
+        lines = [f"【巅峰赛竞猜候选 · 第{week}周】", "仅展示候选信息，不会提交游戏内竞猜答案。"]
+        if config:
+            lines.append(
+                f"活动时间：{config.get('startTime') or '-'} 至 {config.get('endTime') or '-'}｜"
+                f"揭晓：{config.get('revealTime') or '-'}"
+            )
+        for item in questions:
+            if not isinstance(item, dict):
+                continue
+            line = f"题目 {item.get('key') or '-'}：{item.get('topic') or '未命名'}（{item.get('jifen') or 0} 分）"
+            answer = item.get("realAnswerName")
+            if answer:
+                line += f"｜已公开答案：{answer}"
+            lines.append(line)
+        if candidates:
+            lines.append("\n【候选主播】")
+        for index, item in enumerate(candidates[:20], 1):
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"{index}. {item.get('userName') or '未知主播'}（{item.get('platName') or '未知平台'}）｜"
+                f"仓库 {self.data_mgr.fmt_num(item.get('warehouseValue') or 0)}｜"
+                f"击败 {self.data_mgr.fmt_num(item.get('defeatedAgents') or 0)}｜"
+                f"OpenID {item.get('openId') or '-'}"
+            )
+        if len(candidates) > 20:
+            lines.append(f"仅展示前 20 名候选，另有 {len(candidates) - 20} 名未显示。")
+        yield event.plain_result("\n".join(lines))
+
+    async def _competition_snapshots(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        _, params, error = self._competition_options(
+            arg,
+            allow_all_type=True,
+            allow_time_range=True,
+            default_page_size=20,
+            max_page_size=100,
+        )
+        if error:
+            yield event.plain_result(
+                f"{error}\n格式：巅峰赛快照 [积分/击杀/全部] [周1/周2] [页码] [每页=数量]"
+            )
+            return
+        res = await self.client.competition_snapshots(params)
+        if not self._ok(res):
+            yield event.plain_result(f"巅峰赛快照查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("巅峰赛快照响应格式异常。")
+            return
+        rows = data.get("list") if isinstance(data.get("list"), list) else []
+        if not rows:
+            yield event.plain_result("当前暂无巅峰赛排行榜快照。")
+            return
+        page = int(self._number(data.get("page") or 1))
+        page_size = int(self._number(data.get("pageSize") or 20))
+        total = int(self._number(data.get("total") or len(rows)))
+        lines = [f"【巅峰赛排行榜快照】第 {page} 页｜共 {total} 条｜每页 {page_size} 条"]
+        for index, item in enumerate(rows[:20], 1):
+            if not isinstance(item, dict):
+                continue
+            rank_type = int(self._number(item.get("type")))
+            lines.append(
+                f"{index}. {item.get('typeName') or ('击杀榜' if rank_type == 2 else '积分榜')}｜"
+                f"{item.get('recordedAtText') or item.get('recordedAt') or '-'}｜样本 {item.get('sampleCount') or 0}"
+            )
+            lines.append(f"   ID：{item.get('id') or '-'}")
+        yield event.plain_result("\n".join(lines))
+
+    async def _competition_snapshot_detail(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        tokens = str(arg or "").split()
+        if not tokens:
+            yield event.plain_result("格式：巅峰赛快照详情 <快照ID> [关键词=主播] [页码] [每页=数量]")
+            return
+        snapshot_id = tokens.pop(0).strip()
+        if snapshot_id.lower().startswith("id="):
+            snapshot_id = snapshot_id.split("=", 1)[1].strip()
+        if not snapshot_id:
+            yield event.plain_result("快照 ID 不能为空。")
+            return
+        keyword, params, error = self._competition_options(
+            " ".join(tokens),
+            default_page_size=20,
+            max_page_size=200,
+        )
+        if error:
+            yield event.plain_result(f"{error}\n格式：巅峰赛快照详情 <快照ID> [关键词=主播] [页码]")
+            return
+        params["id"] = snapshot_id
+        if keyword:
+            params["keyword"] = keyword
+        res = await self.client.competition_snapshot_detail(params)
+        if not self._ok(res):
+            yield event.plain_result(f"快照详情查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("快照详情响应格式异常。")
+            return
+        snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+        entries = data.get("entries") if isinstance(data.get("entries"), list) else []
+        if not snapshot and not entries:
+            yield event.plain_result("未找到该巅峰赛快照。")
+            return
+        rank_data = {
+            "week": snapshot.get("week") or 2,
+            "type": snapshot.get("type") or 1,
+            "page": data.get("page") or 1,
+            "totalPage": max(
+                1,
+                (int(self._number(data.get("total") or len(entries))) + int(self._number(data.get("pageSize") or 20)) - 1)
+                // max(1, int(self._number(data.get("pageSize") or 20))),
+            ),
+            "curDateTime": snapshot.get("recordedAtText") or snapshot.get("recordedAt"),
+            "list": entries,
+        }
+        yield event.plain_result(self._competition_rank_text(rank_data, "巅峰赛快照详情"))
+
+    async def _competition_streamer_history(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        keyword, params, error = self._competition_options(
+            arg,
+            keyword_required=True,
+            allow_all_type=True,
+            allow_granularity=True,
+            allow_time_range=True,
+            default_page_size=20,
+            max_page_size=200,
+        )
+        if error:
+            yield event.plain_result(
+                f"{error}\n格式：主播历史 <昵称/OpenID> [积分/击杀/全部] [周1/周2] [页码] [粒度=30m]"
+            )
+            return
+        params["keyword"] = keyword
+        res = await self.client.competition_streamer_history(params)
+        if not self._ok(res):
+            yield event.plain_result(f"主播历史查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("主播历史响应格式异常。")
+            return
+        rows = data.get("list") if isinstance(data.get("list"), list) else []
+        if not rows:
+            yield event.plain_result(f"未找到主播“{keyword}”的历史排名。")
+            return
+        lines = [
+            f"【主播历史：{keyword}】第 {data.get('page') or 1} 页｜共 {data.get('total') or len(rows)} 条｜"
+            f"粒度 {data.get('granularity') or 'minute'}"
+        ]
+        for item in rows[:20]:
+            if not isinstance(item, dict):
+                continue
+            rank_type = int(self._number(item.get("type")))
+            type_name = item.get("typeName") or ("击杀榜" if rank_type == 2 else "积分榜")
+            metric = (
+                f"击败 {self.data_mgr.fmt_num(item.get('defeatedAgents') or 0)}"
+                if rank_type == 2
+                else f"仓库 {item.get('warehouseValue') or '-'}"
+            )
+            lines.append(
+                f"{item.get('recordedAtText') or item.get('recordedAt') or '-'}｜{type_name} "
+                f"第 {item.get('rank') or '-'} 名｜{metric}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    async def _competition_streamer_stats(
+        self,
+        event: AstrMessageEvent,
+        arg: str,
+    ) -> AsyncGenerator[Any, None]:
+        keyword, params, error = self._competition_options(
+            arg,
+            keyword_required=True,
+            allow_period=True,
+            allow_granularity=True,
+        )
+        if error:
+            yield event.plain_result(
+                f"{error}\n格式：主播统计 <昵称/OpenID> [积分/击杀] [今日/昨日/上周/历史] [周1/周2] [粒度=30m]"
+            )
+            return
+        params["keyword"] = keyword
+        res = await self.client.competition_streamer_stats(params)
+        if not self._ok(res):
+            yield event.plain_result(f"主播统计查询失败：{self._message_of(res)}")
+            return
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("主播统计响应格式异常。")
+            return
+        identity = data.get("identity") if isinstance(data.get("identity"), dict) else {}
+        if not data.get("hasData"):
+            yield event.plain_result(f"主播“{identity.get('userName') or keyword}”在该周期暂无统计数据。")
+            return
+        summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
+        series = data.get("series") if isinstance(data.get("series"), list) else []
+        name = identity.get("userName") or keyword
+        lines = [
+            f"【主播统计：{name}】{data.get('typeName') or '积分榜'}｜第 {data.get('week') or 2} 周",
+            f"周期 {data.get('period') or 'history'}｜粒度 {data.get('granularity') or 'minute'}｜"
+            f"平台 {identity.get('platName') or '-'}｜OpenID {data.get('openId') or '-'}",
+            f"当前/最佳/最差名次：{summary.get('currentRank') or '-'} / {summary.get('bestRank') or '-'} / {summary.get('worstRank') or '-'}",
+            f"平均名次：{self._number(summary.get('avgRank')):.2f}｜快照数：{summary.get('appearances') or 0}",
+            f"最新仓库：{summary.get('latestWarehouseValue') or '-'}｜最新击败：{self.data_mgr.fmt_num(summary.get('latestDefeatedAgents') or 0)}",
+            f"峰值击败：{self.data_mgr.fmt_num(summary.get('peakDefeatedAgents') or 0)}｜峰值破译：{self.data_mgr.fmt_num(summary.get('peakDecryptedBricks') or 0)}",
+            f"区间：{summary.get('firstSeenAt') or '-'} 至 {summary.get('lastSeenAt') or '-'}",
+        ]
+        if series:
+            lines.append("\n【最近趋势点】")
+            for item in series[-10:]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"{item.get('recordedAtText') or item.get('recordedAt') or '-'}｜第 {item.get('rank') or '-'} 名｜"
+                    f"仓库 {item.get('warehouseValue') or '-'}｜击败 {self.data_mgr.fmt_num(item.get('defeatedAgents') or 0)}"
+                )
+        if data.get("seriesTruncated"):
+            lines.append("时间序列已由后端截断。")
+        yield event.plain_result("\n".join(lines))
 
     async def _activities(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.activities()

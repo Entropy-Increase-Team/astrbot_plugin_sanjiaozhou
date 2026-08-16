@@ -619,6 +619,45 @@ class DeltaForceClient:
     async def activities(self):
         return await self.get("/api/v1/df/activities")
 
+    async def competition_leaderboard(self, params: Optional[Dict[str, Any]] = None):
+        return await self.get(
+            "/api/v1/df/competition/dfs/leaderboard",
+            params=params or {},
+        )
+
+    async def competition_search(self, params: Dict[str, Any]):
+        return await self.get(
+            "/api/v1/df/competition/dfs/search",
+            params=params,
+        )
+
+    async def competition_candidates(self):
+        return await self.get("/api/v1/df/competition/dfs/candidates")
+
+    async def competition_snapshots(self, params: Optional[Dict[str, Any]] = None):
+        return await self.get(
+            "/api/v1/df/competition/dfs/snapshots",
+            params=params or {},
+        )
+
+    async def competition_snapshot_detail(self, params: Dict[str, Any]):
+        return await self.get(
+            "/api/v1/df/competition/dfs/snapshots/detail",
+            params=params,
+        )
+
+    async def competition_streamer_history(self, params: Dict[str, Any]):
+        return await self.get(
+            "/api/v1/df/competition/dfs/snapshots/streamer-history",
+            params=params,
+        )
+
+    async def competition_streamer_stats(self, params: Dict[str, Any]):
+        return await self.get(
+            "/api/v1/df/competition/dfs/streamer/stats",
+            params=params,
+        )
+
     async def article_list(self):
         return await self.get("/api/v1/df/tools/article/list")
 
