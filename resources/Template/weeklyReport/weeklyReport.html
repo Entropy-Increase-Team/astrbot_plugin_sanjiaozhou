@@ -316,11 +316,11 @@
                         </div>
                     </div>
                 </div>
-                {{if friend.items && friend.items.length > 0}}
+                {{if friend['items'] && friend['items']|length > 0}}
                 <div style="width: 100%; margin-top: 10px; padding-top: 15px; border-top: 1px solid rgba(255,255,255,0.1);">
                     <div style="font-size: 20px; color: #0FF796; font-weight: 700; margin-bottom: 10px;">高价值物品 / HIGH-VALUE ITEMS</div>
                     <div style="display: flex; gap: 15px; flex-wrap: wrap;">
-                        {{each friend.items item}}
+                        {{each friend['items'] item}}
                         <div style="display: flex; align-items: center; gap: 10px; background: rgba(15, 247, 150, 0.05); padding: 10px; border-radius: 4px; border: 1px solid rgba(15, 247, 150, 0.2);">
                             <div style="width: 60px; height: 60px; background: rgba(0,0,0,0.3); border-radius: 4px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden;">
                                 <img src="{{item.imageUrl}}" alt="{{item.name}}" style="max-width: 100%; max-height: 100%; object-fit: contain;" onerror="this.style.display='none';" />
@@ -588,7 +588,7 @@
         </div>
         <div class="favorite-grid">
             {{if report4.best_teammate}}
-            <div class="favorite-card">
+            <div class="favorite-card teammate-summary-card">
                 <div class="favorite-content">
                     <div class="favorite-label">最佳队友 / BEST TEAMMATE</div>
                     <div class="teammate-item" style="margin-top: 20px; background: rgba(15, 247, 150, 0.1);">
@@ -610,7 +610,7 @@
             </div>
             {{/if}}
             {{if report4.worst_teammate}}
-            <div class="favorite-card">
+            <div class="favorite-card teammate-summary-card">
                 <div class="favorite-content">
                     <div class="favorite-label">最差队友 / WORST TEAMMATE</div>
                     <div class="teammate-item" style="margin-top: 20px; background: rgba(255, 0, 0, 0.1);">
@@ -657,7 +657,7 @@
             </div>
             <div class="map-row">
                 {{each bk.vehicles vehicle}}
-                <div class="map-card">
+                <div class="map-card vehicle-card">
                     <div class="map-content">
                         <div class="map-name">{{vehicle.vehicle_name}}</div>
                         <div class="map-stats">使用次数: {{vehicle.inum}}次</div>

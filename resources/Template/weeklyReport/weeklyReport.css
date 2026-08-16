@@ -382,6 +382,18 @@ body {
     color: #FFFFFF;
 }
 
+.teammate-summary-card {
+    height: auto;
+    min-height: 220px;
+}
+
+.teammate-summary-card .favorite-content {
+    position: static;
+    min-height: 220px;
+    padding: 24px;
+    background: rgba(255,255,255,0.02);
+}
+
 /* 地图卡片 - 参考 personalData */
 .map-list { 
     display: flex;
@@ -437,6 +449,20 @@ body {
     font-size: 18px; 
     color: #FFFFFF; 
     font-weight: 700; 
+}
+
+.vehicle-card {
+    height: auto;
+    min-height: 110px;
+}
+
+.vehicle-card .map-content {
+    position: static;
+    min-height: 110px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: rgba(255,255,255,0.02);
 }
 
 /* 收藏品列表 */
@@ -597,6 +623,7 @@ body {
 
 .teammate-info {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -606,6 +633,8 @@ body {
     font-size: 28px;
     font-weight: 700;
     color: var(--primary-color);
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .teammate-stats {

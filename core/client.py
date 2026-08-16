@@ -394,6 +394,12 @@ class DeltaForceClient:
             framework_token=framework_token,
         )
 
+    async def friend_info(self, openid: str):
+        return await self.get(
+            "/api/v1/df/person/friendinfo",
+            params={"openid": openid},
+        )
+
     async def title(self, framework_token: str):
         return await self.get("/api/v1/df/person/title", framework_token=framework_token)
 

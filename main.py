@@ -1545,6 +1545,8 @@ class DeltaForcePlugin(Star):
             if not sol and not mp:
                 return True
             data = self._build_weekly(event, sol, mp, report_dm, None, self._last_sunday(), identity)
+            if self.config.get("enable_image_render", True):
+                await self._enrich_weekly_friend_profiles(data)
             image = await self.renderer.render_html(
                 "Template/weeklyReport/weeklyReport.html", data, {"viewport_width": 1100, "viewport_height": 1800}
             ) if self.config.get("enable_image_render", True) else None
@@ -3721,6 +3723,8 @@ class DeltaForcePlugin(Star):
         identity = await self._render_identity(event, token)
         display_date = date or self._last_sunday()
         data = self._build_weekly(event, sol, mp, report_dm, mode, display_date, identity)
+        if self.config.get("enable_image_render", True):
+            await self._enrich_weekly_friend_profiles(data)
         text = self._summary_dict("三角洲周报", raw)
         async for r in self._render_or_text(event, "Template/weeklyReport/weeklyReport.html", data, text, {"viewport_width": 1100, "viewport_height": 1800}):
             yield r
@@ -3762,11 +3766,23 @@ class DeltaForcePlugin(Star):
         if mode in (None, "", "mp"):
             data["mpData"] = self._build_weekly_mp(mp)
         if isinstance(report_dm, dict):
-            for key in ("report1", "report2", "report3", "report4", "wbn", "fk", "bk"):
-                value = report_dm.get(key)
-                if isinstance(value, dict):
-                    data[key] = value
             data["topFriends"] = self._weekly_top_friends(report_dm.get("wbn"))
+            report1 = report_dm.get("report1")
+            if isinstance(report1, dict):
+                data["report1"] = {
+                    "total_sell_price": self.data_mgr.fmt_num(
+                        report1.get("total_sell_price") or 0
+                    )
+                }
+            report3 = self._adapt_weekly_report3(report_dm.get("report3"))
+            if report3:
+                data["report3"] = report3
+            report4 = self._adapt_weekly_report4(report_dm.get("report4"))
+            if report4:
+                data["report4"] = report4
+            bk = self._adapt_weekly_bk(report_dm.get("bk"))
+            if bk:
+                data["bk"] = bk
         return data
 
     def _build_weekly_sol(self, sol: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -3785,6 +3801,7 @@ class DeltaForcePlugin(Star):
             openid = str(item.get("friend_openid") or "")
             teammates.append(
                 {
+                    "openid": openid,
                     "name": f"...{openid[-6:]}" if openid else "匿名队友",
                     "avatar": "",
                     "total_sol_num": item.get("Friend_total_sol_num") or 0,
@@ -3847,6 +3864,7 @@ class DeltaForcePlugin(Star):
             openid = str(item.get("friend_openid") or "")
             teammates.append(
                 {
+                    "openid": openid,
                     "name": f"...{openid[-6:]}" if openid else "匿名队友",
                     "avatar": "",
                     "total_num": int(total),
@@ -3942,16 +3960,24 @@ class DeltaForcePlugin(Star):
         if not isinstance(wbn, dict):
             return []
         friends = wbn.get("friends") if isinstance(wbn.get("friends"), list) else []
-        ranked = sorted(friends, key=lambda x: self._number(x.get("total_gained_price")) if isinstance(x, dict) else 0, reverse=True)
+        ranked = sorted(
+            [
+                item
+                for item in friends
+                if isinstance(item, dict)
+                and self._number(item.get("total_gained_price")) > 0
+            ],
+            key=lambda item: self._number(item.get("total_gained_price")),
+            reverse=True,
+        )
         result = []
         for index, friend in enumerate(ranked[:10], 1):
-            if not isinstance(friend, dict):
-                continue
             openid = str(friend.get("Friendopenid") or "")
             result.append(
                 {
                     **friend,
                     "rank": index,
+                    "openid": openid,
                     "name": f"...{openid[-6:]}" if openid else "匿名好友",
                     "avatar": "",
                     "intimacy": friend.get("FriendIntimacy") or 0,
@@ -3962,6 +3988,208 @@ class DeltaForcePlugin(Star):
                 }
             )
         return result
+
+    def _adapt_weekly_report3(self, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict) or not value:
+            return {}
+
+        def minutes(raw: Any) -> str:
+            seconds = max(0, int(self._number(raw)))
+            return f"{seconds // 60}分钟" if seconds else "0"
+
+        def game_time(raw: Any) -> str:
+            seconds = max(0, int(self._number(raw)))
+            if not seconds:
+                return "0"
+            hours, remainder = divmod(seconds, 3600)
+            minutes_value = remainder // 60
+            return f"{hours}小时{minutes_value}分钟"
+
+        map_id = value.get("max_score_mapid")
+        operator_id = value.get("max_mpmatch_num_deployarmedforcetype")
+        map_name = self.data_mgr.get_map_name(map_id) if map_id not in (None, "") else "无"
+        operator_name = (
+            self.data_mgr.get_operator_name(operator_id)
+            if operator_id not in (None, "")
+            else "无"
+        )
+        return {
+            "max_mpmatch_num": value.get("max_mpmatch_num") or 0,
+            "max_vehicle_usedtime": minutes(value.get("max_vehicle_usedtime")),
+            "total_killvehicle": value.get("total_killvehicle") or 0,
+            "total_vehicle_usedtime": minutes(value.get("total_vehicle_usedtime")),
+            "total_vehicle_inum": value.get("total_vehicle_inum") or 0,
+            "max_score_killnum": value.get("max_score_killnum") or 0,
+            "max_score_death": value.get("max_score_death") or 0,
+            "win_mpmatch_num": value.get("win_mpmatch_num") or 0,
+            "max_score_assist": value.get("max_score_assist") or 0,
+            "total_mpmatch_num": value.get("total_mpmatch_num") or 0,
+            "max_score_mapid": map_name,
+            "max_score_mapid_image": (
+                self.data_mgr.get_map_image_path(map_name, "mp")
+                if map_id not in (None, "")
+                else ""
+            ),
+            "max_mpmatch_num_Rescue": value.get("max_mpmatch_num_Rescue") or 0,
+            "max_mpmatch_num_deployarmedforcetype": operator_name,
+            "max_mpmatch_num_deployarmedforcetype_image": (
+                self.data_mgr.get_operator_image_path(operator_name)
+                if operator_id not in (None, "")
+                else ""
+            ),
+            "max_score_dteventtime": value.get("max_score_dteventtime") or "-",
+            "total_killnum": value.get("total_killnum") or 0,
+            "max_vehicle_usedtime_vehicleid": (
+                f"载具ID: {value.get('max_vehicle_usedtime_vehicleid')}"
+                if value.get("max_vehicle_usedtime_vehicleid") not in (None, "")
+                else "无"
+            ),
+            "total_score": self.data_mgr.fmt_num(value.get("total_score") or 0),
+            "max_mpmatch_num_GameTime": game_time(value.get("max_mpmatch_num_GameTime")),
+            "total_vehicle_killnum": value.get("total_vehicle_killnum") or 0,
+            "max_vehicle_usedtime_killplayer": value.get("max_vehicle_usedtime_killplayer") or 0,
+            "max_mpmatch_num_Score": self.data_mgr.fmt_num(
+                value.get("max_mpmatch_num_Score") or 0
+            ),
+        }
+
+    def _adapt_weekly_report4(self, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict) or not value:
+            return {}
+
+        def teammate(stem: str) -> Dict[str, Any]:
+            openid = str(value.get(f"{stem}_memberid") or "").strip()
+            operator_id = value.get(f"{stem}_member_deployarmedforcetype")
+            operator_name = (
+                self.data_mgr.get_operator_name(operator_id)
+                if operator_id not in (None, "")
+                else "无"
+            )
+            return {
+                "openid": openid,
+                "name": f"...{openid[-6:]}" if openid else "未知",
+                "avatar": "",
+                "intimacy": value.get(f"{stem}_member_friendintimacy") or 0,
+                "win_num": value.get(f"{stem}_player_winmun") or 0,
+                "lose_num": value.get(f"{stem}_player_wlosemun") or 0,
+                "kill_num": value.get(f"{stem}_player_killnum") or 0,
+                "assist": value.get(f"{stem}_player_assist") or 0,
+                "score": self.data_mgr.fmt_num(value.get(f"{stem}_player_score") or 0),
+                "operator": operator_name,
+                "operator_image": (
+                    self.data_mgr.get_operator_image_path(operator_name)
+                    if operator_id not in (None, "")
+                    else ""
+                ),
+            }
+
+        return {
+            "best_teammate": teammate("max_mpwinnum"),
+            "worst_teammate": teammate("max_mplosenum"),
+        }
+
+    def _adapt_weekly_bk(self, value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict) or not value:
+            return {}
+        rows = self._first_list(value, ("mp_vehicleid_list", "vehicles", "list"))
+        vehicles = []
+        for item in rows:
+            if not isinstance(item, dict):
+                continue
+            vehicle_id = item.get("vehicleid") or item.get("vehicleId") or item.get("id")
+            vehicles.append(
+                {
+                    "vehicleid": vehicle_id or "-",
+                    "inum": int(self._number(item.get("inum") or item.get("count"))),
+                    "vehicle_name": f"载具{vehicle_id}" if vehicle_id not in (None, "") else "未知载具",
+                }
+            )
+        vehicles.sort(key=lambda item: item["inum"], reverse=True)
+        return {
+            "vehicles": vehicles,
+            "avg_score": f"{self._number(value.get('mp_avgscore')):.1f}",
+            "support_count": value.get("mp_supportcount") or 0,
+            "support_details": {
+                key: value.get(f"mp_supportcount_{key}") or 0
+                for key in ("1001012", "1001011", "1001014", "1001015")
+            },
+        }
+
+    async def _enrich_weekly_friend_profiles(self, data: Dict[str, Any]) -> None:
+        targets: Dict[str, List[Dict[str, Any]]] = {}
+
+        def register(item: Any) -> None:
+            if not isinstance(item, dict):
+                return
+            openid = str(item.get("openid") or "").strip()
+            if openid:
+                targets.setdefault(openid, []).append(item)
+
+        for item in data.get("topFriends") or []:
+            register(item)
+        report4 = data.get("report4") if isinstance(data.get("report4"), dict) else {}
+        register(report4.get("best_teammate"))
+        register(report4.get("worst_teammate"))
+        for section in ("solData", "mpData"):
+            section_data = data.get(section) if isinstance(data.get(section), dict) else {}
+            for item in section_data.get("teammates") or []:
+                register(item)
+
+        selected = list(targets.items())[:30]
+        if not selected:
+            return
+        semaphore = asyncio.Semaphore(5)
+
+        async def fetch(openid: str) -> Optional[Dict[str, str]]:
+            async with semaphore:
+                try:
+                    res = await self.client.friend_info(openid)
+                except Exception:
+                    return None
+            if not self._ok(res):
+                return None
+            profile = self._data(res, {})
+            if not isinstance(profile, dict):
+                return None
+            name = self.data_mgr.decode_text(
+                profile.get("charac_name")
+                or profile.get("characterName")
+                or profile.get("name")
+                or ""
+            )
+            avatar = self._weekly_friend_avatar(
+                profile.get("picurl")
+                or profile.get("picUrl")
+                or profile.get("avatar")
+                or ""
+            )
+            return {"name": str(name or "").strip(), "avatar": avatar}
+
+        profiles = await asyncio.gather(
+            *(fetch(openid) for openid, _ in selected),
+            return_exceptions=False,
+        )
+        for (openid, items), profile in zip(selected, profiles):
+            if not profile:
+                continue
+            for item in items:
+                if profile["name"]:
+                    item["name"] = profile["name"]
+                if profile["avatar"]:
+                    item["avatar"] = profile["avatar"]
+
+    @staticmethod
+    def _weekly_friend_avatar(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        if raw.isdigit():
+            return (
+                "https://wegame.gtimg.com/g.2001918-r.ea725/helper/df/skin/"
+                f"{raw}.webp"
+            )
+        decoded = unquote(raw)
+        return f"https:{decoded}" if decoded.startswith("//") else decoded
 
     async def _map_stats(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
