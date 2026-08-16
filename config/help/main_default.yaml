@@ -100,10 +100,10 @@ helpList:
           desc: "通过cookie登录并保护敏感消息"
         - icon: 78
           title: "信息"
-          desc: "查询个人详细信息"
+          desc: "查询账号状态、双模式生涯与资产；缺字段时明确降级"
         - icon: 71
           title: "UID"
-          desc: "查询个人UID"
+          desc: "查询个人UID；角色详情缺失时保留昵称提示"
     - order: 2
       group: "游戏数据"
       list:

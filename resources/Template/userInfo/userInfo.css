@@ -84,8 +84,10 @@ img {
     font-size: 15px; 
     font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
     font-weight: 700; 
-    letter-spacing: 3px; 
-    word-wrap: break-word;
+    letter-spacing: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     opacity: 0.65;
     justify-content: center;
     display: flex;
@@ -162,10 +164,10 @@ img {
 
 .stat-item { 
     color: white; 
-    font-size: 24px; 
+    font-size: 22px;
     font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
     font-weight: 700; 
-    word-wrap: break-word;
+    overflow-wrap: anywhere;
     justify-content: center;
     display: flex;
     flex-direction: column;
@@ -188,7 +190,7 @@ img {
     font-size: 24px; 
     font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
     font-weight: 700; 
-    word-wrap: break-word;
+    overflow-wrap: anywhere;
     justify-content: center;
     display: flex;
     flex-direction: column;
@@ -205,15 +207,6 @@ img {
     justify-content: center;
     display: flex;
     flex-direction: column;
-}
-
-/* 响应式设计 */
-@media (max-width: 1400px) {
-    body {
-        width: 100%;
-        transform: scale(0.8);
-        transform-origin: top left;
-    }
 }
 
 /* 高亮数值样式 */

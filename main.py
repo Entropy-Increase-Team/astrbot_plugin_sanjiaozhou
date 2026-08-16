@@ -874,6 +874,110 @@ class DeltaForcePlugin(Star):
             return default
 
     @staticmethod
+    def _personal_info_parts(
+        payload: Any,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], bool, bool]:
+        """兼容统一信封和 AMS 业务层级，返回个人、战绩和角色详情。"""
+        if not isinstance(payload, dict):
+            return {}, {}, {}, False, False
+
+        layers = [payload]
+        current = payload
+        for _ in range(2):
+            inner = current.get("data")
+            if not isinstance(inner, dict):
+                break
+            layers.append(inner)
+            current = inner
+
+        ams = next(
+            (
+                layer
+                for layer in layers
+                if any(
+                    key in layer
+                    for key in ("userData", "user_data", "careerData", "career_data")
+                )
+            ),
+            {},
+        )
+        user_data = ams.get("userData") or ams.get("user_data") or {}
+        career = ams.get("careerData") or ams.get("career_data") or {}
+        role: Dict[str, Any] = {}
+        for layer in layers:
+            candidate = (
+                layer.get("roleInfo")
+                or layer.get("role_info")
+                or layer.get("role")
+            )
+            if isinstance(candidate, dict):
+                role = candidate
+                break
+
+        has_ams = bool(ams)
+        has_career = any(
+            key in ams and isinstance(ams.get(key), dict)
+            for key in ("careerData", "career_data")
+        )
+        return (
+            user_data if isinstance(user_data, dict) else {},
+            career if isinstance(career, dict) else {},
+            role,
+            has_ams,
+            has_career,
+        )
+
+    @staticmethod
+    def _personal_time(value: Any) -> str:
+        if value is None or value == "":
+            return "未知"
+        try:
+            timestamp = float(value)
+            if timestamp != timestamp:
+                return "未知"
+            if timestamp >= 10_000_000_000:
+                timestamp /= 1000
+            value_dt = dt.datetime.fromtimestamp(timestamp)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return "未知"
+        hour = value_dt.hour % 12 or 12
+        period = "PM" if value_dt.hour >= 12 else "AM"
+        return (
+            f"{value_dt.month:02d}/{value_dt.day:02d}/{value_dt.year}, "
+            f"{hour}:{value_dt.minute:02d}:{value_dt.second:02d} {period}"
+        )
+
+    def _personal_rank(self, value: Any, mode: str) -> str:
+        score = self._number(value, -1)
+        if score <= 0 or score != score:
+            return "-"
+        return self.data_mgr.get_rank_by_score(score, mode)
+
+    def _personal_stat(self, value: Any) -> str:
+        formatted = self.data_mgr.fmt_num(value, "-")
+        if formatted != "-" and len(formatted) > 10:
+            return self.data_mgr.fmt_price(value)
+        return formatted
+
+    @staticmethod
+    def _personal_account_status(role: Dict[str, Any]) -> str:
+        def flag(key: str, active: str, normal: str) -> str:
+            value = role.get(key)
+            if value is None or value == "":
+                return "未知"
+            return active if str(value) == "1" else normal
+
+        adult_value = role.get("adultstatus")
+        if adult_value is None or adult_value == "":
+            adult = "未知"
+        else:
+            adult = "已成年" if str(adult_value) == "0" else "未成年"
+        return (
+            f"账号封禁: {flag('isbanuser', '封禁', '正常')} | "
+            f"禁言: {flag('isbanspeak', '禁言', '正常')} | 防沉迷: {adult}"
+        )
+
+    @staticmethod
     def _parse_compound_list(value: Any) -> List[Dict[str, Any]]:
         if isinstance(value, dict):
             return [value]
@@ -3322,46 +3426,88 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"查询失败: {self._message_of(res)}")
             return
         raw = self._payload(res, {}) or {}
-        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-        user_data = data.get("userData") or data.get("user_data") or {}
-        career = data.get("careerData") or data.get("career_data") or {}
-        role = raw.get("roleInfo") or data.get("roleInfo") or raw.get("role_info") or {}
+        user_data, career, role, has_ams, has_career = self._personal_info_parts(raw)
+        if not has_ams or not has_career:
+            yield event.plain_result("查询失败: 接口未返回完整的个人生涯数据，请稍后重试。")
+            return
         name = self.data_mgr.decode_text(user_data.get("charac_name") or role.get("charac_name") or role.get("nickname") or self._sender_name(event))
+        sol_rank = self._personal_rank(career.get("rankpoint") or career.get("rankPoint"), "sol")
+        mp_rank = self._personal_rank(career.get("tdmrankpoint") or career.get("tdmRankPoint"), "mp")
+        if not role:
+            yield event.plain_result(
+                "【三角洲信息】\n"
+                f"昵称: {name}\n"
+                "角色详情暂时不可用，UID、账号状态、等级和资产无法显示。\n"
+                f"烽火: {sol_rank}\n全面: {mp_rank}"
+            )
+            return
         avatar = self.data_mgr.decode_text(user_data.get("picurl") or role.get("picurl") or "")
         if avatar and avatar.isdigit():
             avatar = f"https://wegame.gtimg.com/g.2001918-r.ea725/helper/df/skin/{avatar}.webp"
-        sol_rank = self.data_mgr.get_rank_by_score(career.get("rankpoint") or career.get("rankPoint") or 0, "sol")
-        mp_rank = self.data_mgr.get_rank_by_score(career.get("tdmrankpoint") or career.get("tdmRankPoint") or 0, "mp")
+        sol_duration_value = career.get("solduration")
+        if sol_duration_value is None:
+            sol_duration_value = career.get("solDuration")
+        tdm_duration_value = career.get("tdmduration")
+        if tdm_duration_value is None:
+            tdm_duration_value = career.get("tdmDuration")
+        haf_coin_value = role.get("hafcoinnum")
+        if haf_coin_value is None:
+            haf_coin_value = role.get("hafCoinNum")
+        total_assets = self._number(role.get("propcapital")) + self._number(haf_coin_value)
         render_data = {
             "backgroundImage": self.data_mgr.get_random_background(),
             "userName": name,
             "userAvatar": avatar,
             "qqAvatarUrl": f"http://q.qlogo.cn/headimg_dl?dst_uin={event.get_sender_id()}&spec=640&img_type=jpg",
-            "registerTime": self._fmt_time(role.get("register_time") or role.get("registerTime")),
-            "lastLoginTime": self._fmt_time(role.get("lastlogintime") or role.get("lastLoginTime")),
-            "accountStatus": f"账号封禁: {'封禁' if str(role.get('isbanuser')) == '1' else '正常'} | 禁言: {'禁言' if str(role.get('isbanspeak')) == '1' else '正常'}",
+            "registerTime": self._personal_time(role.get("register_time") or role.get("registerTime")),
+            "lastLoginTime": self._personal_time(role.get("lastlogintime") or role.get("lastLoginTime")),
+            "accountStatus": self._personal_account_status(role),
             "solLevel": role.get("level") or "-",
             "solRankName": re.sub(r"\s*\(\d+\)", "", sol_rank),
             "solRankImage": self.data_mgr.get_rank_image_path(sol_rank, "sol"),
-            "solTotalFight": career.get("soltotalfght") or career.get("solTotalFight") or "-",
-            "solTotalEscape": career.get("solttotalescape") or career.get("solTotalEscape") or "-",
+            "solTotalFight": self._personal_stat(career.get("soltotalfght") or career.get("solTotalFight")),
+            "solTotalEscape": self._personal_stat(career.get("solttotalescape") or career.get("solTotalEscape")),
             "solEscapeRatio": career.get("solescaperatio") or career.get("solEscapeRatio") or "-",
-            "solTotalKill": career.get("soltotalkill") or career.get("solTotalKill") or "-",
-            "solDuration": self.data_mgr.fmt_duration(career.get("solduration") or 0),
+            "solTotalKill": self._personal_stat(career.get("soltotalkill") or career.get("solTotalKill")),
+            "solDuration": self.data_mgr.fmt_duration(sol_duration_value) if sol_duration_value not in (None, "") else "-",
             "tdmLevel": role.get("tdmlevel") or role.get("tdmLevel") or "-",
             "tdmRankName": re.sub(r"\s*\(\d+\)", "", mp_rank),
             "tdmRankImage": self.data_mgr.get_rank_image_path(mp_rank, "mp"),
-            "tdmTotalFight": career.get("tdmtotalfight") or career.get("tdmTotalFight") or "-",
-            "tdmTotalWin": career.get("totalwin") or career.get("totalWin") or "-",
+            "tdmTotalFight": self._personal_stat(career.get("tdmtotalfight") or career.get("tdmTotalFight")),
+            "tdmTotalWin": self._personal_stat(career.get("totalwin") or career.get("totalWin")),
             "tdmWinRatio": career.get("tdmsuccessratio") or career.get("tdmSuccessRatio") or "-",
-            "tdmTotalKill": career.get("tdmtotalkill") or career.get("tdmTotalKill") or "-",
-            "tdmDuration": self.data_mgr.fmt_duration(career.get("tdmduration") or 0, "minutes"),
-            "hafCoin": self.data_mgr.fmt_num(role.get("hafcoinnum") or role.get("hafCoinNum") or 0),
-            "totalAssets": self.data_mgr.fmt_price(float(role.get("propcapital") or 0) + float(role.get("hafcoinnum") or 0)),
+            "tdmTotalKill": self._personal_stat(career.get("tdmtotalkill") or career.get("tdmTotalKill")),
+            "tdmDuration": self.data_mgr.fmt_duration(tdm_duration_value, "minutes") if tdm_duration_value not in (None, "") else "-",
+            "hafCoin": self.data_mgr.fmt_num(haf_coin_value, "-"),
+            "totalAssets": f"{total_assets / 1_000_000:.2f}M" if total_assets > 0 else "-",
         }
-        text = f"【三角洲信息】\n昵称: {name}\nUID: {role.get('uid', '-')}\n烽火: {sol_rank}\n全面: {mp_rank}"
-        async for r in self._render_or_text(event, "Template/userInfo/userInfo.html", render_data, text, {"viewport_width": 1365, "viewport_height": 700}):
-            yield r
+        text = "\n".join(
+            [
+                "【三角洲信息】",
+                f"昵称: {name}",
+                f"UID: {role.get('uid') or '未获取到'}",
+                f"注册时间: {render_data['registerTime']}",
+                f"上次登录: {render_data['lastLoginTime']}",
+                render_data["accountStatus"],
+                f"烽火: LV{render_data['solLevel']} {sol_rank}，对局 {render_data['solTotalFight']}，撤离 {render_data['solTotalEscape']}，撤离率 {render_data['solEscapeRatio']}，击杀 {render_data['solTotalKill']}，时长 {render_data['solDuration']}",
+                f"全面: LV{render_data['tdmLevel']} {mp_rank}，对局 {render_data['tdmTotalFight']}，胜场 {render_data['tdmTotalWin']}，胜率 {render_data['tdmWinRatio']}，击杀 {render_data['tdmTotalKill']}，时长 {render_data['tdmDuration']}",
+                f"哈夫币: {render_data['hafCoin']} | 仓库流动: {render_data['totalAssets']}",
+            ]
+        )
+        if self.config.get("enable_image_render", True):
+            try:
+                image = await self.renderer.render_html(
+                    "Template/userInfo/userInfo.html",
+                    render_data,
+                    {"viewport_width": 1365, "viewport_height": 640},
+                )
+            except Exception as exc:
+                logger.warning(f"[三角洲信息] 图片渲染失败：{type(exc).__name__}")
+            else:
+                if image:
+                    yield event.image_result(image)
+                    return
+        yield event.plain_result(text)
 
     async def _uid(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
@@ -3373,9 +3519,22 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"查询 UID 失败: {self._message_of(res)}")
             return
         raw = self._payload(res, {}) or {}
-        data = raw.get("data") if isinstance(raw.get("data"), dict) else raw
-        role = raw.get("roleInfo") or data.get("roleInfo") or raw.get("role_info") or {}
-        yield event.plain_result(f"昵称: {self.data_mgr.decode_text(role.get('charac_name') or '-')}\nUID: {role.get('uid') or '未获取到'}")
+        user_data, _career, role, has_ams, _has_career = self._personal_info_parts(raw)
+        if not has_ams:
+            yield event.plain_result("查询 UID 失败: 接口未返回个人信息数据。")
+            return
+        name = self.data_mgr.decode_text(
+            role.get("charac_name")
+            or role.get("nickname")
+            or user_data.get("charac_name")
+            or "未知"
+        )
+        if not role:
+            yield event.plain_result(
+                f"昵称: {name}\nUID: 暂时无法获取（接口未返回角色详情）"
+            )
+            return
+        yield event.plain_result(f"昵称: {name}\nUID: {role.get('uid') or '未获取到'}")
 
     async def _personal_data(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
