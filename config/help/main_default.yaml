@@ -405,10 +405,10 @@ helpList:
           desc: "逐等级查询；OneBot按设施合并转发"
         - icon: 71
           title: "物品列表 [一级分类] [二级分类] [页码]"
-          desc: "获取物品列表（默认props/collection）"
+          desc: "分页展示价格、重量、稀有度和描述"
         - icon: 86
-          title: "物品搜索 [名称/ID]"
-          desc: "搜索游戏内物品"
+          title: "物品搜索 [名称/ID/多ID]"
+          desc: "多ID支持空格、逗号或JSON数组"
         - icon: 48
           title: "大红收藏 [赛季数字]"
           desc: "生成大红收集海报（支持赛季）"

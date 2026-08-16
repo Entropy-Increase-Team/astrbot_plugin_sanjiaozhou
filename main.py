@@ -7631,6 +7631,13 @@ class DeltaForcePlugin(Star):
     async def _object_list(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         parts = arg.split()
         page = next((part for part in parts if part.isdigit()), "1")
+        if len(page) > 5:
+            yield event.plain_result("页码需在 1-10000 之间。")
+            return
+        page_number = int(page)
+        if not 1 <= page_number <= 10000:
+            yield event.plain_result("页码需在 1-10000 之间。")
+            return
         categories = [part for part in parts if not part.isdigit()]
         primary = categories[0] if categories else "props"
         second = categories[1] if len(categories) > 1 else ("collection" if not categories else "")
@@ -7640,23 +7647,22 @@ class DeltaForcePlugin(Star):
             return
         data = self._data(res, {}) or {}
         rows = [item for item in self._first_list(data, ("list", "items", "data")) if isinstance(item, dict)]
+        total = int(self._number(data.get("total") if isinstance(data, dict) else len(rows), len(rows)))
+        current_page = int(self._number(data.get("page") if isinstance(data, dict) else page, page_number))
+        limit = max(1, int(self._number(data.get("limit") if isinstance(data, dict) else 20, 20)))
         if not rows:
+            total_pages = max(1, (total + limit - 1) // limit)
+            if total > 0 and current_page > total_pages:
+                yield event.plain_result(f"页码超出范围，该分类下总共只有 {total_pages} 页数据。")
+                return
             yield event.plain_result("未找到符合条件的物品。")
             return
-        total = int(self._number(data.get("total") if isinstance(data, dict) else len(rows), len(rows)))
-        current_page = int(self._number(data.get("page") if isinstance(data, dict) else page, 1))
-        lines = [f"【物品列表】{primary}/{second or '全部'}，第 {current_page} 页，共 {total} 件"]
-        for index, item in enumerate(rows, 1):
-            item_id = item.get("objectID") or item.get("id") or "-"
-            item_name = item.get("objectName") or item.get("gameName") or "未知物品"
-            category_parts = [
-                str(item.get("primaryClass") or ""),
-                str(item.get("secondClassCN") or item.get("secondClass") or ""),
-            ]
-            category = "/".join(value for value in category_parts if value)
-            price = self.data_mgr.fmt_num(item.get("price") or item.get("avgPrice") or 0)
-            lines.append(f"{index}. {item_name}（{item_id}） {category or '未分类'}，价格 {price}")
-        yield event.plain_result("\n".join(lines))
+        total_pages = max(1, (total + limit - 1) // limit)
+        title = (
+            f"物品列表 - {primary}/{second or '全部'}，"
+            f"第 {current_page} 页/共 {total_pages} 页，共 {total} 件"
+        )
+        yield self._object_items_result(event, title, rows)
 
     async def _object_search(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
         res = await self.client.object_search(keyword)
@@ -7666,19 +7672,80 @@ class DeltaForcePlugin(Star):
             if not rows:
                 yield event.plain_result(f"未搜索到与“{keyword}”相关的物品。")
                 return
-            lines = [f"【物品搜索：{keyword}】共 {data.get('total', len(rows)) if isinstance(data, dict) else len(rows)} 条"]
-            for index, item in enumerate(rows, 1):
-                item_id = item.get("objectID") or item.get("id") or "-"
-                name = item.get("objectName") or item.get("gameName") or "未知物品"
-                category = item.get("secondClassCN") or item.get("secondClass") or item.get("primaryClass") or "未分类"
-                lines.append(f"{index}. {name}（{item_id}） {category}")
-            yield event.plain_result("\n".join(lines))
+            total = int(self._number(data.get("total") if isinstance(data, dict) else len(rows), len(rows)))
+            page = int(self._number(data.get("page") if isinstance(data, dict) else 1, 1))
+            title = f"物品搜索：{keyword}，第 {page} 页，共 {total} 条"
+            yield self._object_items_result(event, title, rows)
             return
         local = self.data_mgr.search_local_items(keyword)
         if local:
             yield event.plain_result("【本地物品搜索】\n" + "\n".join(f"{x['id']} {x['name']} ({x['source']})" for x in local))
         else:
             yield event.plain_result(f"物品搜索失败: {self._message_of(res)}")
+
+    def _object_items_result(
+        self,
+        event: AstrMessageEvent,
+        title: str,
+        rows: List[Dict[str, Any]],
+    ) -> Any:
+        platform_getter = getattr(event, "get_platform_name", None)
+        chain_result = getattr(event, "chain_result", None)
+        try:
+            is_onebot = callable(platform_getter) and platform_getter() == "aiocqhttp"
+        except Exception:
+            is_onebot = False
+
+        if is_onebot and callable(chain_result):
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = [
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(f"【{title}】")],
+                )
+            ]
+            nodes.extend(
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(self._object_item_text(item, index))],
+                )
+                for index, item in enumerate(rows, 1)
+            )
+            return chain_result([Comp.Nodes(nodes)])
+
+        details = [self._object_item_text(item, index) for index, item in enumerate(rows, 1)]
+        return event.plain_result(f"【{title}】\n\n" + "\n\n".join(details))
+
+    def _object_item_text(self, item: Dict[str, Any], index: int) -> str:
+        item_id = item.get("objectID") or item.get("id") or "-"
+        item_name = item.get("gameName") or item.get("objectName") or "未知物品"
+        category_parts = [
+            str(item.get("primaryClass") or ""),
+            str(item.get("secondClassCN") or item.get("secondClass") or ""),
+        ]
+        category = "/".join(value for value in category_parts if value) or "未分类"
+        price_value = item.get("price")
+        if price_value is None:
+            price_value = item.get("avgPrice")
+        price = "未知" if price_value is None else self.data_mgr.fmt_num(price_value)
+        weight = item.get("weight")
+        grade = item.get("grade")
+        lines = [
+            f"{index}. {item_name}（{item_id}）",
+            f"分类：{category}",
+            f"价格：{price}｜重量：{weight if weight not in (None, '') else '未知'}｜"
+            f"稀有度：{grade if grade not in (None, '') else '未知'}",
+        ]
+        description = " ".join(self.data_mgr.decode_text(item.get("desc") or "").split())
+        if description:
+            lines.append(f"描述：{description[:160]}" + ("..." if len(description) > 160 else ""))
+        return "\n".join(lines)
 
     async def _resolve_item_id(self, keyword: str) -> str:
         if keyword.isdigit():

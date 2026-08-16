@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Dict, Optional
 from urllib.parse import quote, urljoin
 
@@ -700,7 +701,11 @@ class DeltaForceClient:
     async def object_search(self, keyword: str, page: str = "1", limit: str = "20"):
         key = str(keyword or "").strip()
         params = {"page": page, "limit": limit}
-        id_parts = [part.strip() for part in key.strip("[]").replace("，", ",").split(",")]
+        id_parts = [
+            part.strip().strip("\"'")
+            for part in re.split(r"[\s,，]+", key.strip("[]"))
+            if part.strip().strip("\"'")
+        ]
         if id_parts and all(part.isdigit() for part in id_parts):
             params["objectID"] = ",".join(id_parts)
         else:
