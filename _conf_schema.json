@@ -125,6 +125,11 @@
     "type": "int",
     "default": 60
   },
+  "place_poll_interval": {
+    "description": "特勤处状态 API 轮询间隔，单位秒，最小 60 秒；本地到期任务仍按 push_check_interval 检查。",
+    "type": "int",
+    "default": 300
+  },
   "daily_push_hour": {
     "description": "日报推送小时，使用服务器本地时区，范围 0 至 23。",
     "type": "int",

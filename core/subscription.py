@@ -95,6 +95,16 @@ class SubscriptionStore:
     def _schedule_key(kind: str, user_id: Any, binding_id: Any, umo: str) -> str:
         return "::".join((str(kind), str(user_id or ""), str(binding_id or ""), str(umo or "")))
 
+    @staticmethod
+    def _bool_value(value: Any) -> bool:
+        if isinstance(value, str):
+            text = value.strip().lower()
+            if text in {"false", "0", "no", "off", "否", "禁用", "关闭"}:
+                return False
+            if text in {"true", "1", "yes", "on", "是", "启用", "开启"}:
+                return True
+        return bool(value)
+
     def _scheduled_push_map(self) -> Dict[str, Any]:
         pushes = self._data.get("scheduled_pushes")
         if not isinstance(pushes, dict):
@@ -114,6 +124,7 @@ class SubscriptionStore:
         pushes = self._scheduled_push_map()
         old = pushes.get(key)
         item = dict(old) if isinstance(old, dict) else {}
+        was_enabled = self._bool_value(item.get("enabled"))
         item.update(
             {
                 "key": key,
@@ -125,6 +136,9 @@ class SubscriptionStore:
                 "updated_at": int(time.time()),
             }
         )
+        if enabled and not was_enabled:
+            item.pop("disabled_reason", None)
+            item.update({"failure_count": 0, "next_retry_at": 0, "last_error": ""})
         pushes[key] = item
         self._save()
         return dict(item)
@@ -137,7 +151,7 @@ class SubscriptionStore:
                 continue
             if kind and item.get("kind") != kind:
                 continue
-            if enabled_only and not item.get("enabled"):
+            if enabled_only and not self._bool_value(item.get("enabled")):
                 continue
             result.append(dict(item))
         return result

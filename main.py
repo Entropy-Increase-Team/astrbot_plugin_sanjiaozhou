@@ -1642,26 +1642,69 @@ class DeltaForcePlugin(Star):
         if not enabled:
             changed = False
             for item in self.subscriptions.scheduled_pushes(kind, enabled_only=False):
-                if str(item.get("user_id")) == user_id and str(item.get("umo")) == umo and item.get("enabled"):
-                    self.subscriptions.update_scheduled_push(item["key"], {"enabled": False})
+                if (
+                    str(item.get("user_id")) == user_id
+                    and str(item.get("umo")) == umo
+                    and BindingManager._bool_value(item.get("enabled"), False)
+                ):
+                    values: Dict[str, Any] = {"enabled": False}
+                    if kind == "place":
+                        values.update(
+                            {
+                                "place_jobs": {},
+                                "last_poll_at": 0,
+                                "place_login_notice_at": 0,
+                                "failure_count": 0,
+                                "next_retry_at": 0,
+                                "last_error": "",
+                            }
+                        )
+                    self.subscriptions.update_scheduled_push(item["key"], values)
                     changed = True
             yield event.plain_result("已关闭本群推送。" if changed else "本群尚未开启该推送。")
             return
 
         replaced_binding = False
+        current_item: Optional[Dict[str, Any]] = None
         for item in self.subscriptions.scheduled_pushes(kind, enabled_only=False):
             if (
                 str(item.get("user_id")) == user_id
                 and str(item.get("umo")) == umo
+                and str(item.get("binding_id") or "") == binding_id
+            ):
+                current_item = item
+            if (
+                str(item.get("user_id")) == user_id
+                and str(item.get("umo")) == umo
                 and str(item.get("binding_id") or "") != binding_id
-                and item.get("enabled")
+                and BindingManager._bool_value(item.get("enabled"), False)
             ):
                 self.subscriptions.update_scheduled_push(
                     item["key"],
                     {"enabled": False, "disabled_reason": "binding_replaced"},
                 )
                 replaced_binding = True
-        self.subscriptions.set_scheduled_push(kind, user_id, binding_id, umo, True)
+        if (
+            kind == "place"
+            and current_item
+            and BindingManager._bool_value(current_item.get("enabled"), False)
+        ):
+            yield event.plain_result("本群已经开启了特勤处生产完成推送。")
+            return
+        scheduled = self.subscriptions.set_scheduled_push(kind, user_id, binding_id, umo, True)
+        if kind == "place":
+            self.subscriptions.update_scheduled_push(
+                scheduled["key"],
+                {
+                    "place_jobs": {},
+                    "last_poll_at": 0,
+                    "place_login_notice_at": 0,
+                    "failure_count": 0,
+                    "next_retry_at": 0,
+                    "last_error": "",
+                    "disabled_reason": "",
+                },
+            )
         names = {"daily": "日报", "weekly": "周报", "place": "特勤处生产完成", "keyword": "每日密码"}
         action = "已切换到当前主账号并开启" if replaced_binding else "已为本群开启"
         yield event.plain_result(
@@ -1695,13 +1738,29 @@ class DeltaForcePlugin(Star):
 
     async def _run_scheduled_pushes(self, now: dt.datetime) -> None:
         now_ts = int(now.timestamp())
+        place_response_cache: Dict[str, Any] = {}
         for item in self.subscriptions.scheduled_pushes():
             try:
                 kind = str(item.get("kind") or "")
-                if kind == "place":
-                    await self._run_place_push(item, now)
-                    continue
                 if int(self._number(item.get("next_retry_at"))) > now_ts:
+                    continue
+                if kind == "place":
+                    success = await self._run_place_push(item, now, place_response_cache)
+                    if success and (
+                        int(self._number(item.get("failure_count"))) > 0
+                        or int(self._number(item.get("next_retry_at"))) > 0
+                        or bool(item.get("last_error"))
+                    ):
+                        self.subscriptions.update_scheduled_push(
+                            item["key"],
+                            {
+                                "failure_count": 0,
+                                "next_retry_at": 0,
+                                "last_error": "",
+                            },
+                        )
+                    else:
+                        self._record_scheduled_push_failure(item, now_ts, "执行未成功")
                     continue
                 run_key = self._scheduled_run_key(kind, now)
                 if not run_key or item.get("last_run_key") == run_key:
@@ -1937,7 +1996,85 @@ class DeltaForcePlugin(Star):
             )
         return True
 
-    async def _run_place_push(self, item: Dict[str, Any], now: dt.datetime) -> None:
+    @staticmethod
+    def _place_login_expired(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        payloads = [response]
+        data = response.get("data")
+        if isinstance(data, dict):
+            payloads.append(data)
+            if isinstance(data.get("data"), dict):
+                payloads.append(data["data"])
+        if any(
+            int(DeltaForcePlugin._number(payload.get("code"))) == 401
+            or int(DeltaForcePlugin._number(payload.get("ret"))) == 101
+            for payload in payloads
+        ):
+            return True
+        message = " ".join(
+            str(payload.get(key) or "")
+            for payload in payloads
+            for key in ("message", "msg", "error")
+        )
+        return any(
+            marker in message
+            for marker in (
+                "请先完成QQ或微信登录",
+                "请先登录",
+                "没有找到对应的有效登录数据",
+                "登录已过期",
+                "凭证无效",
+            )
+        )
+
+    async def _send_due_place_jobs(
+        self,
+        item: Dict[str, Any],
+        jobs: Dict[str, Dict[str, Any]],
+        now_ts: int,
+    ) -> bool:
+        due = [
+            job
+            for job in jobs.values()
+            if isinstance(job, dict)
+            and not job.get("notified")
+            and int(self._number(job.get("finish_at"))) <= now_ts
+        ]
+        if not due:
+            return True
+        lines = ["【特勤处生产完成】"]
+        lines.extend(f"{job.get('place_name')}：{job.get('object_name')}" for job in due)
+        if not await self._send_scheduled_message(item["umo"], "\n".join(lines)):
+            return False
+        for job in due:
+            job["notified"] = True
+            job["notified_at"] = now_ts
+        return True
+
+    @staticmethod
+    def _place_job_candidate(
+        jobs: Dict[str, Dict[str, Any]],
+        place_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        direct = jobs.get(place_id)
+        if isinstance(direct, dict):
+            return direct
+        for key, value in jobs.items():
+            if isinstance(value, dict) and str(key).split(":", 1)[0] == place_id:
+                candidate = dict(value)
+                parts = str(key).split(":")
+                if not candidate.get("object_id") and len(parts) >= 3:
+                    candidate["object_id"] = parts[2]
+                return candidate
+        return None
+
+    async def _run_place_push(
+        self,
+        item: Dict[str, Any],
+        now: dt.datetime,
+        response_cache: Optional[Dict[str, Any]] = None,
+    ) -> bool:
         binding = await self._binding_for_push(item)
         token = str((binding or {}).get("framework_token") or "")
         if not token:
@@ -1945,16 +2082,57 @@ class DeltaForcePlugin(Star):
                 item["key"],
                 {"enabled": False, "disabled_reason": "binding_missing"},
             )
-            return
-        response = await self.client.place_status(token)
-        if not self._ok(response):
-            return
-        data = self._data(response, {}) or {}
-        places = self._first_list(data, ("places", "list", "items", "data"))
+            return True
         old_jobs = item.get("place_jobs") if isinstance(item.get("place_jobs"), dict) else {}
-        jobs = dict(old_jobs)
+        jobs = {
+            str(key): dict(value)
+            for key, value in old_jobs.items()
+            if isinstance(value, dict)
+        }
         now_ts = int(now.timestamp())
-        active_ids = set()
+
+        if not await self._send_due_place_jobs(item, jobs, now_ts):
+            return False
+        delivered_before_poll = any(
+            int(self._number(job.get("notified_at"))) == now_ts for job in jobs.values()
+        )
+
+        poll_interval = max(60, self._config_int("place_poll_interval", 300))
+        last_poll_at = int(self._number(item.get("last_poll_at")))
+        if last_poll_at > 0 and now_ts - last_poll_at < poll_interval:
+            if delivered_before_poll:
+                self.subscriptions.update_scheduled_push(item["key"], {"place_jobs": jobs})
+            return True
+
+        cache_key = f"{item.get('user_id') or ''}:{item.get('binding_id') or ''}"
+        if response_cache is not None and cache_key in response_cache:
+            response = response_cache[cache_key]
+        else:
+            response = await self.client.place_status(token)
+            if response_cache is not None:
+                response_cache[cache_key] = response
+        if not self._ok(response):
+            if self._place_login_expired(response):
+                notice_at = int(self._number(item.get("place_login_notice_at")))
+                if notice_at <= 0 or now_ts - notice_at >= 86400:
+                    sent = await self._send_scheduled_message(
+                        item["umo"],
+                        "您的三角洲行动登录已过期，特勤处推送已暂停。\n"
+                        "请重新登录，账号恢复后推送会自动继续。",
+                    )
+                    if not sent:
+                        return False
+                    self.subscriptions.update_scheduled_push(
+                        item["key"], {"place_login_notice_at": now_ts}
+                    )
+            return False
+
+        data = self._data(response, {}) or {}
+        places = data.get("places") if isinstance(data, dict) else None
+        if not isinstance(places, list):
+            return False
+
+        next_jobs: Dict[str, Dict[str, Any]] = {}
         for place in places:
             if not isinstance(place, dict) or not isinstance(place.get("objectDetail"), dict):
                 continue
@@ -1966,29 +2144,37 @@ class DeltaForcePlugin(Star):
                 finish_at //= 1000
             if finish_at <= 0:
                 finish_at = now_ts + max(0, int(self._number(place.get("leftTime"))))
-            job_id = f"{place_id}:{finish_at}:{place.get('objectId') or ''}"
-            active_ids.add(job_id)
-            if job_id not in jobs:
-                detail = place["objectDetail"]
-                jobs[job_id] = {
-                    "finish_at": finish_at,
-                    "place_name": place.get("placeName") or place.get("name") or place_id,
-                    "object_name": detail.get("objectName") or detail.get("name") or "未知物品",
-                    "notified": False,
-                }
-        due = [job for job in jobs.values() if not job.get("notified") and int(job.get("finish_at") or 0) <= now_ts]
-        if due:
-            lines = ["【特勤处生产完成】"]
-            lines.extend(f"{job.get('place_name')}：{job.get('object_name')}" for job in due)
-            if await self._send_scheduled_message(item["umo"], "\n".join(lines)):
-                for job in due:
-                    job["notified"] = True
-        jobs = {
-            key: value
-            for key, value in jobs.items()
-            if key in active_ids or not value.get("notified") or now_ts - int(value.get("finish_at") or 0) < 86400
-        }
-        self.subscriptions.update_scheduled_push(item["key"], {"place_jobs": jobs, "last_poll_at": now_ts})
+            if finish_at <= now_ts:
+                continue
+            detail = place["objectDetail"]
+            object_id = str(place.get("objectId") or "")
+            previous = self._place_job_candidate(jobs, place_id)
+            same_cycle = bool(
+                previous
+                and str(previous.get("object_id") or "") == object_id
+                and abs(int(self._number(previous.get("finish_at"))) - finish_at) <= 5
+            )
+            next_jobs[place_id] = {
+                "place_id": place_id,
+                "object_id": object_id,
+                "finish_at": finish_at,
+                "place_name": place.get("placeName") or place.get("name") or place_id,
+                "object_name": detail.get("objectName") or detail.get("name") or "未知物品",
+                "notified": bool(previous.get("notified")) if same_cycle and previous else False,
+            }
+            if same_cycle and previous and previous.get("notified_at"):
+                next_jobs[place_id]["notified_at"] = previous["notified_at"]
+
+        delivery_ok = await self._send_due_place_jobs(item, next_jobs, now_ts)
+        self.subscriptions.update_scheduled_push(
+            item["key"],
+            {
+                "place_jobs": next_jobs,
+                "last_poll_at": now_ts,
+                "place_login_notice_at": 0,
+            },
+        )
+        return delivery_ok
 
     async def _send_scheduled_message(self, umo: str, text: str, image_path: Optional[str] = None) -> bool:
         if MessageChain is None or Plain is None:
