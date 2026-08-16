@@ -1112,6 +1112,70 @@ class DeltaForcePlugin(Star):
     def _subscription_id(item: Dict[str, Any]) -> str:
         return str(item.get("id") or item.get("subscription_id") or "").strip()
 
+    @staticmethod
+    def _subscription_enabled(item: Dict[str, Any]) -> bool:
+        if "enabled" in item:
+            return BindingManager._bool_value(item.get("enabled"), False)
+        status = str(item.get("status") or "").lower()
+        return status == "active" if status else True
+
+    @staticmethod
+    def _stored_record_push_filters(value: Any) -> List[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if str(item).strip()]
+
+    @staticmethod
+    def _record_push_filters(value: Any) -> List[str]:
+        text = re.sub(r"\s+", "", str(value or "").lower())
+        filters: List[str] = []
+        if any(alias in text for alias in ("百万撤离", "100w撤离", "百万带出")):
+            filters.append("百万撤离")
+        if any(alias in text for alias in ("百万战损", "100w战损")):
+            filters.append("百万战损")
+        if any(alias in text for alias in ("天才少年", "天才")):
+            filters.append("天才少年")
+        return filters
+
+    def _record_matches_push_filters(
+        self,
+        record_type: Any,
+        record: Dict[str, Any],
+        filters: Any,
+    ) -> bool:
+        selected = [str(value) for value in filters] if isinstance(filters, list) else []
+        if not selected:
+            return True
+        mode = str(record_type or "").lower()
+        for name in selected:
+            if name == "百万撤离" and mode == "sol":
+                if self._number(record.get("FinalPrice")) >= 1_000_000:
+                    return True
+            elif name == "百万战损" and mode == "sol":
+                profit = self._number(record.get("flowCalGainedPrice"))
+                carry_out = self._number(record.get("FinalPrice"))
+                if profit - carry_out <= -1_000_000:
+                    return True
+            elif name == "天才少年":
+                if mode == "sol" and self._number(record.get("KillCount")) >= 12:
+                    return True
+                if mode == "mp" and self._number(record.get("KillNum")) >= 140:
+                    return True
+        return False
+
+    @staticmethod
+    def _subscription_time(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return "-"
+        try:
+            parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone()
+            return parsed.strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            return text
+
     async def _subscription_binding(self, event: AstrMessageEvent) -> Optional[Dict[str, Any]]:
         binding = await self.bindings.get_primary_binding(event.get_sender_id())
         if not binding:
@@ -1149,17 +1213,51 @@ class DeltaForcePlugin(Star):
         current = next((item for item in items if str(item.get("binding_id") or "") == binding_id), None)
 
         if action == "status":
-            if not items:
-                yield event.plain_result("当前账号没有战绩订阅。发送“订阅 战绩 sol/mp/both”创建。")
+            if not current:
+                yield event.plain_result("当前主账号没有战绩订阅。发送“订阅 战绩 sol/mp/both”创建。")
                 return
-            lines = ["【战绩订阅】"]
-            for item in items:
-                sub_type = str(item.get("subscription_type") or "both")
-                state = "启用" if item.get("enabled", item.get("status") == "active") else "停用"
-                lines.append(
-                    f"{self._subscription_id(item) or '未知'}：{sub_type}，{state}，"
-                    f"间隔 {item.get('poll_interval_sec') or 0} 秒，失败 {item.get('consecutive_failures') or 0} 次"
-                )
+            sub_type = str(current.get("subscription_type") or "both")
+            type_name = {"sol": "烽火地带", "mp": "全面战场", "both": "烽火地带+全面战场"}.get(
+                sub_type,
+                sub_type,
+            )
+            status = str(current.get("status") or "").lower()
+            status_name = {
+                "active": "正常轮询",
+                "disabled": "已停用",
+                "credential_invalid": "凭证失效",
+                "error": "异常退避",
+            }.get(status, status or "未知")
+            enabled = self._subscription_enabled(current)
+            lines = [
+                "【战绩订阅｜当前主账号】",
+                f"订阅 ID：{self._subscription_id(current) or '未知'}",
+                f"模式：{type_name}",
+                f"状态：{'启用' if enabled else '停用'}（{status_name}）",
+                f"排位判断：{'开启' if BindingManager._bool_value(current.get('rank_detection_enabled'), False) else '关闭'}",
+                f"轮询间隔：{current.get('poll_interval_sec') or 0} 秒",
+                f"轮询统计：成功 {current.get('success_polls') or 0} / 总计 {current.get('total_polls') or 0}",
+                f"新战绩：{current.get('new_records_count') or 0} 条",
+                f"连续失败：{current.get('consecutive_failures') or 0} 次",
+                f"上次轮询：{self._subscription_time(current.get('last_poll_at'))}",
+                f"下次轮询：{self._subscription_time(current.get('next_poll_at'))}",
+            ]
+            local = self.subscriptions.get(event.get_sender_id(), binding_id)
+            targets = local.get("targets") if isinstance(local, dict) and isinstance(local.get("targets"), dict) else {}
+            enabled_targets = []
+            for umo, flags in targets.items():
+                if not isinstance(flags, dict) or not (flags.get("group") or flags.get("private")):
+                    continue
+                kinds = []
+                if flags.get("group"):
+                    kinds.append("群聊")
+                if flags.get("private"):
+                    kinds.append("私信")
+                filters = self._stored_record_push_filters(flags.get("filters"))
+                suffix = f"，筛选：{' / '.join(filters)}" if filters else "，不筛选"
+                enabled_targets.append(f"- {'+'.join(kinds)} {umo}{suffix}")
+            lines.append("本地推送目标：")
+            lines.extend(enabled_targets or ["- 未配置"])
             yield event.plain_result("\n".join(lines))
             return
 
@@ -1190,13 +1288,47 @@ class DeltaForcePlugin(Star):
         if current:
             current_type = str(current.get("subscription_type") or "both")
             if current_type == sub_type:
+                sub_id = self._subscription_id(current)
+                if not sub_id:
+                    yield event.plain_result("后端订阅记录缺少订阅 ID，无法恢复；请先取消异常记录或联系服务端管理员。")
+                    return
+                if not self._subscription_enabled(current):
+                    enabled_result = await self.client.set_record_subscription_enabled(
+                        sub_id,
+                        True,
+                        user_identifier,
+                        client_id,
+                    )
+                    if not self._ok(enabled_result):
+                        yield event.plain_result(f"恢复战绩订阅失败：{self._message_of(enabled_result)}")
+                        return
+                expected_rank = BindingManager._bool_value(
+                    self.config.get("record_rank_detection"),
+                    False,
+                )
+                current_rank = BindingManager._bool_value(current.get("rank_detection_enabled"), False)
+                rank_warning = ""
+                if current_rank != expected_rank:
+                    rank_result = await self.client.set_record_rank_detection(
+                        sub_id,
+                        expected_rank,
+                        user_identifier,
+                        client_id,
+                    )
+                    if not self._ok(rank_result):
+                        rank_warning = f"；排位判断同步失败：{self._message_of(rank_result)}"
                 self.subscriptions.upsert(
                     event.get_sender_id(), binding_id,
-                    {"subscription_id": self._subscription_id(current), "subscription_type": current_type},
+                    {
+                        "subscription_id": sub_id,
+                        "subscription_type": current_type,
+                        "user_identifier": user_identifier,
+                        "client_id": client_id,
+                    },
                 )
                 self._ws_requested = True
                 self._ws_wakeup.set()
-                yield event.plain_result(f"当前已存在 {current_type} 战绩订阅，已恢复本地推送配置。")
+                yield event.plain_result(f"当前已存在 {current_type} 战绩订阅，已恢复后端轮询和本地推送配置{rank_warning}。")
                 return
             old_id = self._subscription_id(current)
             deleted = await self.client.delete_record_subscription(old_id, user_identifier, client_id)
@@ -1237,7 +1369,13 @@ class DeltaForcePlugin(Star):
         self._ws_wakeup.set()
         yield event.plain_result(f"已创建 {sub_type} 战绩订阅（{sub_id}）。请用“开启本群订阅推送”或“开启私信订阅推送”设置接收目标。")
 
-    async def _subscription_target(self, event: AstrMessageEvent, kind: str, enabled: bool) -> AsyncGenerator[Any, None]:
+    async def _subscription_target(
+        self,
+        event: AstrMessageEvent,
+        kind: str,
+        enabled: bool,
+        arg: str = "",
+    ) -> AsyncGenerator[Any, None]:
         binding = await self._subscription_binding(event)
         if not binding:
             yield event.plain_result("请先完成后端登录和角色绑定，再设置订阅推送目标。")
@@ -1260,8 +1398,29 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("当前账号没有战绩订阅，请先发送“订阅 战绩 both”。")
             return
         sub_id = self._subscription_id(current)
+        if not sub_id:
+            yield event.plain_result("后端订阅记录缺少订阅 ID，无法设置推送目标。")
+            return
+        if enabled and not self._subscription_enabled(current):
+            enabled_result = await self.client.set_record_subscription_enabled(
+                sub_id,
+                True,
+                user_identifier,
+                self._client_id(event),
+            )
+            if not self._ok(enabled_result):
+                yield event.plain_result(f"恢复战绩订阅失败：{self._message_of(enabled_result)}")
+                return
+        filters = self._record_push_filters(arg) if enabled else []
         self.subscriptions.upsert(user_id, binding["binding_id"], {"subscription_id": sub_id})
-        self.subscriptions.set_target(user_id, binding["binding_id"], event.unified_msg_origin, kind, enabled)
+        self.subscriptions.set_target(
+            user_id,
+            binding["binding_id"],
+            event.unified_msg_origin,
+            kind,
+            enabled,
+            filters,
+        )
         self._ws_requested = True
         if not enabled and not self.subscriptions.enabled_targets():
             self._ws_requested = False
@@ -1272,7 +1431,10 @@ class DeltaForcePlugin(Star):
                     pass
         self._ws_wakeup.set()
         status = "已开启" if enabled else "已关闭"
-        yield event.plain_result(f"{status}{'本群' if kind == 'group' else '私信'}战绩订阅推送。")
+        filter_text = f"，筛选：{' / '.join(filters)}" if filters else "，不筛选"
+        yield event.plain_result(
+            f"{status}{'本群' if kind == 'group' else '私信'}战绩订阅推送{filter_text if enabled else ''}。"
+        )
 
     def _ws_client_id(self) -> str:
         configured = str(self.config.get("client_id") or "").strip()
@@ -1408,25 +1570,27 @@ class DeltaForcePlugin(Star):
             for item in self.subscriptions.all()
             if str(item.get("subscription_id") or "") == sub_id
         ]
-        targets: List[str] = []
+        target_filters: Dict[str, List[List[str]]] = {}
         for item in subscriptions:
             item_targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
             for umo, flags in item_targets.items():
                 if isinstance(flags, dict) and (flags.get("group") or flags.get("private")):
                     target = str(umo or "").strip()
-                    if target and target not in targets:
-                        targets.append(target)
-        if not targets:
+                    if target:
+                        filters = self._stored_record_push_filters(flags.get("filters"))
+                        target_filters.setdefault(target, []).append(filters)
+        if not target_filters:
             return
+        record = data.get("record") if isinstance(data.get("record"), dict) else {}
+        record_type = data.get("record_type") or data.get("recordType")
         targets = [
             target
-            for target in targets
-            if f"{event_key}:{target}" not in self._seen_record_events
+            for target, filter_groups in target_filters.items()
+            if any(self._record_matches_push_filters(record_type, record, filters) for filters in filter_groups)
+            and f"{event_key}:{target}" not in self._seen_record_events
         ]
         if not targets:
             return
-
-        record = data.get("record") if isinstance(data.get("record"), dict) else {}
         if MessageChain is None or Plain is None:
             logger.warning("[三角洲订阅] 当前 AstrBot 版本缺少 MessageChain，无法发送主动推送。")
             return
@@ -2960,12 +3124,22 @@ class DeltaForcePlugin(Star):
             async for result in self._record_subscription(event, body):
                 yield result
             return
-        if body in {"开启本群订阅推送", "关闭本群订阅推送"}:
-            async for result in self._subscription_target(event, "group", body.startswith("开启")):
+        if match := re.fullmatch(r"(开启|关闭)本群订阅推送(?:\s+战绩)?(?:\s+([\s\S]+))?", body):
+            async for result in self._subscription_target(
+                event,
+                "group",
+                match.group(1) == "开启",
+                (match.group(2) or "").strip(),
+            ):
                 yield result
             return
-        if body in {"开启私信订阅推送", "关闭私信订阅推送"}:
-            async for result in self._subscription_target(event, "private", body.startswith("开启")):
+        if match := re.fullmatch(r"(开启|关闭)私信订阅推送(?:\s+战绩)?(?:\s+([\s\S]+))?", body):
+            async for result in self._subscription_target(
+                event,
+                "private",
+                match.group(1) == "开启",
+                (match.group(2) or "").strip(),
+            ):
                 yield result
             return
         if "广播" in body or "通知" in body:

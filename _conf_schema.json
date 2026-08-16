@@ -116,7 +116,7 @@
     "default": 300
   },
   "record_rank_detection": {
-    "description": "创建战绩订阅时同步开启排位判断。",
+    "description": "创建或恢复战绩订阅时同步排位判断开关。",
     "type": "bool",
     "default": false
   },

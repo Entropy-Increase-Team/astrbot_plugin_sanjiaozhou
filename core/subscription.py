@@ -66,11 +66,21 @@ class SubscriptionStore:
     def all(self) -> List[Dict[str, Any]]:
         return [dict(item) for item in self._data["subscriptions"].values() if isinstance(item, dict)]
 
-    def set_target(self, user_id: Any, binding_id: Any, umo: str, kind: str, enabled: bool) -> Dict[str, Any]:
+    def set_target(
+        self,
+        user_id: Any,
+        binding_id: Any,
+        umo: str,
+        kind: str,
+        enabled: bool,
+        filters: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         item = self.get(user_id, binding_id) or {"targets": {}}
         targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
         target = targets.get(umo) if isinstance(targets.get(umo), dict) else {}
         target[kind] = bool(enabled)
+        if filters is not None:
+            target["filters"] = [str(value) for value in filters if str(value).strip()]
         target["updated_at"] = int(time.time())
         targets[umo] = target
         item["targets"] = targets
