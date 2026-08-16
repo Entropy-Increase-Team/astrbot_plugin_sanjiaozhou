@@ -7072,9 +7072,11 @@ class DeltaForcePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     async def _ban_history(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        token = await self._need_token(event)
+        token = await self._token_for_type(event, "qqsafe")
         if not token:
-            yield event.plain_result("您尚未绑定账号。")
+            yield event.plain_result(
+                "您尚未绑定或激活 QQ 安全中心账号，请先发送 qqsafe登录 完成绑定。"
+            )
             return
         res = await self.client.ban_history(token)
         if not self._ok(res):
@@ -7085,7 +7087,21 @@ class DeltaForcePlugin(Star):
         if isinstance(raw, list):
             records = [item for item in raw if isinstance(item, dict)]
         elif isinstance(raw, dict):
-            records = self._first_list(raw, ("list", "records", "items", "data"))
+            records = []
+            found_list = False
+            for key in ("list", "records", "items", "data"):
+                if key not in raw:
+                    continue
+                found_list = True
+                value = raw.get(key)
+                if not isinstance(value, list):
+                    yield event.plain_result("封号/违规记录返回数据格式异常。")
+                    return
+                records = [item for item in value if isinstance(item, dict)]
+                break
+            if not found_list:
+                yield event.plain_result("封号/违规记录返回数据格式异常。")
+                return
         else:
             yield event.plain_result("封号/违规记录返回数据格式异常。")
             return
@@ -7093,24 +7109,27 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("该账号暂无违规记录。")
             return
 
-        lines = [f"【封号/违规记录】共 {len(records)} 条"]
+        blocks = []
         for index, record in enumerate(records, 1):
             game_name = str(record.get("game_name") or "未知游戏")
             zone = str(record.get("zone") or "").strip()
-            lines.extend(
-                [
-                    f"\n--- 违规记录 {index} ---",
-                    f"游戏: {game_name}{f'（{zone}）' if zone else ''}",
-                    f"类型: {record.get('type') or '未知'}",
-                    f"原因: {record.get('reason') or '未知'}",
-                    f"分类: {record.get('strategy_desc') or '未知'}",
-                    f"开始时间: {self._fmt_time(record.get('start_stmp'))}",
-                    f"持续时间: {self._fmt_ban_duration(record.get('duration'))}",
-                ]
-            )
+            lines = [
+                f"--- 违规记录 {index} ---",
+                f"游戏: {game_name}{f'（{zone}）' if zone else ''}",
+                f"类型: {record.get('type') or '未知'}",
+                f"原因: {record.get('reason') or '未知'}",
+                f"分类: {record.get('strategy_desc') or '未知'}",
+                f"开始时间: {self._fmt_ban_time(record.get('start_stmp'))}",
+                f"持续时间: {self._fmt_ban_duration(record.get('duration'))}",
+            ]
             if record.get("cheat_date"):
-                lines.append(f"作弊时间: {self._fmt_time(record.get('cheat_date'))}")
-        yield event.plain_result("\n".join(lines))
+                lines.append(f"作弊时间: {self._fmt_ban_time(record.get('cheat_date'))}")
+            blocks.append("\n".join(lines))
+        yield self._forward_text_blocks_result(
+            event,
+            f"封号/违规记录 · {len(records)} 条",
+            blocks,
+        )
 
     @staticmethod
     def _gamesafe_records(data: Any) -> List[Dict[str, Any]]:
@@ -12427,12 +12446,27 @@ class DeltaForcePlugin(Star):
         try:
             seconds = int(float(value))
         except (TypeError, ValueError):
-            return "未知"
-        if seconds < 0:
-            return "未知"
+            return "N/A"
+        if seconds <= 0:
+            return "N/A"
         if seconds > 365 * 9 * 24 * 3600:
             return "永久"
         return DeltaForcePlugin._fmt_duration(seconds)
+
+    @staticmethod
+    def _fmt_ban_time(value: Any) -> str:
+        try:
+            timestamp = int(float(value))
+        except (TypeError, ValueError):
+            return "N/A"
+        if timestamp <= 0:
+            return "N/A"
+        if timestamp > 10_000_000_000:
+            timestamp //= 1000
+        try:
+            return dt.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        except (OverflowError, OSError, ValueError):
+            return "N/A"
 
     @staticmethod
     def _fmt_duration(value: Any) -> str:

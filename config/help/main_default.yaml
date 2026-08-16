@@ -84,8 +84,8 @@ helpList:
           title: "(WeGame/wegame微信)登陆"
           desc: "登录WeGame（QQ/微信扫码）"
         - icon: 61
-          title: "安全中心登陆"
-          desc: "通过 QQSafe 安全中心扫码登录"
+          title: "qqsafe登录 | 安全中心登录"
+          desc: "绑定违规记录查询所需的 QQSafe 账号"
         - icon: 71
           title: "(QQ/微信)授权登录 [回调/授权码]"
           desc: "提交完整回调URL或当前会话授权码"
@@ -386,8 +386,8 @@ helpList:
           title: "ai预设列表"
           desc: "查看所有可用的AI评价预设"
         - icon: 41
-          title: "违规记录"
-          desc: "登录QQ安全中心后可查询历史违规"
+          title: "封号记录 | 违规记录"
+          desc: "使用QQSafe绑定查询；多条记录合并转发"
         - icon: 41
           title: "微信安全中心绑定 | 登录信息"
           desc: "查看 Gamesafe 绑定账号和登录状态"
