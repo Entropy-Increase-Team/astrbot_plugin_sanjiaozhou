@@ -27,13 +27,13 @@ calculatorHelpList:
       list:
         - icon: 61
           title: "伤害计算"
-          desc: "查看快捷伤害计算用法"
+          desc: "启动交互会话：烽火逐发模拟，全面战场七部位 TTK"
         - icon: 33
           title: "战备计算"
           desc: "启动原生交互会话，计算最低成本配装"
         - icon: 51
           title: "维修计算"
-          desc: "查看快捷维修计算用法"
+          desc: "启动局内/局外维修会话，局外可选初级或中级"
         - icon: 48
           title: "取消计算"
           desc: "取消当前交互式计算会话"
@@ -63,7 +63,7 @@ calculatorHelpList:
           desc: "支持武器、子弹、护甲名称模糊搜索"
         - icon: 54
           title: "算法精确"
-          desc: "基于繁星攻略组算法，确保计算精确"
+          desc: "支持距离衰减、护甲损耗、维修等级和自动/半自动 TTK"
         - icon: 54
           title: "映射表"
           desc: "使用 计算映射表 查看详细映射关系"

@@ -5,6 +5,27 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class DeltaCalculator:
+    CATEGORY_NAMES = {
+        "assault_rifles": "突击步枪",
+        "submachine_guns": "冲锋枪",
+        "shotguns": "霰弹枪",
+        "light_machine_guns": "轻机枪",
+        "marksman_rifles": "精确射手步枪",
+        "sniper_rifles": "狙击步枪",
+        "pistols": "手枪",
+        "special": "特殊武器",
+    }
+
+    BATTLEFIELD_CATEGORY_NAMES = {
+        "rifles": "突击步枪",
+        "lmgs": "轻机枪",
+        "dmrs": "精确射手步枪",
+        "designated_marksman_rifles": "精确射手步枪",
+        "snipers": "狙击步枪",
+        "sniper_rifles": "狙击步枪",
+        "pistols": "手枪",
+    }
+
     PARTS = {
         "1": "头部",
         "2": "胸部",
@@ -14,10 +35,14 @@ class DeltaCalculator:
         "6": "大腿",
         "7": "小腿",
         "头": "头部",
+        "头部": "头部",
         "head": "头部",
         "胸": "胸部",
+        "胸部": "胸部",
         "chest": "胸部",
         "腹": "腹部",
+        "腹部": "腹部",
+        "肚": "腹部",
         "abdomen": "腹部",
         "大臂": "大臂",
         "upper_arm": "大臂",
@@ -118,6 +143,38 @@ class DeltaCalculator:
             data = self.data_mgr.load_json_data("battlefield_weapons.json") or {}
             groups = data.get("battlefield_weapons") if isinstance(data, dict) else {}
         return self._flatten_groups(groups)
+
+    def weapon_categories(self, mode: str) -> List[Dict[str, Any]]:
+        if mode == "mp":
+            data = self.data_mgr.load_json_data("battlefield_weapons.json") or {}
+            groups = data.get("battlefield_weapons") if isinstance(data, dict) else {}
+            names = self.BATTLEFIELD_CATEGORY_NAMES
+        else:
+            data = self.data_mgr.load_json_data("weapons_sol.json") or {}
+            groups = data.get("weapons") if isinstance(data, dict) else {}
+            names = self.CATEGORY_NAMES
+        if not isinstance(groups, dict):
+            return []
+        return [
+            {
+                "key": str(category),
+                "displayName": names.get(str(category), str(category)),
+                "count": len(items),
+            }
+            for category, items in groups.items()
+            if isinstance(items, list) and items
+        ]
+
+    def weapons_by_category(self, mode: str, category: str) -> List[Dict[str, Any]]:
+        if mode == "mp":
+            data = self.data_mgr.load_json_data("battlefield_weapons.json") or {}
+            groups = data.get("battlefield_weapons") if isinstance(data, dict) else {}
+        else:
+            data = self.data_mgr.load_json_data("weapons_sol.json") or {}
+            groups = data.get("weapons") if isinstance(data, dict) else {}
+        if not isinstance(groups, dict):
+            return []
+        return [item for item in groups.get(category, []) or [] if isinstance(item, dict)]
 
     def bullet_list(self, caliber: str) -> List[Dict[str, Any]]:
         data = self.data_mgr.load_json_data("bullets.json") or {}
@@ -377,7 +434,7 @@ class DeltaCalculator:
 
     def parse_hit_parts(self, text: str, total_shots: int) -> Tuple[Optional[List[str]], Optional[str]]:
         parts: List[str] = []
-        for raw in str(text or "").split(","):
+        for raw in str(text or "").replace("，", ",").split(","):
             raw = raw.strip()
             if not raw:
                 continue
@@ -391,8 +448,8 @@ class DeltaCalculator:
                 count = int(count_text)
             except Exception:
                 return None, f"命中次数不是整数：{count_text}"
-            if count < 0:
-                return None, "命中次数不能小于 0"
+            if count <= 0:
+                return None, "命中次数必须大于 0"
             parts.extend([part] * count)
         if len(parts) != total_shots:
             return None, f"部位分配合计 {len(parts)} 发，与射击次数 {total_shots} 不一致"
@@ -532,6 +589,51 @@ class DeltaCalculator:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+    def calculate_battlefield_damage(self, weapon: Dict[str, Any], distance: float) -> Dict[str, Any]:
+        try:
+            decay = self.battlefield_decay(distance, weapon)
+            shooting_interval = float(weapon.get("shootingInterval") or 0)
+            trigger_delay = float(weapon.get("triggerDelay") or 0)
+            fire_mode_code = int(weapon.get("fireModeCode") or 0)
+            base_damage = float(weapon.get("baseDamage") or 0)
+            part_results = []
+            for part in ("头部", "胸部", "腹部", "大臂", "小臂", "大腿", "小腿"):
+                multiplier = self.part_multiplier(weapon, part)
+                damage = base_damage * multiplier * decay
+                if damage > 0:
+                    hits: Any = math.ceil(100 / damage)
+                    if fire_mode_code == 1:
+                        ttk: Any = trigger_delay + shooting_interval * (hits - 1)
+                    else:
+                        ttk = trigger_delay * hits + shooting_interval * (hits - 1)
+                    ttk = round(ttk, 2)
+                else:
+                    hits = "N/A"
+                    ttk = "N/A"
+                part_results.append(
+                    {
+                        "part": part,
+                        "multiplier": multiplier,
+                        "damagePerShot": round(damage, 2),
+                        "hitsToKill": hits,
+                        "timeToKill": ttk,
+                    }
+                )
+            return {
+                "success": True,
+                "weapon": weapon.get("name") or "未知武器",
+                "baseDamage": base_damage,
+                "distance": distance,
+                "decayMultiplier": decay,
+                "fireMode": weapon.get("fireMode") or "未知",
+                "fireRate": weapon.get("fireRate") or 0,
+                "shootingInterval": shooting_interval,
+                "triggerDelay": trigger_delay,
+                "partResults": part_results,
+            }
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     @staticmethod
     def _armor_protected_parts(armor_type: str) -> List[str]:
         mapping = {
@@ -571,12 +673,32 @@ class DeltaCalculator:
                 return multiplier
         return pairs[-1][1]
 
-    def calculate_repair(self, armor: Dict[str, Any], current: float, remaining: float, mode: str) -> Dict[str, Any]:
+    @staticmethod
+    def battlefield_decay(distance: float, weapon: Dict[str, Any]) -> float:
+        distances = [float(value) for value in weapon.get("decayDistances") or []]
+        multipliers = [float(value) for value in weapon.get("decayMultipliers") or []]
+        if not distances or not multipliers:
+            return 1.0
+        if distance <= distances[0]:
+            return 1.0
+        for index, limit in enumerate(distances):
+            if distance <= limit:
+                return multipliers[index - 1] if index > 0 and index - 1 < len(multipliers) else 1.0
+        return multipliers[-1]
+
+    def calculate_repair(
+        self,
+        armor: Dict[str, Any],
+        current: float,
+        remaining: float,
+        mode: str,
+        repair_level: str = "intermediate",
+    ) -> Dict[str, Any]:
         if remaining > current:
             return {"success": False, "error": "剩余耐久不能大于当前上限"}
         if mode == "inside":
             return self._inside_repair(armor, current, remaining)
-        return self._outside_repair(armor, current, remaining)
+        return self._outside_repair(armor, current, remaining, repair_level)
 
     def _inside_repair(self, armor: Dict[str, Any], current: float, remaining: float) -> Dict[str, Any]:
         initial_max = float(armor.get("initialMax") or 0)
@@ -616,12 +738,22 @@ class DeltaCalculator:
             "repairPackages": packages,
         }
 
-    def _outside_repair(self, armor: Dict[str, Any], current: float, remaining: float) -> Dict[str, Any]:
+    def _outside_repair(
+        self,
+        armor: Dict[str, Any],
+        current: float,
+        remaining: float,
+        repair_level: str,
+    ) -> Dict[str, Any]:
         initial_max = float(armor.get("initialMax") or 0)
         repair_loss = armor.get("repairLoss")
         repair_price = armor.get("repairPrice")
         if not initial_max or repair_loss is None or repair_price is None:
             return {"success": False, "error": f"{armor.get('name')} 缺少维修数据"}
+        multiplier = 1.25 if repair_level == "primary" else 1.0
+        level_name = "初级维修" if repair_level == "primary" else "中级维修"
+        adjusted_repair_loss = min(float(repair_loss) * multiplier, 1.0)
+        adjusted_repair_price = float(repair_price) * multiplier
         current_upper = math.floor(current)
         if self.is_helmet(armor) and current_upper < 5:
             return {"success": False, "error": f"当前头盔上限({current_upper})小于5，不可维修"}
@@ -631,9 +763,9 @@ class DeltaCalculator:
         log_value = current_upper / initial_max
         if log_value <= 0:
             return {"success": False, "error": "对数计算参数必须大于0"}
-        repaired_upper = current_upper - current_upper * term1 * (float(repair_loss) - math.log10(log_value))
+        repaired_upper = current_upper - current_upper * term1 * (adjusted_repair_loss - math.log10(log_value))
         final_upper = max(1, math.floor(repaired_upper))
-        repair_cost = max(0, round((final_upper - math.floor(remaining) + 1) * float(repair_price)))
+        repair_cost = max(0, round((final_upper - math.floor(remaining) + 1) * adjusted_repair_price))
         wear = round((1 - final_upper / initial_max) * 100, 1)
         non_tradable = {"金刚防弹衣", "特里克MAS2.0装甲", "泰坦防弹装甲", "DICH-9重型头盔", "GT5指挥官头盔", "H70夜视精英头盔"}
         if str(armor.get("name")) in non_tradable:
@@ -648,12 +780,12 @@ class DeltaCalculator:
             "success": True,
             "mode": "局外维修",
             "armor": armor.get("name"),
-            "repairLevel": "中级维修",
+            "repairLevel": level_name,
             "initialMax": initial_max,
             "currentDurability": current_upper,
             "remainingDurability": remaining,
             "finalUpper": final_upper,
-            "repairLoss": repair_loss,
+            "repairLoss": adjusted_repair_loss,
             "repairCost": repair_cost,
             "wearPercentage": wear,
             "marketStatus": market_status,

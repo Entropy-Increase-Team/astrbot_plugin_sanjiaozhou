@@ -2426,8 +2426,12 @@ class DeltaForcePlugin(Star):
             async for r in self._readiness_session(event):
                 yield r
             return
-        if re.fullmatch(r"(伤害计算|伤害|维修计算|维修)", body):
-            async for r in self._calculator_help(event, body):
+        if body in {"伤害计算", "伤害"}:
+            async for r in self._damage_session(event):
+                yield r
+            return
+        if body in {"维修计算", "维修"}:
+            async for r in self._repair_session(event):
                 yield r
             return
         if m := re.fullmatch(r"(修甲|修理)\s+(.+?)\s+(\d+(?:\.\d+)?)[/／](\d+(?:\.\d+)?)\s+(局内|局外|inside|outside)", body):
@@ -11521,19 +11525,407 @@ class DeltaForcePlugin(Star):
             Comp.Record.fromURL(audio_url, text=str(recent.get("text") or "")),
         ])
 
-    async def _calculator_help(self, event: AstrMessageEvent, command: str) -> AsyncGenerator[Any, None]:
-        if command in {"伤害计算", "伤害"}:
-            yield event.plain_result(
-                "【伤害计算器】\n"
-                "用法：伤害 <模式> <武器名> <子弹名> <护甲/头盔:护甲> <距离> <射击次数> <部位分配>\n"
-                "示例：伤害 烽火 腾龙 dvc12 41:37 50 6 1:2,2:4\n"
-                "发送 计算映射表 查看常用别名。"
+    async def _damage_session(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        from astrbot.api.util import SessionController, session_waiter
+
+        state: Dict[str, Any] = {"step": "mode"}
+        yield event.plain_result(
+            "【伤害计算器】\n"
+            "请选择游戏模式：\n"
+            "1. 烽火地带（sol）\n"
+            "2. 全面战场（mp）\n\n"
+            "发送 取消 可退出。"
+        )
+
+        @session_waiter(timeout=300, record_history_chains=False)
+        async def waiter(controller: SessionController, waiter_event: AstrMessageEvent):
+            command = self._message(waiter_event).strip().lstrip("/#^").strip()
+            if command in {"取消", "取消计算"}:
+                await waiter_event.send(waiter_event.plain_result("已取消伤害计算。"))
+                controller.stop()
+                return
+
+            step = state["step"]
+            if step == "mode":
+                mode = "sol" if command == "1" else "mp" if command == "2" else ""
+                if not mode:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1 或 2 选择游戏模式。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                categories = self.calculator.weapon_categories(mode)
+                if not categories:
+                    await waiter_event.send(waiter_event.plain_result("武器分类数据为空，无法开始伤害计算。"))
+                    controller.stop()
+                    return
+                state.update({"mode": mode, "categories": categories, "step": "weapon_category"})
+                lines = [
+                    f"已选择：{'烽火地带' if mode == 'sol' else '全面战场'}",
+                    "",
+                    "请选择武器类型：",
+                ]
+                lines.extend(
+                    f"{index}. {item['displayName']}（{item['count']}把）"
+                    for index, item in enumerate(categories, 1)
+                )
+                await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "weapon_category":
+                categories = state.get("categories") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(categories):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(categories)} 之间的数字。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                category = categories[index]
+                weapons = self.calculator.weapons_by_category(state["mode"], category["key"])
+                if not weapons:
+                    await waiter_event.send(waiter_event.plain_result("该分类武器数据为空，请重新开始计算。"))
+                    controller.stop()
+                    return
+                state.update({"weapons": weapons, "step": "weapon"})
+                lines = [f"已选择：{category['displayName']}", "", "请选择武器："]
+                lines.extend(f"{item_index}. {weapon.get('name') or '未知武器'}" for item_index, weapon in enumerate(weapons, 1))
+                await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "weapon":
+                weapons = state.get("weapons") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(weapons):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(weapons)} 之间的数字。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                weapon = weapons[index]
+                state["weapon"] = weapon
+                if state["mode"] == "mp":
+                    state["step"] = "distance"
+                    await waiter_event.send(waiter_event.plain_result(
+                        f"已选择武器：{weapon.get('name') or '未知武器'}\n"
+                        f"基础伤害：{weapon.get('baseDamage') or 0}\n\n"
+                        "请输入射击距离（米）："
+                    ))
+                else:
+                    bullets = self.calculator.bullet_list(str(weapon.get("caliber") or ""))
+                    if not bullets:
+                        await waiter_event.send(waiter_event.plain_result(
+                            f"未找到口径 {weapon.get('caliber') or '-'} 的子弹数据，请重新开始计算。"
+                        ))
+                        controller.stop()
+                        return
+                    state.update({"bullets": bullets, "step": "bullet"})
+                    lines = [
+                        f"已选择武器：{weapon.get('name') or '未知武器'}",
+                        f"口径：{weapon.get('caliber') or '-'}",
+                        "",
+                        "请选择子弹：",
+                    ]
+                    lines.extend(
+                        f"{item_index}. {bullet.get('name') or '未知子弹'}（穿透等级 {bullet.get('penetrationLevel') or 0}，伤害倍率 {bullet.get('baseDamageMultiplier') or 1}）"
+                        for item_index, bullet in enumerate(bullets, 1)
+                    )
+                    await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "bullet":
+                bullets = state.get("bullets") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(bullets):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(bullets)} 之间的数字。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state["bullet"] = bullets[index]
+                armors = self.calculator.armor_list()
+                state.update({"armors": armors, "step": "armor"})
+                lines = [
+                    f"已选择子弹：{bullets[index].get('name') or '未知子弹'}",
+                    f"穿透等级：{bullets[index].get('penetrationLevel') or 0}",
+                    "",
+                    "请选择防护装备：",
+                    "1. 无护甲",
+                ]
+                lines.extend(
+                    f"{item_index}. {armor.get('name') or '未知装备'}（防护等级 {armor.get('protectionLevel') or 0}）"
+                    for item_index, armor in enumerate(armors, 2)
+                )
+                lines.append("可发送 头盔编号:护甲编号 选择组合。")
+                await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "armor":
+                armors = state.get("armors") or []
+                match = re.fullmatch(r"(\d+)\s*[:：,，]\s*(\d+)", command)
+                helmet = None
+                armor = None
+                if match:
+                    helmet_index = int(match.group(1)) - 2
+                    armor_index = int(match.group(2)) - 2
+                    if not (0 <= helmet_index < len(armors) and 0 <= armor_index < len(armors)):
+                        await waiter_event.send(waiter_event.plain_result(
+                            f"请输入有效组合，装备编号范围为 2-{len(armors) + 1}。"
+                        ))
+                        controller.keep(timeout=300, reset_timeout=True)
+                        return
+                    helmet = armors[helmet_index]
+                    armor = armors[armor_index]
+                    if not self.calculator.is_helmet(helmet):
+                        await waiter_event.send(waiter_event.plain_result(f"编号 {match.group(1)} 不是头盔。"))
+                        controller.keep(timeout=300, reset_timeout=True)
+                        return
+                    if self.calculator.is_helmet(armor):
+                        await waiter_event.send(waiter_event.plain_result(f"编号 {match.group(2)} 是头盔，请选择护甲。"))
+                        controller.keep(timeout=300, reset_timeout=True)
+                        return
+                    selected = f"头盔：{helmet.get('name')}\n护甲：{armor.get('name')}"
+                else:
+                    try:
+                        choice = int(command)
+                    except ValueError:
+                        choice = 0
+                    if choice < 1 or choice > len(armors) + 1:
+                        await waiter_event.send(waiter_event.plain_result(
+                            f"请输入 1-{len(armors) + 1} 之间的数字，或发送 头盔编号:护甲编号。"
+                        ))
+                        controller.keep(timeout=300, reset_timeout=True)
+                        return
+                    if choice == 1:
+                        selected = "无护甲"
+                    else:
+                        item = armors[choice - 2]
+                        if self.calculator.is_helmet(item):
+                            helmet = item
+                        else:
+                            armor = item
+                        selected = str(item.get("name") or "未知装备")
+                state.update({"helmet": helmet, "armor": armor, "step": "distance"})
+                await waiter_event.send(waiter_event.plain_result(f"已选择：{selected}\n\n请输入射击距离（米）："))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "distance":
+                try:
+                    distance = float(command)
+                except ValueError:
+                    distance = -1
+                if distance < 0:
+                    await waiter_event.send(waiter_event.plain_result("请输入大于等于 0 的有效距离。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state["distance"] = distance
+                if state["mode"] == "mp":
+                    await waiter_event.send(waiter_event.plain_result("正在计算战场伤害，请稍候……"))
+                    result = await asyncio.to_thread(
+                        self.calculator.calculate_battlefield_damage,
+                        state["weapon"],
+                        distance,
+                    )
+                    await waiter_event.send(waiter_event.plain_result(self._battlefield_damage_result_text(result)))
+                    controller.stop()
+                    return
+                state["step"] = "shots"
+                await waiter_event.send(waiter_event.plain_result(
+                    f"已设置距离：{distance:g} 米\n\n请输入射击次数（1-20）："
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "shots":
+                try:
+                    shots = int(command)
+                except ValueError:
+                    shots = 0
+                if shots < 1 or shots > 20:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1-20 之间的射击次数。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state.update({"shots": shots, "step": "hit_parts"})
+                await waiter_event.send(waiter_event.plain_result(
+                    f"射击次数：{shots} 发\n\n"
+                    "请选择命中部位：\n"
+                    "1. 头部\n2. 胸部\n3. 腹部\n4. 大臂\n5. 小臂\n6. 大腿\n7. 小腿\n\n"
+                    f"简单模式：发送数字，{shots} 发全部命中该部位。\n"
+                    "高级模式：发送 部位:次数，例如 头:2,胸:3。"
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            shots = int(state["shots"])
+            if command.isdigit() and command in self.calculator.PARTS:
+                hit_parts = [self.calculator.PARTS[command]] * shots
+                hit_error = None
+            else:
+                hit_parts, hit_error = self.calculator.parse_hit_parts(command, shots)
+            if hit_error:
+                await waiter_event.send(waiter_event.plain_result(f"解析失败：{hit_error}"))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+            await waiter_event.send(waiter_event.plain_result("正在计算伤害，请稍候……"))
+            result = await asyncio.to_thread(
+                self.calculator.calculate_damage,
+                state["weapon"],
+                state["bullet"],
+                state.get("helmet"),
+                state.get("armor"),
+                state["distance"],
+                hit_parts or [],
             )
-            return
-        if command in {"维修计算", "维修"}:
-            yield event.plain_result("【维修计算器】\n用法：修甲 <装备名> <剩余耐久>/<当前上限> <局内|局外>\n示例：修甲 fs 0/100 局内")
-            return
-        yield event.plain_result("发送 战备 开始交互式战备计算；发送 取消 可随时退出。")
+            await waiter_event.send(waiter_event.plain_result(self._damage_result_text(result, "sol", shots)))
+            controller.stop()
+
+        try:
+            await waiter(event)
+        except TimeoutError:
+            yield event.plain_result("伤害计算会话已超时，请重新发送 伤害计算。")
+
+    async def _repair_session(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        from astrbot.api.util import SessionController, session_waiter
+
+        state: Dict[str, Any] = {"step": "repair_mode"}
+        yield event.plain_result(
+            "【维修计算器】\n"
+            "请选择维修模式：\n"
+            "1. 局内维修（使用维修包）\n"
+            "2. 局外维修（按维修单价）\n\n"
+            "发送 取消 可退出。"
+        )
+
+        @session_waiter(timeout=300, record_history_chains=False)
+        async def waiter(controller: SessionController, waiter_event: AstrMessageEvent):
+            command = self._message(waiter_event).strip().lstrip("/#^").strip()
+            if command in {"取消", "取消计算"}:
+                await waiter_event.send(waiter_event.plain_result("已取消维修计算。"))
+                controller.stop()
+                return
+
+            step = state["step"]
+            if step == "repair_mode":
+                mode = "inside" if command == "1" else "outside" if command == "2" else ""
+                if not mode:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1 或 2 选择维修模式。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                armors = self.calculator.armor_list()
+                if not armors:
+                    await waiter_event.send(waiter_event.plain_result("护甲数据为空，无法开始维修计算。"))
+                    controller.stop()
+                    return
+                state.update({"mode": mode, "armors": armors, "step": "armor"})
+                lines = [
+                    f"已选择：{'局内维修' if mode == 'inside' else '局外维修'}",
+                    "",
+                    "请选择要维修的护甲：",
+                ]
+                lines.extend(
+                    f"{index}. {armor.get('name') or '未知装备'}（防护等级 {armor.get('protectionLevel') or 0}）"
+                    for index, armor in enumerate(armors, 1)
+                )
+                await waiter_event.send(waiter_event.plain_result("\n".join(lines)))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "armor":
+                armors = state.get("armors") or []
+                try:
+                    index = int(command) - 1
+                except ValueError:
+                    index = -1
+                if index < 0 or index >= len(armors):
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 1-{len(armors)} 之间的数字。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                armor = armors[index]
+                state["armor"] = armor
+                if state["mode"] == "outside":
+                    state["step"] = "repair_level"
+                    await waiter_event.send(waiter_event.plain_result(
+                        f"已选择护甲：{armor.get('name') or '未知装备'}\n\n"
+                        "请选择维修等级：\n"
+                        "1. 初级维修（损耗与价格为中级维修的 1.25 倍）\n"
+                        "2. 中级维修（标准损耗与价格）"
+                    ))
+                else:
+                    state.update({"repair_level": "intermediate", "step": "current_durability"})
+                    await waiter_event.send(waiter_event.plain_result(
+                        f"已选择护甲：{armor.get('name') or '未知装备'}\n"
+                        f"护甲最大耐久：{armor.get('initialMax') or 0}\n\n"
+                        "请输入当前上限："
+                    ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "repair_level":
+                level = "primary" if command == "1" else "intermediate" if command == "2" else ""
+                if not level:
+                    await waiter_event.send(waiter_event.plain_result("请输入 1 或 2 选择维修等级。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state.update({"repair_level": level, "step": "current_durability"})
+                await waiter_event.send(waiter_event.plain_result(
+                    f"已选择维修等级：{'初级维修' if level == 'primary' else '中级维修'}\n"
+                    f"护甲最大耐久：{state['armor'].get('initialMax') or 0}\n\n"
+                    "请输入当前上限："
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            if step == "current_durability":
+                initial_max = float(state["armor"].get("initialMax") or 0)
+                try:
+                    current = float(command)
+                except ValueError:
+                    current = -1
+                if current < 0 or current > initial_max:
+                    await waiter_event.send(waiter_event.plain_result(f"请输入 0-{initial_max:g} 之间的耐久度。"))
+                    controller.keep(timeout=300, reset_timeout=True)
+                    return
+                state.update({"current": current, "step": "remaining_durability"})
+                await waiter_event.send(waiter_event.plain_result(
+                    f"当前上限：{current:g}\n最大耐久：{initial_max:g}\n\n请输入剩余耐久度："
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+
+            try:
+                remaining = float(command)
+            except ValueError:
+                remaining = -1
+            if remaining < 0 or remaining > state["current"]:
+                await waiter_event.send(waiter_event.plain_result(
+                    f"请输入 0-{state['current']:g} 之间的剩余耐久度。"
+                ))
+                controller.keep(timeout=300, reset_timeout=True)
+                return
+            await waiter_event.send(waiter_event.plain_result(
+                f"正在计算{'维修损耗' if state['mode'] == 'inside' else '维修成本'}，请稍候……"
+            ))
+            result = await asyncio.to_thread(
+                self.calculator.calculate_repair,
+                state["armor"],
+                state["current"],
+                remaining,
+                state["mode"],
+                state.get("repair_level", "intermediate"),
+            )
+            await waiter_event.send(waiter_event.plain_result(self._repair_result_text(result, state["mode"])))
+            controller.stop()
+
+        try:
+            await waiter(event)
+        except TimeoutError:
+            yield event.plain_result("维修计算会话已超时，请重新发送 维修计算。")
 
     async def _readiness_session(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         from astrbot.api.util import SessionController, session_waiter
@@ -11706,25 +12098,10 @@ class DeltaForcePlugin(Star):
                 )
         return "\n".join(lines)
 
-    async def _quick_repair(self, event: AstrMessageEvent, equipment_name: str, remaining_text: str, current_text: str, mode_text: str) -> AsyncGenerator[Any, None]:
-        try:
-            remaining = float(remaining_text)
-            current = float(current_text)
-        except Exception:
-            yield event.plain_result("耐久度参数无效，请输入数字。")
-            return
-        if current <= 0:
-            yield event.plain_result("当前上限必须大于 0。")
-            return
-        equipment = self.calculator.find_equipment(equipment_name)
-        if not equipment:
-            yield event.plain_result(f"未找到装备：{equipment_name}")
-            return
-        mode = "inside" if mode_text in {"局内", "inside"} else "outside"
-        result = self.calculator.calculate_repair(equipment, current, remaining, mode)
+    @staticmethod
+    def _repair_result_text(result: Dict[str, Any], mode: str) -> str:
         if not result.get("success"):
-            yield event.plain_result(f"维修计算失败: {result.get('error')}")
-            return
+            return f"维修计算失败：{result.get('error') or '未知错误'}"
         lines = ["【维修计算结果】", f"维修模式: {result['mode']}", f"护甲: {result['armor']}"]
         if mode == "inside":
             lines.extend(
@@ -11751,7 +12128,93 @@ class DeltaForcePlugin(Star):
                     f"能否出售: {result['marketStatus']}",
                 ]
             )
-        yield event.plain_result("\n".join(lines))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _damage_result_text(result: Dict[str, Any], mode: str, shots: int) -> str:
+        if not result.get("success"):
+            return f"伤害计算失败：{result.get('error') or '未知错误'}"
+        protection = "无护甲"
+        if result.get("helmet") != "无" and result.get("armor") != "无":
+            protection = f"{result['helmet']} + {result['armor']}"
+        elif result.get("helmet") != "无":
+            protection = result["helmet"]
+        elif result.get("armor") != "无":
+            protection = result["armor"]
+        lines = [
+            "【击杀模拟结果】",
+            f"游戏模式: {'烽火地带' if mode == 'sol' else '全面战场'}",
+            f"武器: {result['weapon']}",
+            f"防护: {protection}",
+            f"子弹: {result['bullet']} (穿透等级{result['penetrationLevel']})",
+            f"距离: {result['distance']}m",
+            f"基础伤害: {result['baseDamage']}",
+            f"距离衰减: {result['weaponDecayMultiplier']}",
+            "",
+            "━━━ 击杀情况 ━━━",
+            f"击杀所需: {result['shotsToKill']}发 / {shots}发",
+            f"总伤害: {result['totalDamage']}",
+            f"护甲伤害: {result['totalArmorDamage']}",
+            f"最终生命: {result['finalPlayerHealth']}/100",
+            f"最终护甲: {result['finalArmorDurability']}/{result['maxArmorDurability']}" if result["maxArmorDurability"] else "最终护甲: 无",
+            f"最终头盔: {result['finalHelmetDurability']}/{result['maxHelmetDurability']}" if result["maxHelmetDurability"] else "最终头盔: 无",
+            f"击杀状态: {'已击杀' if result['isKilled'] else '未击杀'}",
+            "",
+            "━━━ 逐发详情 ━━━",
+        ]
+        for shot in result.get("shotResults", []):
+            protector = ""
+            if shot.get("isProtected"):
+                name = "头盔" if shot.get("protectorType") == "helmet" else "护甲"
+                protector = f"({name}{'击碎' if shot.get('protectorDestroyed') else '保护'})"
+            lines.append(f"第{shot['shotNumber']}发: {shot['hitPart']} {shot['damage']} {protector}")
+            lines.append(
+                f"  生命: {shot['playerHealthAfter']}/100, 护甲: {shot['armorDurabilityAfter']}, 头盔: {shot['helmetDurabilityAfter']}"
+            )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _battlefield_damage_result_text(result: Dict[str, Any]) -> str:
+        if not result.get("success"):
+            return f"战场伤害计算失败：{result.get('error') or '未知错误'}"
+        lines = [
+            "【战场伤害计算结果】",
+            "游戏模式: 全面战场",
+            f"武器: {result['weapon']}",
+            f"射击模式: {result['fireMode']}",
+            f"基础伤害: {result['baseDamage']}",
+            f"距离: {result['distance']}m",
+            f"衰减倍率: {float(result['decayMultiplier']):.3f}",
+            f"射速: {result['fireRate']}RPM",
+            f"射击间隔: {float(result['shootingInterval']):.2f}ms",
+            f"扳机延迟: {result['triggerDelay']}ms",
+            "",
+            "━━━ 各部位击杀数据 ━━━",
+        ]
+        for item in result.get("partResults", []):
+            hits = "无法击杀" if item.get("hitsToKill") == "N/A" else f"{item.get('hitsToKill')}发"
+            ttk = "无法计算" if item.get("timeToKill") == "N/A" else f"{item.get('timeToKill')}ms"
+            lines.append(f"{item.get('part')}: {hits} ({ttk})")
+            lines.append(f"  伤害: {item.get('damagePerShot')} (倍率: {item.get('multiplier')})")
+        return "\n".join(lines)
+
+    async def _quick_repair(self, event: AstrMessageEvent, equipment_name: str, remaining_text: str, current_text: str, mode_text: str) -> AsyncGenerator[Any, None]:
+        try:
+            remaining = float(remaining_text)
+            current = float(current_text)
+        except Exception:
+            yield event.plain_result("耐久度参数无效，请输入数字。")
+            return
+        if current <= 0:
+            yield event.plain_result("当前上限必须大于 0。")
+            return
+        equipment = self.calculator.find_equipment(equipment_name)
+        if not equipment:
+            yield event.plain_result(f"未找到装备：{equipment_name}")
+            return
+        mode = "inside" if mode_text in {"局内", "inside"} else "outside"
+        result = self.calculator.calculate_repair(equipment, current, remaining, mode)
+        yield event.plain_result(self._repair_result_text(result, mode))
 
     async def _quick_damage(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         parts = arg.split()
@@ -11793,45 +12256,7 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(hit_error)
             return
         result = self.calculator.calculate_damage(weapon, bullet, helmet, armor, distance, hit_parts or [])
-        if not result.get("success"):
-            yield event.plain_result(f"伤害计算失败: {result.get('error')}")
-            return
-        protection = "无护甲"
-        if result.get("helmet") != "无" and result.get("armor") != "无":
-            protection = f"{result['helmet']} + {result['armor']}"
-        elif result.get("helmet") != "无":
-            protection = result["helmet"]
-        elif result.get("armor") != "无":
-            protection = result["armor"]
-        lines = [
-            "【击杀模拟结果】",
-            f"游戏模式: {'烽火地带' if mode == 'sol' else '全面战场'}",
-            f"武器: {result['weapon']}",
-            f"防护: {protection}",
-            f"子弹: {result['bullet']} (穿透等级{result['penetrationLevel']})",
-            f"距离: {result['distance']}m",
-            f"基础伤害: {result['baseDamage']}",
-            f"距离衰减: {result['weaponDecayMultiplier']}",
-            "",
-            "━━━ 击杀情况 ━━━",
-            f"击杀所需: {result['shotsToKill']}发 / {shots}发",
-            f"总伤害: {result['totalDamage']}",
-            f"护甲伤害: {result['totalArmorDamage']}",
-            f"最终生命: {result['finalPlayerHealth']}/100",
-            f"最终护甲: {result['finalArmorDurability']}/{result['maxArmorDurability']}" if result["maxArmorDurability"] else "最终护甲: 无",
-            f"最终头盔: {result['finalHelmetDurability']}/{result['maxHelmetDurability']}" if result["maxHelmetDurability"] else "最终头盔: 无",
-            f"击杀状态: {'已击杀' if result['isKilled'] else '未击杀'}",
-            "",
-            "━━━ 逐发详情 ━━━",
-        ]
-        for shot in result.get("shotResults", []):
-            protector = ""
-            if shot.get("isProtected"):
-                name = "头盔" if shot.get("protectorType") == "helmet" else "护甲"
-                protector = f"({name}{'击碎' if shot.get('protectorDestroyed') else '保护'})"
-            lines.append(f"第{shot['shotNumber']}发: {shot['hitPart']} {shot['damage']} {protector}")
-            lines.append(f"  生命: {shot['playerHealthAfter']}/100, 护甲: {shot['armorDurabilityAfter']}, 头盔: {shot['helmetDurabilityAfter']}")
-        yield event.plain_result("\n".join(lines))
+        yield event.plain_result(self._damage_result_text(result, mode, shots))
 
     async def _object_info(self, keyword: str) -> Optional[Dict[str, Any]]:
         res = await self.client.object_search(keyword, limit="1")
