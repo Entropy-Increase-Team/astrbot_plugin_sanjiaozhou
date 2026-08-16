@@ -73,10 +73,16 @@ VOICE_CATEGORY_ALIASES = {
     "单人模式": "Voice_SOL_MS",
 }
 VOICE_CATEGORY_VALUES = {value.casefold(): value for value in VOICE_CATEGORY_ALIASES.values()}
+VOICE_CATEGORY_LABELS = {value: key for key, value in VOICE_CATEGORY_ALIASES.items()}
 VOICE_TAG_PATTERN = re.compile(
-    r"(?:boss-|task-|evac-|eggs-|bf-).+|BF_.+|haavk|commander|babel|Beginner",
+    r"(?:boss|task|evac|eggs|event|festival|bf(?:-load)?|commander|other|skin|enter|hunt)(?:[-_].+)?|haavk|babel|beginner",
     re.I,
 )
+VOICE_TAG_ALIAS_SUFFIXES = ("游戏模式", "战场语音", "过场语音", "语音", "行动", "任务")
+VOICE_TAG_CACHE_TTL_SECONDS = 6 * 60 * 60
+VOICE_TAG_FAILURE_TTL_SECONDS = 60
+VOICE_SCENE_LABELS = {"InGame": "局内", "OutGame": "局外"}
+VOICE_ACTION_LABELS = {"Breath": "呼吸", "Combat": "战斗", "Death": "死亡", "Pain": "受伤"}
 MUSIC_MEMORY_TTL_SECONDS = 2 * 60
 MUSIC_LIST_PAGE_SIZE = 10
 
@@ -10231,7 +10237,9 @@ class DeltaForcePlugin(Star):
             for index, item in enumerate(categories, 1):
                 if isinstance(item, dict):
                     name = item.get("category") or item.get("name") or "未分类"
-                    lines.append(f"{index}. {name}：{int(self._number(item.get('count'), 0))} 条")
+                    label = VOICE_CATEGORY_LABELS.get(str(name), str(name))
+                    display = f"{label}（{name}）" if label != name else str(name)
+                    lines.append(f"{index}. {display}：{int(self._number(item.get('count'), 0))} 条")
             yield event.plain_result("\n".join(lines))
             return
         total = int(self._number(data.get("totalFiles") if isinstance(data, dict) else 0, 0))
@@ -10243,8 +10251,81 @@ class DeltaForcePlugin(Star):
             if isinstance(item, dict):
                 name = item.get("category") or item.get("name") or "未分类"
                 count = int(self._number(item.get("fileCount") or item.get("count"), 0))
-                lines.append(f"{name}：{count} 条")
+                label = VOICE_CATEGORY_LABELS.get(str(name), str(name))
+                display = f"{label}（{name}）" if label != name else str(name)
+                lines.append(f"{display}：{count} 条")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _voice_tag_alias_candidates(description: Any) -> List[str]:
+        aliases: List[str] = []
+        for part in re.split(r"[/、]", str(description or "")):
+            keyword = part.strip()
+            if not keyword:
+                continue
+            aliases.append(keyword)
+            for suffix in VOICE_TAG_ALIAS_SUFFIXES:
+                if keyword.endswith(suffix) and len(keyword) > len(suffix):
+                    aliases.append(keyword[: -len(suffix)].strip())
+        return [value for value in dict.fromkeys(aliases) if value]
+
+    async def _get_voice_tag_aliases(self) -> Dict[str, str]:
+        now = dt.datetime.now().timestamp()
+        cached = getattr(self, "_voice_tag_aliases", {})
+        if now < self._num(getattr(self, "_voice_tag_aliases_expires_at", 0)):
+            return cached if isinstance(cached, dict) else {}
+
+        endpoint = getattr(self.client, "audio_tags", None)
+        if not callable(endpoint):
+            return cached if isinstance(cached, dict) else {}
+        try:
+            response = await endpoint()
+        except Exception:
+            response = None
+
+        if isinstance(response, dict) and self._ok(response):
+            rows = self._first_list(self._data(response, {}), ("tags", "items", "list", "data"))
+            aliases: Dict[str, str] = {}
+            for item in rows:
+                if isinstance(item, dict):
+                    tag = str(item.get("tag") or item.get("name") or "").strip()
+                    description = item.get("description") or ""
+                else:
+                    tag = str(item or "").strip()
+                    description = ""
+                if not tag:
+                    continue
+                aliases.setdefault(tag.casefold(), tag)
+                for alias in self._voice_tag_alias_candidates(description):
+                    aliases.setdefault(alias.casefold(), tag)
+            self._voice_tag_aliases = aliases
+            self._voice_tag_aliases_expires_at = now + VOICE_TAG_CACHE_TTL_SECONDS
+            return aliases
+
+        self._voice_tag_aliases = cached if isinstance(cached, dict) else {}
+        self._voice_tag_aliases_expires_at = now + VOICE_TAG_FAILURE_TTL_SECONDS
+        return self._voice_tag_aliases
+
+    async def _resolve_voice_tag_params(self, arg: str, params: Dict[str, str]) -> Dict[str, str]:
+        raw_tag = str(params.get("tag") or "").strip()
+        if raw_tag:
+            if VOICE_TAG_PATTERN.fullmatch(raw_tag):
+                return params
+            aliases = await self._get_voice_tag_aliases()
+            mapped = aliases.get(raw_tag.casefold())
+            if mapped:
+                resolved = {"tag": mapped, "count": "1"}
+                if params.get("expiresIn"):
+                    resolved["expiresIn"] = params["expiresIn"]
+                return resolved
+            return params
+
+        if self._parse_key_values(str(arg or "")) or not params.get("character"):
+            return params
+        first = str(arg or "").split(maxsplit=1)[0].strip()
+        aliases = await self._get_voice_tag_aliases()
+        mapped = aliases.get(first.casefold())
+        return {"tag": mapped, "count": "1"} if mapped else params
 
     @staticmethod
     def _parse_voice_params(arg: str) -> Dict[str, str]:
@@ -10306,7 +10387,7 @@ class DeltaForcePlugin(Star):
         return params
 
     async def _voice(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
-        params = self._parse_voice_params(arg)
+        params = await self._resolve_voice_tag_params(arg, self._parse_voice_params(arg))
         if params.get("category") or params.get("tag") or len(params) == 1:
             res = await self.client.audio_random(params)
         else:
@@ -10327,8 +10408,26 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("语音数据缺少可播放地址。")
             return
         character = audio.get("character") if isinstance(audio.get("character"), dict) else {}
-        title = character.get("name") or audio.get("fileName") or "三角洲语音"
-        yield event.chain_result([Comp.Plain(f"{title}\n"), Comp.Record.fromURL(url)])
+        title = str(character.get("name") or audio.get("fileName") or "三角洲语音")
+        profession = str(character.get("profession") or "").strip()
+        lines = [f"【{title}】" + (f"（{profession}）" if profession else "")]
+        details: List[str] = []
+        scene = str(audio.get("scene") or "").strip()
+        action = str(audio.get("actionType") or "").strip()
+        action_detail = str(audio.get("actionDetail") or "").strip()
+        if scene:
+            details.append(f"场景：{VOICE_SCENE_LABELS.get(scene, scene)}")
+        if action:
+            details.append(f"动作：{VOICE_ACTION_LABELS.get(action, action)}")
+        if action_detail:
+            details.append(f"细节：{action_detail[:100]}")
+        if details:
+            lines.append("｜".join(details))
+        expires_in = max(0, int(self._number(download.get("expiresIn"), 0)))
+        if expires_in:
+            minutes, seconds = divmod(expires_in, 60)
+            lines.append(f"链接有效期：{minutes} 分 {seconds} 秒")
+        yield event.chain_result([Comp.Plain("\n".join(lines) + "\n"), Comp.Record.fromURL(url)])
 
     async def _music(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         if arg:

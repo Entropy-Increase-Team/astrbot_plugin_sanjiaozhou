@@ -23,7 +23,7 @@ entertainmentHelpList:
         desc: "随机播放语音"
       - icon: 87
         title: "语音 [角色名/标签/分类]"
-        desc: "播放指定角色、标签或分类语音"
+        desc: "支持渡鸦、破壁等中文标签及后端原始标签"
       - icon: 87
         title: "语音 [角色] [场景]"
         desc: "播放指定场景语音"
