@@ -627,11 +627,7 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/tools/dailykeyword")
 
     async def activities(self):
-        return {
-            "code": 501,
-            "message": "最新版后端未提供活动日历接口。",
-            "data": None,
-        }
+        return await self.get("/api/v1/df/activities")
 
     async def competition_leaderboard(self, params: Optional[Dict[str, Any]] = None):
         return await self.get(

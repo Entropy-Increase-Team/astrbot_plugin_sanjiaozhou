@@ -12332,11 +12332,6 @@ class DeltaForcePlugin(Star):
 
     async def _activities(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.activities()
-        if res.get("code") == 501:
-            yield event.plain_result(
-                "活动日历当前不可用：最新版后端已移除对应接口，插件不会继续请求旧地址。"
-            )
-            return
         if not self._ok(res):
             yield event.plain_result(f"活动日历查询失败: {self._message_of(res)}")
             return
