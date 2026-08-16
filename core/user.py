@@ -35,6 +35,22 @@ class BindingManager:
     def _uid(user_id: Any) -> str:
         return str(user_id or "").strip()
 
+    @staticmethod
+    def _bool_value(value: Any, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on", "有效", "是"}:
+                return True
+            if normalized in {"false", "0", "no", "off", "无效", "否", ""}:
+                return False
+        return bool(value)
+
     async def get_user_bindings(self, user_id: Any) -> List[Dict[str, Any]]:
         return [dict(x) for x in self._data.get(self._uid(user_id), [])]
 
@@ -46,6 +62,82 @@ class BindingManager:
             if item.get("is_primary"):
                 return item
         return bindings[0]
+
+    async def get_local_stats(self) -> Dict[str, Any]:
+        """聚合本地绑定数据，只返回计数，不暴露账号凭证。"""
+        source = self._data
+        if not isinstance(source, dict):
+            source = {}
+            ignored_entries = 1
+        else:
+            ignored_entries = 0
+
+        total_users = 0
+        total_accounts = 0
+        valid_accounts = 0
+        primary_accounts = 0
+        login_types: Dict[str, Dict[str, int]] = {}
+        known_login_types = {
+            "qq",
+            "wechat",
+            "wegame",
+            "wegamewechat",
+            "wegame_wechat",
+            "qqsafe",
+            "gamesafe",
+            "qqck",
+            "qq_ck",
+            "ck",
+            "cookie",
+            "unknown",
+        }
+
+        for raw_user_id, raw_rows in list(source.items()):
+            user_id = self._uid(raw_user_id)
+            if not user_id or not isinstance(raw_rows, list):
+                ignored_entries += 1
+                continue
+
+            user_accounts = 0
+            for raw_item in list(raw_rows):
+                if not isinstance(raw_item, dict):
+                    ignored_entries += 1
+                    continue
+
+                user_accounts += 1
+                total_accounts += 1
+                is_valid = self._bool_value(raw_item.get("is_valid", True), True)
+                if is_valid:
+                    valid_accounts += 1
+                if self._bool_value(raw_item.get("is_primary", False), False):
+                    primary_accounts += 1
+
+                login_type = str(
+                    raw_item.get("login_type")
+                    or raw_item.get("token_type")
+                    or "unknown"
+                ).strip().lower() or "unknown"
+                if login_type not in known_login_types:
+                    login_type = "other"
+                type_stats = login_types.setdefault(
+                    login_type,
+                    {"total": 0, "valid": 0, "invalid": 0},
+                )
+                type_stats["total"] += 1
+                type_stats["valid" if is_valid else "invalid"] += 1
+
+            if user_accounts:
+                total_users += 1
+
+        return {
+            "total_users": total_users,
+            "total_accounts": total_accounts,
+            "valid_accounts": valid_accounts,
+            "invalid_accounts": total_accounts - valid_accounts,
+            "primary_accounts": primary_accounts,
+            "login_types": login_types,
+            "ignored_entries": ignored_entries,
+        }
 
     async def upsert_binding(self, user_id: Any, binding: Dict[str, Any]) -> Dict[str, Any]:
         uid = self._uid(user_id)

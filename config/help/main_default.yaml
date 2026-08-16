@@ -38,7 +38,7 @@ helpList:
           desc: "查看广播通知设置状态"
         - icon: 85
           title: "用户统计"
-          desc: "查看 AstrBot 本地绑定统计"
+          desc: "查看本地绑定、有效性和登录方式统计"
         - icon: 64
           title: "ws连接 | ws断开"
           desc: "连接并订阅/断开战绩WebSocket"

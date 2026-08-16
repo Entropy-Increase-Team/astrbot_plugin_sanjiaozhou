@@ -8254,31 +8254,69 @@ class DeltaForcePlugin(Star):
                     lines.append(f"- {name}{f'：{effect}' if effect else ''}")
         return "\n".join(lines[:24])
 
+    @staticmethod
+    def _local_login_type_name(login_type: Any) -> str:
+        key = str(login_type or "unknown").strip().lower() or "unknown"
+        names = {
+            "qq": "QQ 登录",
+            "wechat": "微信登录",
+            "wegame": "WeGame 登录",
+            "wegamewechat": "WeGame 微信登录",
+            "wegame_wechat": "WeGame 微信登录",
+            "qqsafe": "QQ 安全中心",
+            "gamesafe": "微信安全中心",
+            "qqck": "QQ Cookie 登录",
+            "qq_ck": "QQ Cookie 登录",
+            "ck": "Cookie 登录",
+            "cookie": "Cookie 登录",
+            "unknown": "未知方式",
+            "other": "其他方式",
+        }
+        return names.get(key, "其他方式")
+
     async def _user_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         if not event.is_admin():
             yield event.plain_result("抱歉，只有管理员可以查看本地用户统计。")
             return
-        all_bindings = getattr(self.bindings, "_data", {}) or {}
-        total_users = len(all_bindings)
-        total_accounts = sum(len(v) for v in all_bindings.values() if isinstance(v, list))
-        valid_accounts = 0
-        login_types: Dict[str, int] = {}
-        for rows in all_bindings.values():
-            if not isinstance(rows, list):
-                continue
-            for item in rows:
-                if item.get("is_valid", True):
-                    valid_accounts += 1
-                login_type = item.get("login_type") or item.get("token_type") or "unknown"
-                login_types[login_type] = login_types.get(login_type, 0) + 1
+        try:
+            stats = await self.bindings.get_local_stats()
+            if not isinstance(stats, dict):
+                raise TypeError("local stats must be a dictionary")
+        except Exception as exc:
+            logger.warning(
+                f"[DeltaForce Stats] 读取本地绑定统计失败: {type(exc).__name__}"
+            )
+            yield event.plain_result("读取本地绑定统计失败，请检查绑定数据后重试。")
+            return
+
+        login_types = stats.get("login_types") or {}
         lines = [
             "【三角洲行动 - AstrBot 本地用户统计】",
-            f"绑定用户数: {total_users}",
-            f"绑定账号数: {total_accounts}",
-            f"有效账号数: {valid_accounts}",
+            f"绑定用户数: {stats.get('total_users', 0)}",
+            f"绑定账号数: {stats.get('total_accounts', 0)}",
+            f"有效账号数: {stats.get('valid_accounts', 0)}",
+            f"无效账号数: {stats.get('invalid_accounts', 0)}",
+            f"主账号数: {stats.get('primary_accounts', 0)}",
             "登录方式:",
         ]
-        lines.extend(f"- {key}: {value}" for key, value in sorted(login_types.items()))
+        if isinstance(login_types, dict) and login_types:
+            for key, type_stats in sorted(
+                login_types.items(),
+                key=lambda item: self._local_login_type_name(item[0]),
+            ):
+                if not isinstance(type_stats, dict):
+                    continue
+                lines.append(
+                    f"- {self._local_login_type_name(key)}: "
+                    f"{type_stats.get('total', 0)} "
+                    f"(有效 {type_stats.get('valid', 0)}，"
+                    f"无效 {type_stats.get('invalid', 0)})"
+                )
+        if lines[-1] == "登录方式:":
+            lines.append("- 暂无绑定")
+        ignored_entries = stats.get("ignored_entries", 0)
+        if isinstance(ignored_entries, int) and ignored_entries > 0:
+            lines.append(f"异常存储项: {ignored_entries}（已忽略）")
         lines.append("说明: 该统计来自 AstrBot 本地绑定文件，不读取云崽配置或数据库。")
         yield event.plain_result("\n".join(lines))
 
