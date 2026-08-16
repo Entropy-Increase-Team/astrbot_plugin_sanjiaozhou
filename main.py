@@ -7543,20 +7543,100 @@ class DeltaForcePlugin(Star):
         rows = self._first_list(raw, ("list", "items", "data"))
         health = rows[0] if rows else raw if isinstance(raw, dict) else {}
         detail = (health.get("healthyDetail") or health.get("healthy_detail") or {}) if isinstance(health, dict) else {}
-        if not detail:
+        if not isinstance(detail, dict) or not detail:
             yield event.plain_result("未查询到健康状态详细信息。")
             return
-        debuffs = []
-        for group in detail.get("deBuffList") or detail.get("debuffList") or []:
-            area = group.get("area") or "未知部位"
-            statuses = group.get("list") or []
-            for idx in range(0, len(statuses), 2):
-                part = statuses[idx : idx + 2]
-                debuffs.append({"area": area, "list": part, "isMerged": len(part) == 2})
-        data = {"deBuffList": debuffs, "buffList": detail.get("buffList") or []}
-        text = self._summary_dict("健康状态", detail)
-        async for r in self._render_or_text(event, "Template/healthInfo/healthInfo.html", data, text, {"viewport_width": 760, "viewport_height": 1200}):
+        data = self._prepare_health_detail(detail)
+        text = self._health_info_text(data)
+        if not data["deBuffList"] and not data["buffList"]:
+            yield event.plain_result(text)
+            return
+        async for r in self._render_or_text(event, "Template/healthInfo/healthInfo.html", data, text, {"viewport_width": 1000, "viewport_height": 1200}):
             yield r
+
+    @staticmethod
+    def _prepare_health_detail(detail: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        debuffs: List[Dict[str, Any]] = []
+        raw_debuffs = detail.get("deBuffList") or detail.get("debuffList") or []
+        if isinstance(raw_debuffs, list):
+            for group in raw_debuffs:
+                if not isinstance(group, dict):
+                    continue
+                raw_statuses = group.get("list")
+                statuses = (
+                    [item for item in raw_statuses if isinstance(item, dict)]
+                    if isinstance(raw_statuses, list)
+                    else []
+                )
+                for index in range(0, len(statuses), 2):
+                    part = statuses[index : index + 2]
+                    debuffs.append(
+                        {
+                            "area": str(group.get("area") or "未知部位"),
+                            "list": part,
+                            "isMerged": len(part) == 2,
+                        }
+                    )
+
+        buffs: List[Dict[str, Any]] = []
+        raw_buffs = detail.get("buffList") or detail.get("buff_list") or []
+        if isinstance(raw_buffs, list):
+            for group in raw_buffs:
+                if not isinstance(group, dict):
+                    continue
+                raw_statuses = group.get("list")
+                if isinstance(raw_statuses, list):
+                    statuses = [item for item in raw_statuses if isinstance(item, dict)]
+                elif any(group.get(key) for key in ("title", "status", "name", "effect", "pic")):
+                    statuses = [group]
+                else:
+                    statuses = []
+                if statuses:
+                    normalized = dict(group)
+                    normalized["list"] = statuses
+                    buffs.append(normalized)
+        return {"deBuffList": debuffs, "buffList": buffs}
+
+    @staticmethod
+    def _health_status_name(status: Dict[str, Any], fallback: str) -> str:
+        return str(status.get("title") or status.get("status") or status.get("name") or fallback)
+
+    @classmethod
+    def _health_info_text(cls, data: Dict[str, List[Dict[str, Any]]]) -> str:
+        debuffs = data.get("deBuffList") or []
+        buffs = data.get("buffList") or []
+        debuff_count = sum(len(group.get("list") or []) for group in debuffs)
+        buff_count = sum(len(group.get("list") or []) for group in buffs)
+        lines = [
+            "【健康状态】",
+            f"负面状态: {debuff_count} 项",
+            f"增益状态: {buff_count} 项",
+        ]
+        if not debuff_count and not buff_count:
+            lines.append("当前没有可显示的增益或负面状态。")
+            return "\n".join(lines)
+
+        if debuff_count:
+            lines.append("负面状态明细:")
+            for group in debuffs:
+                area = str(group.get("area") or "未知部位")
+                names = [
+                    cls._health_status_name(status, "未知状态")
+                    for status in group.get("list") or []
+                    if isinstance(status, dict)
+                ]
+                if names:
+                    lines.append(f"- {area}: {'、'.join(names)}")
+        if buff_count:
+            lines.append("增益状态明细:")
+            for group in buffs:
+                for status in group.get("list") or []:
+                    if not isinstance(status, dict):
+                        continue
+                    name = cls._health_status_name(status, "未知增益")
+                    effect = str(status.get("effect") or "").strip()
+                    lines.append(f"- {name}{f'：{effect}' if effect else ''}")
+        return "\n".join(lines[:24])
 
     async def _user_stats(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         if not event.is_admin():
@@ -8156,7 +8236,8 @@ class DeltaForcePlugin(Star):
         try:
             res = await self.client.health()
         except Exception as exc:
-            yield event.plain_result(f"服务器状态查询失败: {exc}")
+            logger.warning(f"[三角洲服务器状态] 查询异常：{type(exc).__name__}")
+            yield event.plain_result("服务器状态查询异常，请稍后重试。")
             return
         if not self._ok(res):
             yield event.plain_result(f"服务器状态查询失败: {self._message_of(res)}")
@@ -8174,10 +8255,18 @@ class DeltaForcePlugin(Star):
         system = data.get("system") if isinstance(data.get("system"), dict) else {}
         memory = system.get("memory") if isinstance(system.get("memory"), dict) else {}
 
-        mongo_text = "已连接" if mongodb.get("status") == "connected" else "未连接"
-        if mongodb.get("latencyMs") is not None:
+        mongo_status = str(mongodb.get("status") or "").lower()
+        redis_status = str(redis.get("status") or "").lower()
+        mongo_text = {"connected": "已连接", "disconnected": "未连接"}.get(
+            mongo_status,
+            mongo_status or "状态不可用",
+        )
+        if mongodb and mongodb.get("latencyMs") is not None:
             mongo_text += f"（延迟 {mongodb.get('latencyMs')} ms）"
-        redis_text = "已连接" if redis.get("status") == "connected" else "未连接"
+        redis_text = {"connected": "已连接", "disconnected": "未连接"}.get(
+            redis_status,
+            redis_status or "状态不可用",
+        )
         runtime = " / ".join(
             str(value)
             for value in (system.get("goVersion"), system.get("platform"), system.get("arch"))
@@ -8187,7 +8276,7 @@ class DeltaForcePlugin(Star):
             "【三角洲 API 服务器状态】",
             f"服务状态: {status_names.get(status, status or '未知')}",
             f"运行时间: {self.data_mgr.fmt_duration(data.get('uptime') or 0)}",
-            f"检查时间: {data.get('timestamp') or '未知'}",
+            f"检查时间: {self._format_health_timestamp(data.get('timestamp'))}",
             f"MongoDB: {mongo_text}",
             f"Redis: {redis_text}",
         ]
@@ -8202,6 +8291,19 @@ class DeltaForcePlugin(Star):
         if system.get("goroutines") is not None:
             lines.append(f"协程数: {system.get('goroutines')}")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _format_health_timestamp(value: Any) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return "未知"
+        try:
+            parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return text
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
     async def _operator_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.operators(detail=False)

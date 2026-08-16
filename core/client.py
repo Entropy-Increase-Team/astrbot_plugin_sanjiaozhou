@@ -685,7 +685,7 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/object/rankscore", require_key=False)
 
     async def object_health(self):
-        return await self.get("/api/v1/df/object/health", require_key=False)
+        return await self.get("/api/v1/df/object/health")
 
     async def object_collection_map(self):
         return await self.get(

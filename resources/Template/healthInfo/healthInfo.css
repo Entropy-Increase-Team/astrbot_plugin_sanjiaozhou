@@ -129,7 +129,7 @@ body {
 /* ========== 状态列表样式 ========== */
 .status-list {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 12px;
     grid-auto-flow: row;
 }
@@ -147,6 +147,7 @@ body {
     width: fit-content;
     max-width: 100%;
     box-sizing: border-box;
+    overflow-wrap: anywhere;
 }
 
 /* ========== 状态卡片样式 ========== */
@@ -159,6 +160,7 @@ body {
     flex-direction: column;
     gap: 10px;
     transition: all 0.2s ease;
+    min-width: 0;
 }
 
 /* ========== 合并卡片样式 ========== */
@@ -174,6 +176,7 @@ body {
 
 .merged-status-item {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -199,6 +202,7 @@ body {
     align-items: center;
     gap: 12px;
     margin-bottom: 4px;
+    min-width: 0;
 }
 
 .status-icon-wrapper {
@@ -236,6 +240,8 @@ body {
     font-weight: 700;
     flex: 1;
     line-height: 1.4;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .debuff-card .status-name {
@@ -265,5 +271,7 @@ body {
 .info-value {
     color: rgba(255, 255, 255, 0.9);
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
     word-break: break-word;
 }

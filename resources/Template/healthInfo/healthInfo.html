@@ -38,10 +38,10 @@
                                         <div class="status-header">
                                             {{if status.pic}}
                                             <div class="status-icon-wrapper">
-                                                <img class="status-icon" src="{{status.pic}}" alt="{{status.title || status.status || '未知状态'}}" onerror="this.style.display='none';" />
+                                                <img class="status-icon" src="{{status.pic}}" alt="{{status.title || status.status || status.name || '未知状态'}}" onerror="this.style.display='none';" />
                                             </div>
                                             {{/if}}
-                                            <div class="status-name">{{status.title || status.status || '未知状态'}}</div>
+                                            <div class="status-name">{{status.title || status.status || status.name || '未知状态'}}</div>
                                         </div>
                                         {{if status.trigger}}
                                         <div class="status-info">
@@ -70,10 +70,10 @@
                                 <div class="status-header">
                                     {{if status.pic}}
                                     <div class="status-icon-wrapper">
-                                        <img class="status-icon" src="{{status.pic}}" alt="{{status.title || status.status || '未知状态'}}" onerror="this.style.display='none';" />
+                                        <img class="status-icon" src="{{status.pic}}" alt="{{status.title || status.status || status.name || '未知状态'}}" onerror="this.style.display='none';" />
                                     </div>
                                     {{/if}}
-                                    <div class="status-name">{{status.title || status.status || '未知状态'}}</div>
+                                    <div class="status-name">{{status.title || status.status || status.name || '未知状态'}}</div>
                                 </div>
                                 {{if status.trigger}}
                                 <div class="status-info">
@@ -108,10 +108,10 @@
                                 <div class="status-header">
                                     {{if buff.pic}}
                                     <div class="status-icon-wrapper">
-                                        <img class="status-icon" src="{{buff.pic}}" alt="{{buff.title || '未知增益'}}" onerror="this.style.display='none';" />
+                                        <img class="status-icon" src="{{buff.pic}}" alt="{{buff.title || buff.status || buff.name || '未知增益'}}" onerror="this.style.display='none';" />
                                     </div>
                                     {{/if}}
-                                    <div class="status-name">{{buff.title || '未知增益'}}</div>
+                                    <div class="status-name">{{buff.title || buff.status || buff.name || '未知增益'}}</div>
                                 </div>
                                 {{if buff.effect}}
                                 <div class="status-info">
