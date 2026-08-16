@@ -8745,65 +8745,190 @@ class DeltaForcePlugin(Star):
         return parsed.strftime("%Y-%m-%d %H:%M:%S")
 
     async def _operator_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        res = await self.client.operators(detail=False)
+        try:
+            res = await self.client.operators(detail=False)
+        except Exception as exc:
+            logger.warning(f"[三角洲干员列表] 请求异常：{type(exc).__name__}")
+            yield event.plain_result("干员列表查询失败: 请求异常，请稍后重试。")
+            return
         if not self._ok(res):
             yield event.plain_result(f"干员列表查询失败: {self._message_of(res)}")
             return
-        rows = self._first_list(self._data(res, []), ("operators", "items", "list", "data"))
+        rows, valid = self._operator_rows(self._payload(res, None))
+        if not valid:
+            yield event.plain_result("干员列表查询失败: API 返回数据格式不正确。")
+            return
         if not rows:
             yield event.plain_result("未查询到任何干员信息。")
             return
-        groups: Dict[str, List[str]] = {"突击": [], "工程": [], "支援": [], "侦察": [], "未知": []}
+        groups: Dict[str, List[str]] = {}
         for item in rows:
-            if not isinstance(item, dict):
-                continue
             operator_id = int(self._num(item.get("id") or item.get("operatorId")))
-            army_type = str(item.get("armyType") or "")
+            army_type = str(item.get("armyType") or "").strip()
             if not army_type:
                 army_type = next(
                     (name for lower, upper, name in ((10000, 20000, "突击"), (20000, 30000, "支援"), (30000, 40000, "工程"), (40000, 50000, "侦察")) if lower <= operator_id < upper),
                     "未知",
                 )
-            name = item.get("name") or item.get("operator") or item.get("operatorName") or item.get("fullName") or "未知干员"
+            name = item.get("name") or item.get("operator") or item.get("fullName") or item.get("operatorName") or "未知干员"
             groups.setdefault(army_type, []).append(str(name))
-        lines = [f"【三角洲干员列表】共 {sum(len(values) for values in groups.values())} 名"]
-        for army_type in ("突击", "工程", "支援", "侦察", "未知"):
-            if groups.get(army_type):
-                lines.append(f"\n【{army_type}】({len(groups[army_type])} 人)")
-                lines.extend(f"- {name}" for name in groups[army_type])
+        if not groups:
+            yield event.plain_result("干员列表查询失败: API 未返回有效干员数据。")
+            return
+        army_order = ("突击", "工程", "支援", "侦察")
+        sorted_types = sorted(
+            groups,
+            key=lambda value: (
+                army_order.index(value) if value in army_order else len(army_order),
+                value,
+            ),
+        )
+        lines = [f"【干员列表】\n共 {sum(len(values) for values in groups.values())} 个干员"]
+        for army_type in sorted_types:
+            lines.append(f"\n【{army_type}】({len(groups[army_type])} 人)")
+            lines.extend(f"  • {operator_name}" for operator_name in groups[army_type])
         yield event.plain_result("\n".join(lines))
 
     async def _operator_info(self, event: AstrMessageEvent, name: str) -> AsyncGenerator[Any, None]:
-        res = await self.client.operators(detail=True)
+        query = str(name or "").strip()
+        if not query:
+            yield event.plain_result("请输入干员名称，例如：干员 乌鲁鲁")
+            return
+        try:
+            res = await self.client.operators(detail=True)
+        except Exception as exc:
+            logger.warning(f"[三角洲干员详情] 请求异常：{type(exc).__name__}")
+            yield event.plain_result("干员查询失败: 请求异常，请稍后重试。")
+            return
         if not self._ok(res):
             yield event.plain_result(f"干员查询失败: {self._message_of(res)}")
             return
-        rows = self._first_list(self._data(res, []), ("operators", "items", "list", "data"))
-        target = None
-        for item in rows:
-            if not isinstance(item, dict):
-                continue
-            item_name = str(item.get("operator") or item.get("name") or item.get("operatorName") or "")
-            full_name = str(item.get("fullName") or "")
-            if name in {item_name, full_name} or name in item_name or name in full_name:
-                target = item
-                break
-        if not target:
-            yield event.plain_result(f"未找到干员：{name}")
+        rows, valid = self._operator_rows(self._payload(res, None))
+        if not valid:
+            yield event.plain_result("干员查询失败: API 返回数据格式不正确。")
             return
-        op_name = target.get("operator") or target.get("name") or target.get("operatorName") or name
-        abilities = target.get("abilitiesList") or target.get("abilities") or target.get("abilityList") or target.get("skills") or []
+        if not rows:
+            yield event.plain_result("未找到任何干员信息。")
+            return
+        matched: List[Dict[str, Any]] = []
+        for item in rows:
+            item_name = str(item.get("operator") or item.get("name") or item.get("operatorName") or "").strip()
+            full_name = str(item.get("fullName") or "").strip()
+            if any(
+                candidate and (query in candidate or candidate in query)
+                for candidate in (item_name, full_name)
+            ):
+                matched.append(item)
+        if not matched:
+            yield event.plain_result(f"未找到干员“{query}”的信息，请检查名称是否正确。")
+            return
+        target = next(
+            (
+                item
+                for item in matched
+                if query
+                in {
+                    str(item.get("operator") or item.get("name") or item.get("operatorName") or "").strip(),
+                    str(item.get("fullName") or "").strip(),
+                }
+            ),
+            matched[0],
+        )
+        if len(matched) > 1:
+            names = "、".join(
+                str(item.get("operator") or item.get("fullName") or item.get("name") or "未知干员")
+                for item in matched
+            )
+            yield event.plain_result(f"找到多个匹配的干员：{names}，将显示第一个匹配结果。")
+
+        op_name = str(target.get("operator") or target.get("name") or target.get("operatorName") or query)
+        full_name = str(target.get("fullName") or "").strip()
+        english_match = re.search(r"[A-Za-z\s·]+", full_name)
+        english_name = english_match.group(0).strip().upper() if english_match else ""
+        raw_abilities = target.get("abilitiesList") or target.get("abilities") or target.get("abilityList") or target.get("skills") or []
+        abilities = [
+            {
+                "abilityName": ability.get("abilityName") or ability.get("name") or "未知技能",
+                "abilityType": ability.get("abilityType") or ability.get("type") or "",
+                "abilityTypeCN": ability.get("abilityTypeCN") or ability.get("abilityType") or ability.get("type") or "",
+                "abilityDesc": ability.get("abilityDesc") or ability.get("description") or ability.get("desc") or "",
+                "abilityPic": ability.get("abilityPic") or ability.get("pic") or ability.get("icon") or "",
+            }
+            for ability in raw_abilities
+            if isinstance(ability, dict)
+        ] if isinstance(raw_abilities, list) else []
+        local_pic = self.data_mgr.get_operator_image_path(op_name) or ""
+        local_pic_path = self.renderer.res_path / local_pic if local_pic else None
+        local_pic_uri = (
+            local_pic_path.as_uri()
+            if local_pic_path is not None and local_pic_path.is_file()
+            else ""
+        )
+        operator_pic = target.get("pic") or target.get("operatorPic") or local_pic_uri
         render_data = {
             "operatorName": op_name,
-            "fullName": target.get("fullName") or target.get("englishName") or "",
-            "operatorPic": target.get("pic") or target.get("operatorPic") or (self.renderer.res_path.as_uri() + f"/imgs/operator/{op_name}.webp"),
+            "fullName": full_name,
+            "englishName": english_name,
+            "operatorPic": operator_pic,
             "armyType": target.get("armyType") or target.get("type") or "",
             "armyTypeDesc": target.get("armyTypeDesc") or "",
             "abilitiesList": abilities,
         }
-        text = self._summary_dict(f"干员 {op_name}", target)
-        async for r in self._render_or_text(event, "Template/operator/operator.html", render_data, text, {"viewport_width": 1100, "viewport_height": 1200}):
-            yield r
+        text = self._operator_info_text(render_data)
+        try:
+            async for result in self._render_or_text(
+                event,
+                "Template/operator/operator.html",
+                render_data,
+                text,
+                {"viewport_width": 900, "viewport_height": 1200, "device_scale_factor": 1},
+            ):
+                yield result
+        except Exception as exc:
+            logger.warning(f"[三角洲干员详情] 图片渲染失败：{type(exc).__name__}")
+            yield event.plain_result(text)
+
+    @staticmethod
+    def _operator_rows(payload: Any) -> Tuple[List[Dict[str, Any]], bool]:
+        if isinstance(payload, list):
+            return [item for item in payload if isinstance(item, dict)], True
+        if not isinstance(payload, dict):
+            return [], False
+        for key in ("list", "operators", "items", "data"):
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if not isinstance(value, list):
+                return [], False
+            return [item for item in value if isinstance(item, dict)], True
+        return [], False
+
+    @staticmethod
+    def _operator_info_text(data: Dict[str, Any]) -> str:
+        lines = [f"【干员 {data.get('operatorName') or '未知干员'}】"]
+        full_name = str(data.get("fullName") or "").strip()
+        english_name = str(data.get("englishName") or "").strip()
+        if full_name:
+            lines.append(f"全名: {full_name}")
+        if english_name and english_name != full_name.upper():
+            lines.append(f"英文名: {english_name}")
+        army_type = str(data.get("armyType") or "").strip()
+        army_desc = str(data.get("armyTypeDesc") or "").strip()
+        if army_type or army_desc:
+            lines.append(f"兵种: {army_type or '未知'}{f'（{army_desc}）' if army_desc else ''}")
+        abilities = data.get("abilitiesList") if isinstance(data.get("abilitiesList"), list) else []
+        if abilities:
+            lines.append("技能:")
+            for index, ability in enumerate(abilities, 1):
+                ability_type = str(ability.get("abilityTypeCN") or ability.get("abilityType") or "").strip()
+                name = str(ability.get("abilityName") or "未知技能").strip()
+                desc = str(ability.get("abilityDesc") or "").strip()
+                lines.append(f"{index}. {name}{f'｜{ability_type}' if ability_type else ''}")
+                if desc:
+                    lines.append(f"   {desc}")
+        else:
+            lines.append("技能: 暂无数据")
+        return "\n".join(lines)
 
     async def _object_list(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         parts = arg.split()

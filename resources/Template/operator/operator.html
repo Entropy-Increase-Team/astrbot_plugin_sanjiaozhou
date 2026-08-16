@@ -9,7 +9,9 @@
 <body>
     <div class="container">
         <!-- 背景图片 -->
-        <img class="bg-image" src="{{operatorPic}}" alt="" />
+        {% if operatorPic %}
+        <img class="bg-image" src="{{operatorPic}}" alt="" onerror="this.style.display='none';" />
+        {% endif %}
         
         <!-- 头部区域 -->
         <div class="header">
@@ -28,6 +30,8 @@
                     <div class="operator-name-main">{{operatorName}}</div>
                     {% if fullName %}
                     <div class="operator-name-en">{{fullName}}</div>
+                    {% elif englishName %}
+                    <div class="operator-name-en">{{englishName}}</div>
                     {% endif %}
                 </div>
             </div>

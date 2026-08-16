@@ -679,7 +679,9 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/object/maps", require_key=False)
 
     async def operators(self, detail: bool = False):
-        return await self.get("/api/v1/df/object/operator" if detail else "/api/v1/df/object/operator2", require_key=False)
+        return await self.get(
+            "/api/v1/df/object/operator" if detail else "/api/v1/df/object/operator2"
+        )
 
     async def rank_score(self):
         return await self.get("/api/v1/df/object/rankscore", require_key=False)

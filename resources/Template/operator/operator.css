@@ -31,9 +31,9 @@ body {
   font-family: 'ProjectD', "Microsoft YaHei", "PingFang SC", sans-serif;
   margin: 0;
   padding: 0;
-  width: 1200px;
+  width: 900px;
   height: auto;
-  min-height: 700px;
+  min-height: 620px;
   transform: none;
   transform-origin: unset;
   overflow: visible;
@@ -42,8 +42,8 @@ body {
 /* ========== 容器样式 ========== */
 .container {
   position: relative;
-  width: 1200px;
-  min-height: 700px;
+  width: 900px;
+  min-height: 620px;
   margin: 0 auto;
   background: #0b0f13;
   overflow: hidden;
@@ -79,7 +79,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 25px 30px 20px;
+  padding: 22px 28px 16px;
   background: transparent;
 }
 
@@ -119,7 +119,7 @@ body {
 .content {
   position: relative;
   z-index: 2;
-  padding: 40px 50px;
+  padding: 30px 36px 36px;
 }
 
 /* ========== 干员基本信息 ========== */
@@ -130,6 +130,7 @@ body {
 .operator-name-row {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 15px;
 }
 
@@ -139,6 +140,8 @@ body {
   font-weight: 700;
   text-shadow: none;
   line-height: 1.2;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 .operator-name-en {
@@ -146,12 +149,15 @@ body {
   font-size: 20px;
   font-weight: 500;
   margin-left: 5px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* ========== 兵种信息 ========== */
 .army-type-section {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 35px;
   padding: 12px 0;
@@ -173,6 +179,8 @@ body {
   color: rgba(255, 255, 255, 0.7);
   font-size: 16px;
   margin-left: 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ========== 区块标题 ========== */
@@ -191,7 +199,7 @@ body {
 
 .abilities-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
 }
 
@@ -227,6 +235,7 @@ body {
 
 .ability-info {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -237,12 +246,14 @@ body {
   font-size: 18px;
   font-weight: 700;
   line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .ability-type {
   color: rgba(0, 217, 255, 0.9);
   font-size: 14px;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .ability-desc {
@@ -250,4 +261,5 @@ body {
   font-size: 13px;
   line-height: 1.6;
   margin-top: 5px;
+  overflow-wrap: anywhere;
 }
