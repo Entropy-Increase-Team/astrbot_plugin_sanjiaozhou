@@ -7,6 +7,7 @@ import inspect
 import json
 import os
 import re
+from decimal import Decimal, InvalidOperation
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -5162,20 +5163,64 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        res = await self.client.money(token)
+        try:
+            res = await self.client.money(token)
+        except Exception as exc:
+            logger.warning(f"[三角洲货币] 请求异常：{type(exc).__name__}")
+            yield event.plain_result("货币信息查询失败: 请求异常，请稍后重试。")
+            return
         if not self._ok(res):
             yield event.plain_result(f"货币信息查询失败: {self._message_of(res)}")
             return
-        rows = self._first_list(self._data(res, {}), ("list", "items", "data"))
+        rows = [
+            item
+            for item in self._first_list(
+                self._data(res, {}),
+                ("list", "items", "data"),
+            )
+            if isinstance(item, dict)
+        ]
         if not rows:
             yield event.plain_result("未查询到任何货币信息。")
             return
         lines = ["【三角洲行动 - 货币信息】"]
         for item in rows:
             name = item.get("name") or item.get("item") or "未知货币"
-            amount = self.data_mgr.fmt_num(item.get("totalMoney") or item.get("amount") or 0)
+            raw_amount = next(
+                (
+                    item.get(key)
+                    for key in (
+                        "totalMoney",
+                        "total_money",
+                        "totalMoneyInt",
+                        "total_money_int",
+                        "amount",
+                    )
+                    if item.get(key) not in (None, "")
+                ),
+                0,
+            )
+            amount = self._format_money_amount(raw_amount)
             lines.append(f"{name}: {amount}")
         yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    def _format_money_amount(value: Any) -> str:
+        if value is None or value == "":
+            return "0"
+        text = str(value).strip().replace(",", "")
+        try:
+            number = Decimal(text)
+        except (InvalidOperation, ValueError):
+            return str(value)
+        if not number.is_finite():
+            return str(value)
+        sign = "-" if number < 0 else ""
+        fixed = format(abs(number), "f")
+        integer, dot, fraction = fixed.partition(".")
+        integer_text = f"{int(integer or '0'):,}"
+        fraction = fraction.rstrip("0")
+        return sign + integer_text + (f".{fraction}" if dot and fraction else "")
 
     @staticmethod
     def _parse_flows_args(arg: str) -> Tuple[str, str, str]:
