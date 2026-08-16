@@ -688,6 +688,9 @@ class DeltaForceClient:
     async def current_price(self, item_id: str):
         return await self.get("/api/v1/df/object/price/ams/latest", params={"id": item_id}, require_key=False)
 
+    async def fair_offers(self):
+        return await self.get("/api/v1/df/fair")
+
     async def ammo_prices(self, days: str = "2"):
         return await self.get(
             "/api/v1/df/object/ammo",

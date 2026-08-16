@@ -225,6 +225,7 @@ DELTA_COMMAND_SPECS = [
     ("收藏改枪码", {"收藏改枪方案"}),
     ("取消收藏改枪码", {"取消收藏改枪方案"}),
     ("改枪码收藏列表", {"改枪方案收藏列表"}),
+    ("集市兑换", {"集市", "兑换列表"}),
     ("每日密码", {"今日密码"}),
     ("文章列表", set()),
     ("文章详情", {"文章"}),
@@ -1945,6 +1946,10 @@ class DeltaForcePlugin(Star):
             return
         if m := re.fullmatch(r"(制造材料列表|材料列表)\s*(.*)", body):
             async for r in self._material_list(event, m.group(2).strip()):
+                yield r
+            return
+        if re.fullmatch(r"(集市兑换|集市|兑换列表)", body):
+            async for r in self._fair_offers(event):
                 yield r
             return
         if m := re.fullmatch(r"(材料价格|制造材料)\s*(.*)", body):
@@ -7613,6 +7618,98 @@ class DeltaForcePlugin(Star):
             lines.append(f"仅展示价格最高的 30 种，其余 {len(rows) - 30} 种已省略。")
         yield event.plain_result("\n".join(line for line in lines if line))
 
+    async def _fair_offers(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
+        res = await self.client.fair_offers()
+        if not self._ok(res):
+            yield event.plain_result(f"集市兑换查询失败: {self._message_of(res)}")
+            return
+
+        data = self._data(res, {})
+        if not isinstance(data, dict):
+            yield event.plain_result("集市兑换返回格式异常，请稍后重试。")
+            return
+
+        rows: Any = None
+        for key in ("list", "items", "data"):
+            if key in data:
+                rows = data.get(key)
+                break
+        if not isinstance(rows, list):
+            yield event.plain_result("集市兑换返回格式异常，请稍后重试。")
+            return
+        offers = [item for item in rows if isinstance(item, dict)]
+        if rows and not offers:
+            yield event.plain_result("集市兑换返回格式异常，请稍后重试。")
+            return
+        if not offers:
+            yield event.plain_result("当前暂无集市兑换。")
+            return
+
+        object_ids: List[str] = []
+
+        def append_object_id(value: Any) -> None:
+            object_id = str(value or "").strip()
+            if object_id and object_id not in object_ids and len(object_ids) < 40:
+                object_ids.append(object_id)
+
+        for offer in offers:
+            reward = offer.get("Item") or offer.get("item") or {}
+            if isinstance(reward, dict):
+                append_object_id(reward.get("objectID") or reward.get("objectId") or reward.get("id"))
+            materials = offer.get("ExchangedProps") or offer.get("exchangedProps") or offer.get("exchanged_props") or []
+            if isinstance(materials, list):
+                for material in materials:
+                    if isinstance(material, dict):
+                        append_object_id(material.get("objectID") or material.get("objectId") or material.get("id"))
+        exchanged_ids = data.get("exchangedObjectIDs") or data.get("exchanged_object_ids") or []
+        if isinstance(exchanged_ids, list):
+            for value in exchanged_ids:
+                append_object_id(value)
+
+        info_map = await self._object_info_map(object_ids)
+
+        def item_name(object_id: str) -> str:
+            info = info_map.get(object_id) or {}
+            name = info.get("objectName") or info.get("gameName") or info.get("name")
+            if name:
+                return str(name)
+            search_local_items = getattr(self.data_mgr, "search_local_items", None)
+            local = search_local_items(object_id, 1) if callable(search_local_items) else []
+            if local:
+                return str(local[0].get("name") or local[0].get("objectName") or f"物品 {object_id}")
+            return f"物品 {object_id}" if object_id else "未知物品"
+
+        def item_text(item: Dict[str, Any]) -> str:
+            object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "").strip()
+            count = item.get("count") or item.get("num") or 1
+            return f"{item_name(object_id)}（{object_id or '-'}） ×{self.data_mgr.fmt_num(count)}"
+
+        lines = [f"【集市兑换】共 {len(offers)} 项"]
+        for index, offer in enumerate(offers[:20], 1):
+            reward = offer.get("Item") or offer.get("item") or {}
+            reward_text = item_text(reward) if isinstance(reward, dict) else "未知奖励"
+            bound_value = offer.get("IsBound")
+            if bound_value is None:
+                bound_value = offer.get("isBound") or offer.get("is_bound")
+            bound_text = "绑定" if str(bound_value or "0") == "1" else "非绑定"
+            lines.append(f"{index}. {reward_text} [{bound_text}]")
+
+            materials = offer.get("ExchangedProps") or offer.get("exchangedProps") or offer.get("exchanged_props") or []
+            material_texts = [item_text(item) for item in materials if isinstance(item, dict)] if isinstance(materials, list) else []
+            lines.append(f"   所需：{' + '.join(material_texts) if material_texts else '无'}")
+
+            begin_time = offer.get("BeginTime")
+            if begin_time is None:
+                begin_time = offer.get("beginTime") or offer.get("begin_time")
+            end_time = offer.get("EndTime")
+            if end_time is None:
+                end_time = offer.get("endTime") or offer.get("end_time")
+            lines.append(f"   时间：{self._fmt_time(begin_time)} 至 {self._fmt_time(end_time)}")
+
+        if len(offers) > 20:
+            lines.append(f"仅展示前 20 项，另有 {len(offers) - 20} 项未显示。")
+        yield event.plain_result("\n".join(lines))
+
     async def _material_list(
         self,
         event: AstrMessageEvent,
@@ -10165,14 +10262,23 @@ class DeltaForcePlugin(Star):
 
     async def _object_info_map(self, object_ids: List[str]) -> Dict[str, Dict[str, Any]]:
         result: Dict[str, Dict[str, Any]] = {}
-        for object_id in dict.fromkeys(str(x) for x in object_ids if x):
-            try:
-                res = await self.client.object_search(object_id, limit="1")
-                rows = self._first_list(self._data(res, {}), ("keywords", "items", "list", "data", "objects")) if self._ok(res) else []
-                if rows:
-                    result[object_id] = rows[0]
-            except Exception:
-                continue
+        unique_ids = list(dict.fromkeys(str(x).strip() for x in object_ids if str(x).strip()))
+        if not unique_ids:
+            return result
+        try:
+            res = await self.client.object_search(",".join(unique_ids), limit=str(len(unique_ids)))
+            rows = self._first_list(
+                self._data(res, {}),
+                ("keywords", "items", "list", "data", "objects"),
+            ) if self._ok(res) else []
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "").strip()
+                if object_id:
+                    result[object_id] = item
+        except Exception:
+            pass
         return result
 
     async def _uncollected_red_count(self, collected: set) -> int:
