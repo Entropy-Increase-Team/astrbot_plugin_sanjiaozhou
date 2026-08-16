@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.65`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.66`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、主播巅峰赛、成就、研究中心、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -38,6 +38,9 @@ playwright install chromium
 ## 获取 API Key
 
 本插件与 [Yunzai 版 `delta-force-plugin`](https://github.com/Entropy-Increase-Team/delta-force-plugin) 使用同一套三角洲 API 服务。首次使用前需要在管理页面注册并创建 API Key：
+
+> [!TIP]
+> API Key 申请、订阅权限或接口使用遇到问题，可加入 QQ 交流群 [932459332](https://qm.qq.com/q/CrYiAQxJPW) 咨询和反馈。
 
 1. 打开 [三角洲 API 管理页面](https://df.shallow.ink/)，注册或登录账号。
 2. 进入 [API Key 管理](https://df.shallow.ink/api-keys)，创建一枚 API Key。
@@ -85,15 +88,44 @@ playwright install chromium
 
 ## 功能预览
 
-下图由有效绑定实时读取 API 后生成，公开版本已隐藏玩家昵称、QQ 头像、UID、OpenID 和凭证信息，并压缩为低带宽 WebP。实际背景、头像和数据会随账号内容变化。
+个人信息卡由有效绑定实时读取 API 后生成，公开版本已隐藏玩家昵称、QQ 头像、UID、OpenID 和凭证信息。其余图片使用固定演示数据渲染，不包含真实用户资料。全部预览均使用 `1×` 像素倍率、最长边不超过 1200 像素，并压缩为低带宽 WebP。
 
 <p align="center">
   <img src="resources/imgs/readme/preview-user-info.webp" width="100%" alt="三角洲行动个人信息卡预览">
 </p>
 
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <strong>日报</strong><br>
+      <img src="resources/imgs/readme/preview-daily-report.webp" width="100%" alt="三角洲行动日报预览">
+    </td>
+    <td width="50%" align="center">
+      <strong>战绩</strong><br>
+      <img src="resources/imgs/readme/preview-record.webp" width="100%" alt="三角洲行动战绩预览">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <strong>个人数据</strong><br>
+      <img src="resources/imgs/readme/preview-personal-data.webp" width="100%" alt="三角洲行动个人数据预览">
+    </td>
+    <td width="50%" align="center">
+      <strong>特勤处信息</strong><br>
+      <img src="resources/imgs/readme/preview-place-info.webp" width="100%" alt="三角洲行动特勤处信息预览">
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center">
+      <strong>货币流水趋势</strong><br>
+      <img src="resources/imgs/readme/preview-flows.webp" width="100%" alt="三角洲行动货币流水趋势预览">
+    </td>
+  </tr>
+</table>
+
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.65` 已按最新版后端重新审计登录闭环：QQ、微信和 Gamesafe OAuth 使用各自权威回调字段并同步临时凭证请求头；扫码状态查询支持瞬时错误重试，所有失败提示继续隐藏敏感会话信息。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.66` 已补充 API Key 申请交流群、准确的 `client_id` 配置步骤和多项低带宽功能预览；`0.4.65` 的登录协议修复继续保留。
 
 ### 个人类功能
 

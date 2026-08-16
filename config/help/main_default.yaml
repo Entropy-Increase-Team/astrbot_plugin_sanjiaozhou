@@ -26,6 +26,8 @@ helpList:
       group: "命令触发符使用 AstrBot WebUI 的默认配置，例如 帮助"
     - order: 2
       group: "此为基础菜单，其他功能请使用 娱乐帮助 查看娱乐菜单"
+    - order: 3
+      group: "API Key 申请与使用咨询群：932459332"
     - order: 100
       group: "系统管理（仅主人）"
       masterOnly: true # 仅主人可见
