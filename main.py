@@ -1791,6 +1791,7 @@ class DeltaForcePlugin(Star):
 
     async def _toggle_scheduled_push(self, event: AstrMessageEvent, kind: str, enabled: bool) -> AsyncGenerator[Any, None]:
         """在当前群聊中开启或关闭一类定时推送。"""
+        names = {"daily": "日报", "weekly": "周报", "place": "特勤处生产完成", "keyword": "每日密码"}
         if not str(event.get_group_id() or "").strip():
             yield event.plain_result("该命令只能在群聊中使用。")
             return
@@ -1835,7 +1836,11 @@ class DeltaForcePlugin(Star):
                         )
                     self.subscriptions.update_scheduled_push(item["key"], values)
                     changed = True
-            yield event.plain_result("已关闭本群推送。" if changed else "本群尚未开启该推送。")
+            yield event.plain_result(
+                f"已关闭本群{names[kind]}推送。"
+                if changed
+                else f"本群尚未开启{names[kind]}推送。"
+            )
             return
 
         replaced_binding = False
@@ -1858,12 +1863,8 @@ class DeltaForcePlugin(Star):
                     {"enabled": False, "disabled_reason": "binding_replaced"},
                 )
                 replaced_binding = True
-        if (
-            kind == "place"
-            and current_item
-            and BindingManager._bool_value(current_item.get("enabled"), False)
-        ):
-            yield event.plain_result("本群已经开启了特勤处生产完成推送。")
+        if current_item and BindingManager._bool_value(current_item.get("enabled"), False):
+            yield event.plain_result(f"本群已经开启了{names[kind]}推送。")
             return
         scheduled = self.subscriptions.set_scheduled_push(kind, user_id, binding_id, umo, True)
         if kind == "place":
@@ -1879,7 +1880,6 @@ class DeltaForcePlugin(Star):
                     "disabled_reason": "",
                 },
             )
-        names = {"daily": "日报", "weekly": "周报", "place": "特勤处生产完成", "keyword": "每日密码"}
         action = "已切换到当前主账号并开启" if replaced_binding else "已为本群开启"
         yield event.plain_result(
             f"{action}{names[kind]}推送。{self._scheduled_push_time_hint(kind)}"
@@ -3186,7 +3186,11 @@ class DeltaForcePlugin(Star):
             if not event.is_admin():
                 yield event.plain_result("只有管理员可以管理三角洲广播通知。")
                 return
-            yield event.plain_result("最新版后端未提供通用通知广播协议，该功能当前无法接入；战绩实时推送不受影响。")
+            yield event.plain_result(
+                "最新版后端虽提供通用 WebSocket 频道订阅机制，但未注册 "
+                "notification:broadcast 通知频道或对应事件，因此当前无法接入；"
+                "战绩实时推送不受影响。"
+            )
             return
         if match := re.fullmatch(r"(开启|关闭)(日报推送|周报推送|特勤处推送|每日密码推送)", body):
             kind = {
