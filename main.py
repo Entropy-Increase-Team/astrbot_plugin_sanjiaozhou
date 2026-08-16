@@ -4778,67 +4778,97 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        mode: Optional[str] = None
-        season = "all"
-        season_explicit = False
-        keyword_parts = []
-        for part in arg.split():
-            low = part.lower()
-            if part in SOL_ALIASES or low in SOL_ALIASES:
-                mode = "sol"
-            elif part in MP_ALIASES or low in MP_ALIASES:
-                mode = "mp"
-            elif low in {"all", "全部"}:
-                season = "all"
-                season_explicit = True
-            elif re.fullmatch(r"\d+(?:,\d+)*", part):
-                season = part
-                season_explicit = True
-            else:
-                keyword_parts.append(part)
-        keyword = " ".join(keyword_parts).strip()
-        if season_explicit and not mode and not keyword:
-            yield event.plain_result("指定赛季时请同时指定游戏模式，例如：地图统计 烽火 7。")
+        mode, season, keyword, should_merge, argument_error = self._parse_map_stats_args(arg)
+        if argument_error:
+            yield event.plain_result(argument_error)
             return
 
         identity = await self._render_identity(event, token)
-        rendered = 0
-        failures = []
+        prepared: List[Dict[str, Any]] = []
+        failures: List[str] = []
         for item_mode in ([mode] if mode else ["sol", "mp"]):
-            res = await self.client.map_stats(token, item_mode, season)
+            try:
+                res = await self.client.map_stats(token, item_mode, season)
+            except Exception as exc:
+                logger.warning(f"[三角洲地图统计] {item_mode} 请求异常：{type(exc).__name__}")
+                failures.append(f"{'烽火地带' if item_mode == 'sol' else '全面战场'}: 请求异常")
+                continue
             if not self._ok(res):
                 failures.append(f"{'烽火地带' if item_mode == 'sol' else '全面战场'}: {self._message_of(res)}")
                 continue
             payload = self._payload(res, {}) or {}
-            rows = self._first_list(payload, ("list", "items", "data"))
+            rows = self._map_stats_rows(payload)
             if keyword:
+                normalized_keyword = keyword.casefold()
                 rows = [
                     item for item in rows
-                    if isinstance(item, dict)
-                    and keyword in str(item.get("mapName") or self.data_mgr.get_map_name(item.get("mapId")))
+                    if normalized_keyword
+                    in str(
+                        item.get("mapName")
+                        or self.data_mgr.get_map_name(item.get("mapId"))
+                    ).casefold()
                 ]
-            rows = [item for item in rows if isinstance(item, dict) and isinstance(item.get("data"), dict)]
+                rows = self._sort_map_stats_rows(rows)
+            elif should_merge:
+                rows = self._merge_map_stats_rows(rows, item_mode)
             if not rows:
                 continue
             data = self._build_map_stats(item_mode, season, rows, identity)
-            title = "烽火地带" if item_mode == "sol" else "全面战场"
-            text_lines = [f"【{title}地图统计】"]
-            for item in data["mapStatsList"]:
-                detail = item.get(item_mode) or {}
-                text_lines.append(
-                    f"{item['mapName']}: "
-                    + (f"{detail.get('totalGames')}局，撤离率 {detail.get('escapeRate')}" if item_mode == "sol" else f"{detail.get('totalGames')}局，胜率 {detail.get('winRate')}")
-                )
-            async for result in self._render_or_text(
-                event,
-                "Template/mapStats/mapStats.html",
-                data,
-                "\n".join(text_lines),
-                {"viewport_width": 1100, "viewport_height": 1500},
-            ):
-                yield result
-            rendered += 1
-        if rendered:
+            prepared.append(
+                {
+                    "mode": item_mode,
+                    "data": data,
+                    "text": self._map_stats_text(item_mode, data),
+                    "image": await self._render_map_stats_card(data),
+                }
+            )
+
+        if prepared:
+            if len(prepared) > 1 and self._personal_data_onebot_supported(event):
+                self_id_getter = getattr(event, "get_self_id", None)
+                try:
+                    self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+                except Exception:
+                    self_id = "0"
+                season_text = "全部赛季" if season == "all" else f"第{season}赛季"
+                nodes = [
+                    Comp.Node(
+                        uin=self_id,
+                        name="三角洲行动",
+                        content=[
+                            Comp.Plain(
+                                "【地图统计数据】\n"
+                                f"赛季：{season_text}\n"
+                                + "\n".join(
+                                    f"{'烽火地带' if item['mode'] == 'sol' else '全面战场'}："
+                                    f"{item['data']['totalMaps']} 张地图"
+                                    for item in prepared
+                                )
+                            )
+                        ],
+                    )
+                ]
+                for item in prepared:
+                    title = "烽火地带" if item["mode"] == "sol" else "全面战场"
+                    content = [Comp.Plain(f"【{title}地图统计】\n")]
+                    if item["image"]:
+                        content.append(Comp.Image.fromFileSystem(item["image"]))
+                    else:
+                        content.append(Comp.Plain(item["text"]))
+                    nodes.append(
+                        Comp.Node(
+                            uin=self_id,
+                            name="三角洲行动",
+                            content=content,
+                        )
+                    )
+                yield event.chain_result([Comp.Nodes(nodes)])
+            else:
+                for item in prepared:
+                    if item["image"]:
+                        yield event.image_result(item["image"])
+                    else:
+                        yield event.plain_result(item["text"])
             for failure in failures:
                 yield event.plain_result(f"部分地图统计查询失败: {failure}")
             return
@@ -4848,6 +4878,171 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"未找到包含“{keyword}”的地图数据。")
         else:
             yield event.plain_result("暂未查询到地图统计数据。")
+
+    @staticmethod
+    def _parse_map_stats_args(
+        arg: str,
+    ) -> Tuple[Optional[str], str, str, bool, str]:
+        mode: Optional[str] = None
+        season = "all"
+        season_explicit = False
+        keyword_parts: List[str] = []
+        sol_aliases = {"sol", "烽火", "烽火地带", "摸金"}
+        mp_aliases = {"mp", "tdm", "全面", "全面战场", "战场"}
+        for part in str(arg or "").split():
+            low = part.lower()
+            if low in sol_aliases:
+                mode = "sol"
+            elif low in mp_aliases:
+                mode = "mp"
+            elif low in {"all", "全部"}:
+                season = "all"
+                season_explicit = True
+            elif part.isdigit():
+                season = part
+                season_explicit = True
+            else:
+                keyword_parts.append(part)
+        keyword = " ".join(keyword_parts).strip()
+        if season_explicit and not mode and not keyword:
+            return (
+                mode,
+                season,
+                keyword,
+                False,
+                "指定赛季时请同时指定游戏模式，例如：地图统计 烽火 7。",
+            )
+        should_merge = not keyword and not season_explicit
+        return mode, season, keyword, should_merge, ""
+
+    def _map_stats_rows(self, payload: Any) -> List[Dict[str, Any]]:
+        return [
+            item
+            for item in self._first_list(payload, ("list", "items", "data"))
+            if isinstance(item, dict) and isinstance(item.get("data"), dict)
+        ]
+
+    @staticmethod
+    def _map_stats_base_name(map_name: Any) -> str:
+        return re.sub(r"[-（(].*$", "", str(map_name or "")).strip()
+
+    def _merge_map_stats_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        mode: str,
+    ) -> List[Dict[str, Any]]:
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in rows:
+            map_name = str(
+                item.get("mapName")
+                or self.data_mgr.get_map_name(item.get("mapId"))
+            )
+            base_name = self._map_stats_base_name(map_name) or map_name
+            grouped.setdefault(base_name, []).append(item)
+
+        merged: List[Dict[str, Any]] = []
+        for base_name, items in grouped.items():
+            first = items[0]
+            first_name = str(
+                first.get("mapName")
+                or self.data_mgr.get_map_name(first.get("mapId"))
+            )
+            fields = (
+                ("a1", "games", "isescapednum", "killnum", "nums")
+                if mode == "sol"
+                else ("winnum", "zdjnum", "score", "gametime", "killnum", "assist", "death")
+            )
+            totals = {field: 0.0 for field in fields}
+            for item in items:
+                detail = item.get("data") if isinstance(item.get("data"), dict) else {}
+                if mode == "sol":
+                    totals["a1"] += self._number(detail.get("a1"))
+                    totals["games"] += self._number(detail.get("zdj") or detail.get("cs"))
+                    totals["isescapednum"] += self._number(detail.get("isescapednum"))
+                    totals["killnum"] += self._number(detail.get("killnum"))
+                    totals["nums"] += self._number(detail.get("nums"))
+                else:
+                    for field in fields:
+                        totals[field] += self._number(detail.get(field))
+            if mode == "sol":
+                detail = {
+                    "a1": totals["a1"],
+                    "zdj": totals["games"],
+                    "isescapednum": totals["isescapednum"],
+                    "killnum": totals["killnum"],
+                    "nums": totals["nums"],
+                }
+            else:
+                detail = totals
+            merged.append(
+                {
+                    "mapId": first.get("mapId"),
+                    "mapName": base_name,
+                    "_mapImageName": first_name,
+                    "data": detail,
+                }
+            )
+        return merged
+
+    def _sort_map_stats_rows(
+        self,
+        rows: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        difficulty_weights = {"常规": 1, "机密": 2, "绝密": 3, "适应": 4}
+
+        def sort_key(item: Dict[str, Any]) -> Tuple[int, str, str]:
+            map_name = str(
+                item.get("mapName")
+                or self.data_mgr.get_map_name(item.get("mapId"))
+            )
+            match = re.search(r"-([^-（(]+)", map_name)
+            difficulty = re.sub(r"[（(].*$", "", match.group(1)).strip() if match else ""
+            return difficulty_weights.get(difficulty, 999), difficulty, map_name
+
+        return sorted(rows, key=sort_key)
+
+    async def _render_map_stats_card(self, data: Dict[str, Any]) -> Optional[str]:
+        if not self.config.get("enable_image_render", True):
+            return None
+        try:
+            return await self.renderer.render_html(
+                "Template/mapStats/mapStats.html",
+                data,
+                {
+                    "selector": ".map-stats-container",
+                    "viewport_width": 600,
+                    "viewport_height": max(800, int(data.get("totalMaps") or 0) * 200 + 300),
+                    "device_scale_factor": 1,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"[三角洲地图统计] 图片渲染失败：{type(exc).__name__}")
+            return None
+
+    @staticmethod
+    def _map_stats_text(mode: str, data: Dict[str, Any]) -> str:
+        title = "烽火地带" if mode == "sol" else "全面战场"
+        lines = [
+            f"【{title}地图统计】",
+            f"赛季：{data.get('seasonid') or '-'}",
+        ]
+        for item in data.get("mapStatsList") or []:
+            detail = item.get(mode) or {}
+            if mode == "sol":
+                summary = (
+                    f"净收益 {detail.get('profit')}，对局 {detail.get('totalGames')}，"
+                    f"撤离 {detail.get('escaped')}，撤离率 {detail.get('escapeRate')}，"
+                    f"击杀 {detail.get('kill')}，失败 {detail.get('failed')}"
+                )
+            else:
+                summary = (
+                    f"胜利 {detail.get('win')}，对局 {detail.get('totalGames')}，"
+                    f"胜率 {detail.get('winRate')}，得分 {detail.get('score')}，"
+                    f"时长 {detail.get('gameTime')}，KDA {detail.get('kda')}，"
+                    f"击杀/助攻/死亡 {detail.get('kill')}/{detail.get('assist')}/{detail.get('death')}"
+                )
+            lines.append(f"{item.get('mapName') or '未知地图'}：{summary}")
+        return "\n".join(lines)
 
     def _build_map_stats(
         self,
@@ -4873,41 +5068,81 @@ class DeltaForcePlugin(Star):
     def _map_stats_item(self, item: Dict[str, Any], mode: str) -> Dict[str, Any]:
         detail = item.get("data") if isinstance(item.get("data"), dict) else {}
         map_name = str(item.get("mapName") or self.data_mgr.get_map_name(item.get("mapId")))
+        image_name = str(item.get("_mapImageName") or map_name)
         base = {
-            "baseName": re.sub(r"[-（(].*$", "", map_name).strip(),
+            "baseName": self._map_stats_base_name(map_name),
             "mapName": map_name,
             "mapId": item.get("mapId"),
-            "mapImage": self.data_mgr.get_map_image_path(map_name, mode),
+            "mapImage": self.data_mgr.get_map_image_path(image_name, mode),
             "sol": None,
             "mp": None,
         }
         if mode == "sol":
-            games = detail.get("zdj") or detail.get("cs") or 0
+            games = detail.get("zdj") or detail.get("cs")
             base["sol"] = {
-                "profit": self._format_profit(detail.get("a1")),
-                "totalGames": self.data_mgr.fmt_num(games),
-                "escaped": self.data_mgr.fmt_num(detail.get("isescapednum") or 0),
+                "profit": self._format_map_profit(detail.get("a1")),
+                "totalGames": self._format_map_number(games),
+                "escaped": self._format_map_number(detail.get("isescapednum")),
                 "escapeRate": self._percent(detail.get("isescapednum"), games),
-                "kill": self.data_mgr.fmt_num(detail.get("killnum") or 0),
-                "failed": self.data_mgr.fmt_num(detail.get("nums") or 0),
+                "kill": self._format_map_number(detail.get("killnum")),
+                "failed": self._format_map_number(detail.get("nums")),
             }
         else:
-            games = detail.get("zdjnum") or 0
+            games = detail.get("zdjnum")
             kills = self._number(detail.get("killnum"))
             assists = self._number(detail.get("assist"))
             deaths = self._number(detail.get("death"))
             base["mp"] = {
-                "win": self.data_mgr.fmt_num(detail.get("winnum") or 0),
-                "totalGames": self.data_mgr.fmt_num(games),
+                "win": self._format_map_number(detail.get("winnum")),
+                "totalGames": self._format_map_number(games),
                 "winRate": self._percent(detail.get("winnum"), games),
-                "score": self.data_mgr.fmt_num(detail.get("score") or 0),
-                "gameTime": self.data_mgr.fmt_duration(detail.get("gametime") or 0),
-                "kill": self.data_mgr.fmt_num(kills),
-                "assist": self.data_mgr.fmt_num(assists),
-                "death": self.data_mgr.fmt_num(deaths),
-                "kda": f"{kills:.2f}" if deaths == 0 else f"{(kills + assists) / deaths:.2f}",
+                "score": self._format_map_number(detail.get("score")),
+                "gameTime": self._format_map_duration(detail.get("gametime")),
+                "kill": self._format_map_number(detail.get("killnum")),
+                "assist": self._format_map_number(detail.get("assist")),
+                "death": self._format_map_number(detail.get("death")),
+                "kda": self._format_map_kda(kills, assists, deaths),
             }
         return base
+
+    def _format_map_number(self, value: Any) -> str:
+        return self.data_mgr.fmt_num(value, "-")
+
+    def _format_map_profit(self, value: Any) -> str:
+        if value is None or value == "":
+            return "-"
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if number != number:
+            return str(value)
+        absolute = abs(number)
+        if absolute >= 1_000_000_000:
+            text = f"{absolute / 1_000_000_000:.2f}".rstrip("0").rstrip(".") + "B"
+        elif absolute >= 1_000_000:
+            text = f"{absolute / 1_000_000:.2f}".rstrip("0").rstrip(".") + "M"
+        elif absolute >= 1_000:
+            text = f"{absolute / 1_000:.2f}".rstrip("0").rstrip(".") + "K"
+        else:
+            text = self.data_mgr.fmt_num(absolute)
+        return ("+" if number >= 0 else "-") + text
+
+    @staticmethod
+    def _format_map_duration(value: Any) -> str:
+        try:
+            seconds = max(0, int(float(value or 0)))
+        except (TypeError, ValueError, OverflowError):
+            seconds = 0
+        hours, remainder = divmod(seconds, 3600)
+        minutes = remainder // 60
+        return f"{hours}小时{minutes}分钟" if hours else f"{minutes}分钟"
+
+    @staticmethod
+    def _format_map_kda(kills: float, assists: float, deaths: float) -> str:
+        if kills <= 0:
+            return "0.00"
+        return f"{kills:.2f}" if deaths <= 0 else f"{(kills + assists) / deaths:.2f}"
 
     def _format_profit(self, value: Any) -> str:
         number = self._number(value)
