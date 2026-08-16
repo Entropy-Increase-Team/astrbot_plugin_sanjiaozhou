@@ -405,6 +405,8 @@ DELTA_COMMAND_SPECS = [
     ("我的改枪码", {"我的改枪方案"}),
     ("改枪码评论", {"改枪方案评论"}),
     ("评论改枪码", {"评论改枪方案"}),
+    ("回复改枪评论", {"回复改枪方案评论"}),
+    ("引用改枪评论", {"引用改枪方案评论"}),
     ("编辑改枪评论", {"编辑改枪方案评论"}),
     ("删除改枪评论", {"删除改枪方案评论"}),
     ("复制改枪码", {"复制改枪方案"}),
@@ -2766,6 +2768,10 @@ class DeltaForcePlugin(Star):
             "改枪方案评论": "格式：改枪方案评论 <方案ID> [页码]",
             "评论改枪码": "格式：评论改枪码 <方案ID> <内容>",
             "评论改枪方案": "格式：评论改枪方案 <方案ID> <内容>",
+            "回复改枪评论": "格式：回复改枪评论 <方案ID> <父评论ID> <内容>",
+            "回复改枪方案评论": "格式：回复改枪方案评论 <方案ID> <父评论ID> <内容>",
+            "引用改枪评论": "格式：引用改枪评论 <方案ID> <引用评论ID> <内容>",
+            "引用改枪方案评论": "格式：引用改枪方案评论 <方案ID> <引用评论ID> <内容>",
             "编辑改枪评论": "格式：编辑改枪评论 <评论ID> <内容>",
             "编辑改枪方案评论": "格式：编辑改枪方案评论 <评论ID> <内容>",
             "删除改枪评论": "格式：删除改枪评论 <评论ID>",
@@ -2910,6 +2916,32 @@ class DeltaForcePlugin(Star):
                 event,
                 m.group(2),
                 m.group(3).strip(),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"回复改枪(?:方案)?评论\s+(\S+)\s+(\S+)\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._solution_comment_create(
+                event,
+                m.group(1),
+                m.group(3),
+                parent_id=m.group(2),
+            ):
+                yield r
+            return
+        if m := re.fullmatch(
+            r"引用改枪(?:方案)?评论\s+(\S+)\s+(\S+)\s+(.+)",
+            body,
+            flags=re.S,
+        ):
+            async for r in self._solution_comment_create(
+                event,
+                m.group(1),
+                m.group(3),
+                quoted_id=m.group(2),
             ):
                 yield r
             return
@@ -10781,6 +10813,7 @@ class DeltaForcePlugin(Star):
     ) -> AsyncGenerator[Any, None]:
         params: Dict[str, Any] = {"page": 1, "pageSize": 20}
         keywords = []
+        price_range = ""
         status_aliases = {
             "待审核": "pending",
             "pending": "pending",
@@ -10792,6 +10825,19 @@ class DeltaForcePlugin(Star):
             "rejected": "rejected",
             "人工审核": "manual_pending",
             "manual_pending": "manual_pending",
+        }
+        sort_aliases = {
+            "最新": ("createdAt", "desc"),
+            "new": ("createdAt", "desc"),
+            "newest": ("createdAt", "desc"),
+            "最早": ("createdAt", "asc"),
+            "old": ("createdAt", "asc"),
+            "oldest": ("createdAt", "asc"),
+            "点赞": ("likes", "desc"),
+            "热门": ("likes", "desc"),
+            "likes": ("likes", "desc"),
+            "浏览": ("views", "desc"),
+            "views": ("views", "desc"),
         }
         for part in str(arg or "").split():
             low = part.lower()
@@ -10805,8 +10851,36 @@ class DeltaForcePlugin(Star):
                 params["page"] = max(1, int(match.group(1)))
             elif match := re.fullmatch(r"(?:weapon|武器)(?:id)?[=:]?(\d+)", low):
                 params["weaponId"] = int(match.group(1))
+            elif match := re.fullmatch(r"(?:author|作者)[=:](.+)", part, flags=re.I):
+                params["authorId"] = match.group(1).strip()
+            elif low in sort_aliases:
+                params["sortBy"], params["sortDir"] = sort_aliases[low]
+            elif low in {"asc", "升序"}:
+                params["sortDir"] = "asc"
+            elif low in {"desc", "降序"}:
+                params["sortDir"] = "desc"
+            elif re.fullmatch(r"\d+,\d+", low):
+                price_range = low
             else:
                 keywords.append(part)
+        if price_range:
+            yield event.plain_result(
+                "最新版后端未提供改枪方案价格区间筛选，"
+                "请改用武器名称、模式、作者或排序条件。"
+            )
+            return
+        if params.get("status") and not own:
+            yield event.plain_result("审核状态筛选仅适用于“我的改枪码”。")
+            return
+        if params.get("authorId") and (own or favorites):
+            yield event.plain_result("作者筛选仅适用于公开改枪码列表。")
+            return
+        if keywords and (own or favorites):
+            yield event.plain_result(
+                "关键词或武器名称搜索仅适用于公开改枪码列表；"
+                "个人列表请使用武器ID筛选。"
+            )
+            return
         if keywords:
             params["keyword"] = " ".join(keywords)
         if own:
@@ -10973,13 +11047,19 @@ class DeltaForcePlugin(Star):
             + (f"｜共 {total} 条" if total not in (None, "") else "")
         ]
         for index, item in enumerate(rows, 1):
-            lines.extend(
-                [
-                    f"{index}. {item.get('authorNickname') or '匿名用户'}｜{self._fmt_time(item.get('createdAt'))}",
-                    f"评论 ID: {item.get('id') or '-'}",
-                    str(item.get("content") or "（空评论）"),
-                ]
+            relations = []
+            if item.get("parentId"):
+                relations.append(f"回复 {item['parentId']}")
+            if item.get("quotedId"):
+                relations.append(f"引用 {item['quotedId']}")
+            lines.append(
+                f"{index}. {item.get('authorNickname') or '匿名用户'}｜"
+                f"{self._fmt_time(item.get('createdAt'))}"
             )
+            lines.append(f"评论 ID: {item.get('id') or '-'}")
+            if relations:
+                lines.append("关系: " + "｜".join(relations))
+            lines.append(str(item.get("content") or "（空评论）"))
         yield event.plain_result("\n".join(lines))
 
     @staticmethod
@@ -10996,17 +11076,31 @@ class DeltaForcePlugin(Star):
         event: AstrMessageEvent,
         solution_id: str,
         content: str,
+        *,
+        parent_id: str = "",
+        quoted_id: str = "",
     ) -> AsyncGenerator[Any, None]:
         if not self._valid_solution_id(solution_id):
             yield event.plain_result("改枪方案 ID 格式无效。")
+            return
+        if parent_id and not self._valid_solution_comment_id(parent_id):
+            yield event.plain_result("父评论 ID 格式无效。")
+            return
+        if quoted_id and not self._valid_solution_comment_id(quoted_id):
+            yield event.plain_result("引用评论 ID 格式无效。")
             return
         normalized, error = self._solution_comment_content(content)
         if error:
             yield event.plain_result(error)
             return
+        payload: Dict[str, Any] = {"content": normalized}
+        if parent_id:
+            payload["parentId"] = parent_id
+        if quoted_id:
+            payload["quotedId"] = quoted_id
         response = await self.client.create_community_solution_comment(
             solution_id,
-            {"content": normalized},
+            payload,
             self._user_identifier(event),
         )
         if not self._ok(response):
