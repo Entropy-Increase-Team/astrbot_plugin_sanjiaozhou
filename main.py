@@ -6624,13 +6624,16 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"藏品查询失败: {message}")
             return
         raw = self._data(assets_res, None)
-        if not isinstance(raw, dict):
+        if not isinstance(raw, dict) or not self._aggregated_assets_payload_valid(raw):
             yield event.plain_result("资产接口返回格式异常。")
             return
         render_data = self._adapt_aggregated_assets(raw, kind)
         if not render_data["categories"]:
             if render_data["sourceTotal"] > 0 and kind:
-                yield event.plain_result(f"未找到类型“{kind}”的资产。")
+                yield event.plain_result(
+                    f"未找到类型“{kind}”的藏品。\n"
+                    f"支持的查询类型：{'、'.join(self._asset_supported_types())}"
+                )
             else:
                 yield event.plain_result("您的资产库为空。")
             return
@@ -6640,6 +6643,26 @@ class DeltaForcePlugin(Star):
         )
         async for r in self._render_or_text(event, "Template/collection/collection.html", render_data, text, {"viewport_width": 1200, "viewport_height": 1600}):
             yield r
+
+    @staticmethod
+    def _aggregated_assets_payload_valid(data: Dict[str, Any]) -> bool:
+        for key in ("weaponSkins", "charms"):
+            wrapped = data.get(key)
+            if not isinstance(wrapped, dict) or not isinstance(wrapped.get("list"), list):
+                return False
+            if any(not isinstance(item, dict) for item in wrapped["list"]):
+                return False
+        collection = data.get("collection")
+        if not isinstance(collection, dict):
+            return False
+        for key, value in collection.items():
+            if key == "total":
+                continue
+            if not isinstance(value, dict) or not isinstance(value.get("list"), list):
+                return False
+            if any(not isinstance(item, dict) for item in value["list"]):
+                return False
+        return True
 
     def _adapt_aggregated_assets(
         self,
@@ -6674,7 +6697,10 @@ class DeltaForcePlugin(Star):
                 if not items:
                     continue
                 code = str(value.get("code") or key).strip() or "unknown"
-                name = str(value.get("name") or items[0].get("secondClassCN") or code).strip()
+                name = self._asset_category_name(
+                    code,
+                    value.get("name") or items[0].get("secondClassCN") or code,
+                )
                 groups.append((code, name or "未分类", items))
             source_categories.extend(sorted(groups, key=lambda item: (item[1], item[0])))
 
@@ -6746,7 +6772,7 @@ class DeltaForcePlugin(Star):
                 )
 
         return {
-            "typeName": kind or "所有资产",
+            "typeName": kind or "所有藏品",
             "totalCount": sum(category["count"] for category in categories),
             "sourceTotal": source_total,
             "qualityStats": [
@@ -6768,6 +6794,12 @@ class DeltaForcePlugin(Star):
             "gun": ("枪皮", "武器皮肤"),
             "pendant": ("挂饰", "饰品"),
             "vehicle": ("载具", "载具皮肤"),
+            "paint": ("喷漆", "涂装"),
+            "spray": ("喷漆", "涂装"),
+            "avatar": ("头像", "头像框"),
+            "portrait": ("头像", "头像框"),
+            "dogtag": ("军牌", "名牌"),
+            "nameplate": ("军牌", "名牌"),
             "unknown": ("未分类", "其他资产"),
         }
         candidates = (name, code, *aliases.get(str(code).lower(), ()))
@@ -6782,6 +6814,40 @@ class DeltaForcePlugin(Star):
         )
 
     @staticmethod
+    def _asset_supported_types() -> Tuple[str, ...]:
+        return (
+            "干员皮肤",
+            "喷漆",
+            "挂饰",
+            "典藏枪皮",
+            "枪皮",
+            "载具",
+            "头像",
+            "军牌",
+        )
+
+    @staticmethod
+    def _asset_category_name(code: str, value: Any) -> str:
+        raw = str(value or "").strip()
+        normalized_code = str(code or "").strip().lower()
+        canonical = {
+            "operator": "干员皮肤",
+            "gun": "枪皮",
+            "pendant": "挂饰",
+            "vehicle": "载具",
+            "paint": "喷漆",
+            "spray": "喷漆",
+            "avatar": "头像",
+            "portrait": "头像",
+            "dogtag": "军牌",
+            "nameplate": "军牌",
+            "unknown": "未分类",
+        }.get(normalized_code, "")
+        if not raw or raw.lower() == normalized_code or raw in {"干员", "其他资产"}:
+            return canonical or raw or "未分类"
+        return raw
+
+    @staticmethod
     def _asset_quality_level(item: Dict[str, Any]) -> int:
         grade = item.get("grade")
         try:
@@ -6790,6 +6856,19 @@ class DeltaForcePlugin(Star):
             numeric = 0
         if numeric > 0:
             return min(5, numeric)
+        try:
+            quality_numeric = int(float(str(item.get("quality") or "").strip()))
+        except (TypeError, ValueError):
+            quality_numeric = 0
+        if quality_numeric > 0:
+            return min(5, quality_numeric)
+        for key in ("rarity", "rawRarity"):
+            try:
+                rarity_numeric = int(float(str(item.get(key) or "").strip()))
+            except (TypeError, ValueError):
+                rarity_numeric = 0
+            if rarity_numeric > 0:
+                return min(5, rarity_numeric + 1)
         text = " ".join(
             str(item.get(key) or "").lower()
             for key in ("quality", "rarity", "rawRarity")
@@ -6813,6 +6892,8 @@ class DeltaForcePlugin(Star):
             value in normalized
             for value in ("weapon", "gun", "枪皮", "武器")
         ):
+            return "property-jz-bg.webp"
+        if any(value in normalized for value in ("dogtag", "nameplate", "军牌", "名牌")):
             return "property-jz-bg.webp"
         if any(
             value in normalized
