@@ -659,8 +659,11 @@ class DeltaForceClient:
             params=params,
         )
 
-    async def article_list(self):
-        return await self.get("/api/v1/df/tools/article/list")
+    async def article_list(self, page: int = 1, limit: int = 20):
+        return await self.get(
+            "/api/v1/df/tools/article/list",
+            params={"page": page, "limit": limit},
+        )
 
     async def article_detail(self, thread_id: str):
         return await self.get("/api/v1/df/tools/article/detail", params={"threadID": thread_id})

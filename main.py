@@ -8,6 +8,7 @@ import json
 import os
 import re
 from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote, urlparse, urlunparse
@@ -85,6 +86,93 @@ VOICE_SCENE_LABELS = {"InGame": "局内", "OutGame": "局外"}
 VOICE_ACTION_LABELS = {"Breath": "呼吸", "Combat": "战斗", "Death": "死亡", "Pain": "受伤"}
 MUSIC_MEMORY_TTL_SECONDS = 2 * 60
 MUSIC_LIST_PAGE_SIZE = 10
+ARTICLE_LIST_LIMIT = 20
+ARTICLE_IMAGE_LIMIT = 6
+ARTICLE_TEXT_LIMIT = 6000
+ARTICLE_TEXT_BLOCK_LIMIT = 1800
+
+
+class _ArticleHTMLParser(HTMLParser):
+    """按正文顺序提取文章文本与图片。"""
+
+    _BLOCK_TAGS = {
+        "address",
+        "article",
+        "blockquote",
+        "div",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "section",
+        "table",
+        "tbody",
+        "td",
+        "th",
+        "thead",
+        "tr",
+        "ul",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: List[Tuple[str, str]] = []
+        self._text_parts: List[str] = []
+        self._ignored_depth = 0
+
+    def _newline(self) -> None:
+        if self._text_parts and not self._text_parts[-1].endswith("\n"):
+            self._text_parts.append("\n")
+
+    def _flush_text(self) -> None:
+        raw = "".join(self._text_parts).replace("\r\n", "\n").replace("\r", "\n")
+        raw = re.sub(r"[^\S\n]+", " ", raw)
+        raw = re.sub(r" *\n *", "\n", raw)
+        text = re.sub(r"\n{3,}", "\n\n", raw).strip()
+        if text:
+            self.blocks.append(("text", text))
+        self._text_parts.clear()
+
+    def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
+        lowered = tag.casefold()
+        if lowered in {"script", "style"}:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if lowered == "img":
+            self._flush_text()
+            values = {str(key).casefold(): value for key, value in attrs}
+            source = values.get("src") or values.get("data-src") or values.get("data-original")
+            if source:
+                self.blocks.append(("image", str(source).strip()))
+            return
+        if lowered == "br" or lowered in self._BLOCK_TAGS:
+            self._newline()
+
+    def handle_endtag(self, tag: str) -> None:
+        lowered = tag.casefold()
+        if lowered in {"script", "style"} and self._ignored_depth:
+            self._ignored_depth -= 1
+            return
+        if not self._ignored_depth and lowered in self._BLOCK_TAGS:
+            self._newline()
+
+    def handle_data(self, data: str) -> None:
+        if data and not self._ignored_depth:
+            self._text_parts.append(data)
+
+    def close(self) -> None:
+        super().close()
+        self._flush_text()
 
 
 class _ScheduledEvent:
@@ -1522,13 +1610,23 @@ class DeltaForcePlugin(Star):
             if not self._ok(response):
                 return False
             data = self._data(response, {}) or {}
-            rows = self._first_list(data, ("list", "items", "data"))
+            if isinstance(data, dict) and data.get("available") is False:
+                return False
+            rows = [
+                row
+                for row in self._first_list(data, ("list", "items", "data"))
+                if isinstance(row, dict)
+            ]
             if not rows:
                 return True
             lines = ["【每日密码】"]
             for row in rows:
-                if isinstance(row, dict):
-                    lines.append(f"{row.get('mapName') or row.get('map') or '未知地图'}：{row.get('secret') or row.get('password') or '-'}")
+                map_name = row.get("mapName") or row.get("map_name") or row.get("map") or "未知地图"
+                secret_value = row.get("secret")
+                if secret_value is None:
+                    secret_value = row.get("password")
+                secret = str(secret_value).strip() if secret_value is not None else ""
+                lines.append(f"{map_name}：{secret or '暂无'}")
             return await self._send_scheduled_message(item["umo"], "\n".join(lines))
 
         binding = await self._binding_for_push(item)
@@ -9447,16 +9545,27 @@ class DeltaForcePlugin(Star):
         if isinstance(data, dict) and data.get("available") is False:
             yield event.plain_result(str(data.get("message") or "暂无可用的公共登录凭证。"))
             return
-        rows = self._first_list(data, ("list", "items", "data"))
+        rows = [
+            item
+            for item in self._first_list(data, ("list", "items", "data"))
+            if isinstance(item, dict)
+        ]
         if not rows:
             yield event.plain_result("今日暂无可用密码数据。")
             return
         lines = ["【每日密码】"]
         for item in rows:
-            if not isinstance(item, dict):
-                continue
-            map_name = item.get("mapName") or item.get("map_name") or item.get("name") or "未知地图"
-            secret = item.get("secret") or item.get("password") or "暂无"
+            map_name = str(
+                item.get("mapName")
+                or item.get("map_name")
+                or item.get("name")
+                or "未知地图"
+            ).strip()
+            secret_value = item.get("secret")
+            if secret_value is None:
+                secret_value = item.get("password")
+            secret = str(secret_value).strip() if secret_value is not None else ""
+            secret = secret or "暂无"
             lines.append(f"【{map_name}】: {secret}")
         yield event.plain_result("\n".join(lines))
 
@@ -10210,8 +10319,146 @@ class DeltaForcePlugin(Star):
         ):
             yield result
 
+    @staticmethod
+    def _article_author(article: Dict[str, Any]) -> str:
+        author = article.get("author") or article.get("authorName") or "未知作者"
+        if isinstance(author, dict):
+            author = (
+                author.get("nickname")
+                or author.get("name")
+                or author.get("userName")
+                or "未知作者"
+            )
+        return str(author).strip() or "未知作者"
+
+    @staticmethod
+    def _article_image_url(value: Any) -> str:
+        if isinstance(value, dict):
+            value = value.get("url") or value.get("src") or value.get("original")
+        raw = unescape(str(value or "")).strip()
+        if raw.startswith("//"):
+            raw = f"https:{raw}"
+        try:
+            parsed = urlparse(raw)
+        except ValueError:
+            return ""
+        if parsed.scheme.casefold() not in {"http", "https"} or not parsed.netloc:
+            return ""
+        return raw
+
+    @staticmethod
+    def _article_plain_text(value: Any) -> str:
+        parser = _ArticleHTMLParser()
+        try:
+            parser.feed(str(value or ""))
+            parser.close()
+        except Exception:
+            return str(value or "").strip()
+        return "\n".join(text for kind, text in parser.blocks if kind == "text").strip()
+
+    @staticmethod
+    def _article_text_chunks(text: str) -> List[str]:
+        remaining = str(text or "").strip()
+        chunks: List[str] = []
+        while remaining:
+            if len(remaining) <= ARTICLE_TEXT_BLOCK_LIMIT:
+                chunks.append(remaining)
+                break
+            cut = remaining.rfind("\n", 0, ARTICLE_TEXT_BLOCK_LIMIT + 1)
+            if cut < ARTICLE_TEXT_BLOCK_LIMIT // 2:
+                cut = ARTICLE_TEXT_BLOCK_LIMIT
+            chunks.append(remaining[:cut].strip())
+            remaining = remaining[cut:].strip()
+        return [chunk for chunk in chunks if chunk]
+
+    @classmethod
+    def _article_content_blocks(cls, article: Dict[str, Any]) -> List[Tuple[str, str]]:
+        blocks: List[Tuple[str, str]] = []
+        seen_images = set()
+        image_count = 0
+        omitted_images = 0
+        used_text = 0
+        text_truncated = False
+
+        def add_image(value: Any) -> bool:
+            nonlocal image_count, omitted_images
+            url = cls._article_image_url(value)
+            if not url or url in seen_images:
+                return False
+            seen_images.add(url)
+            if image_count >= ARTICLE_IMAGE_LIMIT:
+                omitted_images += 1
+                return True
+            blocks.append(("image", url))
+            image_count += 1
+            return True
+
+        cover = article.get("cover") or article.get("coverUrl") or article.get("cover_url")
+        add_image(cover)
+
+        content = article.get("content") or ""
+        if isinstance(content, dict):
+            content = content.get("text") or content.get("content") or content.get("html") or ""
+        parser = _ArticleHTMLParser()
+        try:
+            parser.feed(str(content))
+            parser.close()
+        except Exception as exc:
+            logger.warning(f"[文章详情] HTML 解析失败：{type(exc).__name__}")
+
+        body_added = False
+        for kind, value in parser.blocks:
+            if kind == "image":
+                body_added = add_image(value) or body_added
+                continue
+            if used_text >= ARTICLE_TEXT_LIMIT:
+                text_truncated = True
+                continue
+            remaining = ARTICLE_TEXT_LIMIT - used_text
+            text = value[:remaining].strip()
+            if not text:
+                continue
+            used_text += len(text)
+            text_truncated = text_truncated or len(value) > len(text)
+            blocks.extend(("text", chunk) for chunk in cls._article_text_chunks(text))
+            body_added = True
+
+        if not body_added:
+            summary = str(article.get("summary") or "").strip()
+            if summary:
+                plain_summary = cls._article_plain_text(summary)
+                blocks.extend(
+                    ("text", chunk)
+                    for chunk in cls._article_text_chunks(plain_summary[:ARTICLE_TEXT_LIMIT])
+                )
+                text_truncated = len(plain_summary) > ARTICLE_TEXT_LIMIT
+
+        if text_truncated:
+            blocks.append(("text", f"正文较长，仅展示前 {ARTICLE_TEXT_LIMIT} 字。"))
+        if omitted_images:
+            blocks.append(
+                (
+                    "text",
+                    f"正文图片较多，仅展示前 {ARTICLE_IMAGE_LIMIT} 张，已省略 {omitted_images} 张。",
+                )
+            )
+        return blocks
+
+    @staticmethod
+    def _article_tags(article: Dict[str, Any]) -> List[str]:
+        ext = article.get("ext") if isinstance(article.get("ext"), dict) else {}
+        raw_tags = ext.get("gicpTags") if isinstance(ext, dict) else []
+        tags = []
+        for tag in raw_tags if isinstance(raw_tags, list) else []:
+            if isinstance(tag, dict):
+                tag = tag.get("name") or tag.get("title") or tag.get("label")
+            text = str(tag or "").strip()
+            if text and text not in tags:
+                tags.append(text)
+        return tags
+
     async def _article_list(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
-        res = await self.client.article_list()
+        res = await self.client.article_list(page=1, limit=ARTICLE_LIST_LIMIT)
         if not self._ok(res):
             yield event.plain_result(f"文章列表查询失败: {self._message_of(res)}")
             return
@@ -10229,50 +10476,50 @@ class DeltaForcePlugin(Star):
         if not rows:
             yield event.plain_result("暂无文章数据。")
             return
-        lines = ["【三角洲行动 - 最新文章列表】"]
-        for index, article in enumerate(rows[:20], 1):
-            author = article.get("author") or "未知作者"
-            if isinstance(author, dict):
-                author = author.get("nickname") or author.get("name") or "未知作者"
+        blocks = []
+        for index, article in enumerate(rows[:ARTICLE_LIST_LIMIT], 1):
+            author = self._article_author(article)
             thread_id = article.get("threadID") or article.get("threadId") or article.get("id") or "-"
-            summary = str(article.get("summary") or "").strip()
-            lines.extend(
-                [
-                    f"\n{index}. 【{article.get('title') or '无标题'}】",
-                    f"作者: {author} | ID: {thread_id}",
-                    f"发布时间: {article.get('createdAt') or article.get('created_at') or '未知'}",
-                    f"浏览: {article.get('viewCount') or 0} | 点赞: {article.get('likedCount') or 0}",
-                ]
-            )
+            summary = self._article_plain_text(article.get("summary"))
+            lines = [
+                f"{index}. 【{article.get('title') or '无标题'}】",
+                f"作者: {author} | ID: {thread_id}",
+                f"发布时间: {article.get('createdAt') or article.get('created_at') or '未知'}",
+                f"浏览: {article.get('viewCount') or 0} | 点赞: {article.get('likedCount') or 0}",
+            ]
             if summary:
                 lines.append(summary[:100] + ("..." if len(summary) > 100 else ""))
-        lines.append("\n发送 文章详情 <ID> 查看具体内容。")
-        yield event.plain_result("\n".join(lines))
+            blocks.append("\n".join(lines))
+        blocks.append("发送 文章详情 <ID> 查看具体内容。")
+        yield self._forward_text_blocks_result(
+            event,
+            f"三角洲行动 - 最新文章列表 · {min(len(rows), ARTICLE_LIST_LIMIT)} 篇",
+            blocks,
+        )
 
     async def _article_detail(self, event: AstrMessageEvent, thread_id: str) -> AsyncGenerator[Any, None]:
+        thread_id = str(thread_id or "").strip()
+        if not thread_id.isdigit():
+            yield event.plain_result("文章 ID 必须为数字。格式：文章详情 <ID>")
+            return
         res = await self.client.article_detail(thread_id)
         if not self._ok(res):
             yield event.plain_result(f"文章详情查询失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
         article = data.get("article") if isinstance(data, dict) else None
+        if not isinstance(article, dict) and isinstance(data, dict) and (
+            data.get("title") or data.get("content")
+        ):
+            article = data
         if not isinstance(article, dict):
             yield event.plain_result("文章不存在或已删除。")
             return
-        author = article.get("author") or "未知作者"
-        if isinstance(author, dict):
-            author = author.get("nickname") or author.get("name") or "未知作者"
-        content = article.get("content") or ""
-        if isinstance(content, dict):
-            content = content.get("text") or content.get("content") or ""
-        text_content = re.sub(
-            r"\s+",
-            " ",
-            unescape(re.sub(r"<[^>]+>", "", str(content))),
-        ).strip()
-        tags = article.get("ext", {}).get("gicpTags", []) if isinstance(article.get("ext"), dict) else []
+        author = self._article_author(article)
+        tags = self._article_tags(article)
+        title = str(article.get("title") or "无标题")
         lines = [
-            f"【{article.get('title') or '无标题'}】",
+            f"【{title}】",
             f"作者: {author}",
             f"发布时间: {article.get('createdAt') or article.get('created_at') or '未知'}",
             f"浏览: {article.get('viewCount') or 0} | 点赞: {article.get('likedCount') or 0}",
@@ -10280,9 +10527,59 @@ class DeltaForcePlugin(Star):
         ]
         if tags:
             lines.append("标签: " + ", ".join(str(tag) for tag in tags))
-        if text_content:
-            lines.extend(["", text_content[:3500]])
-        yield event.plain_result("\n".join(lines))
+        info_text = "\n".join(lines)
+        content_blocks = self._article_content_blocks(article)
+        if not content_blocks:
+            content_blocks = [("text", "该文章没有可显示的正文或图片。")]
+
+        platform_getter = getattr(event, "get_platform_name", None)
+        chain_result = getattr(event, "chain_result", None)
+        try:
+            is_onebot = callable(platform_getter) and platform_getter() == "aiocqhttp"
+        except Exception:
+            is_onebot = False
+        supports_nodes = Comp is not None and all(
+            hasattr(Comp, name) for name in ("Image", "Node", "Nodes", "Plain")
+        )
+        if is_onebot and callable(chain_result) and supports_nodes:
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = [
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(f"三角洲行动 - {title}")],
+                ),
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(info_text)],
+                ),
+            ]
+            for kind, value in content_blocks:
+                component = Comp.Plain(value) if kind == "text" else Comp.Image.fromURL(value)
+                nodes.append(
+                    Comp.Node(
+                        uin=self_id,
+                        name="三角洲行动",
+                        content=[component],
+                    )
+                )
+            yield chain_result([Comp.Nodes(nodes)])
+            return
+
+        yield event.plain_result(info_text)
+        for kind, value in content_blocks:
+            if kind == "text":
+                yield event.plain_result(value)
+                continue
+            if callable(chain_result) and Comp is not None and hasattr(Comp, "Image"):
+                yield chain_result([Comp.Image.fromURL(value)])
+            else:
+                yield event.plain_result(f"图片: {value}")
 
     async def _ai_presets(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.ai_presets()
