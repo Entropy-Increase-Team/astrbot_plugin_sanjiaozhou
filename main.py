@@ -10548,6 +10548,42 @@ class DeltaForcePlugin(Star):
         lines = ["【TTS 服务状态】", f"服务：{status_text}"]
         if isinstance(data, dict) and data.get("error"):
             lines.append(f"原因：{data['error']}")
+
+        queue_result, preset_result = await asyncio.gather(
+            self.client.tts_queue(),
+            self.client.tts_presets(),
+            return_exceptions=True,
+        )
+        if isinstance(preset_result, dict) and self._ok(preset_result):
+            preset_data = self._data(preset_result, {}) or {}
+            presets = (
+                preset_data.get("presets")
+                if isinstance(preset_data, dict)
+                else None
+            )
+            if isinstance(presets, dict):
+                lines.append(f"角色预设：{len(presets)} 个")
+            else:
+                lines.append("角色预设：响应格式异常")
+        elif isinstance(preset_result, dict):
+            lines.append(f"角色预设：暂不可用（{self._message_of(preset_result)}）")
+        else:
+            lines.append("角色预设：暂不可用")
+
+        if isinstance(queue_result, dict) and self._ok(queue_result):
+            queue_data = self._data(queue_result, {}) or {}
+            if isinstance(queue_data, dict):
+                queue_length = max(0, int(self._number(queue_data.get("queueLength"))))
+                processing = bool(queue_data.get("processing"))
+                lines.append(
+                    f"合成队列：{'正在处理' if processing else '空闲'}｜等待 {queue_length} 个"
+                )
+            else:
+                lines.append("合成队列：响应格式异常")
+        elif isinstance(queue_result, dict):
+            lines.append(f"合成队列：暂不可用（{self._message_of(queue_result)}）")
+        else:
+            lines.append("合成队列：暂不可用")
         yield event.plain_result("\n".join(lines))
 
     async def _tts_presets(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:

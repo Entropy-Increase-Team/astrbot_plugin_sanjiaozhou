@@ -2,7 +2,7 @@
 
 <img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%">
 
-- 当前版本：`0.4.43`，详细变更见 [更新日志](CHANGELOG.md)。
+- 当前版本：`0.4.44`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动 AstrBot 插件，适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的游戏数据查询、计算器和娱乐功能。
 - 命令与渲染模板参考 Yunzai 版 `delta-force-plugin`，接口层和 AstrBot 命令入口按 AstrBot 插件机制重新实现。
 - 支持 QQ/微信扫码与 OAuth 登录、Gamesafe 微信安全中心授权、网页数据授权、Token 手动绑定、个人信息、日报、周报、战绩、主播巅峰赛、成就、研究中心、活动日历、藏品、物品、价格、利润、语音、TTS 等功能入口。
@@ -49,7 +49,7 @@ playwright install chromium
 - `render_timeout`: Playwright 渲染超时时间，单位毫秒。
 - `login_poll_timeout`: 扫码登录和网页登录授权的轮询超时时间，单位秒。
 - `login_poll_interval`: 扫码登录和网页登录授权的轮询间隔，单位秒。
-- `tts_enabled`: 是否启用 TTS 语音合成；关闭后仍可查询状态和角色预设。
+- `tts_enabled`: 是否启用 TTS 语音合成；关闭后仍可查询服务状态、角色预设数量和合成队列状态。
 - `tts_access_mode`: TTS 访问模式，支持 `blacklist`（默认）和 `whitelist`。
 - `tts_group_list`: TTS 群聊黑名单或白名单；私聊不会匹配群列表。
 - `tts_user_list`: TTS 用户黑名单或白名单。白名单模式下，用户或所在群任一命中即可使用；黑名单模式下，任一命中都会拒绝。
@@ -71,7 +71,7 @@ playwright install chromium
 
 ## 功能列表
 
-发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.43` 已接入主播巅峰赛排行榜、搜索、竞猜候选、快照、历史和统计查询；竞猜功能只读，不会提交游戏内答案。
+发送 `帮助` 查看基础菜单，发送 `娱乐帮助` 查看娱乐菜单，发送 `计算帮助` 查看计算器菜单。`0.4.44` 已完善 `tts状态`，可同时查看服务健康、角色预设数量、任务处理状态和等待队列长度；附加接口失败不会遮蔽服务健康结果。
 
 ### 个人类功能
 
@@ -146,6 +146,7 @@ playwright install chromium
 - [x] 歌词
 - [x] 音乐本地缓存、统计和管理员清理
 - [x] TTS 语音合成
+- [x] TTS 服务、角色预设数量和合成队列状态
 - [x] TTS 角色列表、预设列表、角色详情
 - [x] 最近 TTS 文件上传和语音重播
 
@@ -286,6 +287,7 @@ playwright install chromium
 | `歌词` | 获取最近播放歌曲的歌词 | `歌词` |
 | `音乐缓存状态` | 查看本地音乐缓存 | `音乐缓存状态` |
 | `清理音乐缓存` | 管理员清空本地音乐缓存 | `清理音乐缓存` |
+| `tts状态` | 查看 TTS 服务、角色预设数量和合成队列状态 | `tts状态` |
 | `tts <角色> [情感] <文本>` | 合成语音并等待发送 | `tts 麦晓雯 开心 你好呀` |
 | `tts上传` / `tts重播` | 发送最近五分钟内合成的文件或语音 | `tts上传` |
 

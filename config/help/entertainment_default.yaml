@@ -72,7 +72,7 @@ entertainmentHelpList:
         desc: "示例：使用指定角色和情感合成语音"
       - icon: 78
         title: "tts状态"
-        desc: "查看TTS服务状态和预设信息"
+        desc: "查看 TTS 服务、角色预设和合成队列状态"
       - icon: 78
         title: "tts角色列表 | tts预设列表"
         desc: "查看角色描述、默认情感和可用情感数量"
