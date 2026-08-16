@@ -3378,11 +3378,7 @@ class DeltaForcePlugin(Star):
         if not token:
             yield event.plain_result("您尚未绑定账号。")
             return
-        mode, _, rest = self._parse_mode_page(arg)
-        season = "7"
-        for part in arg.split():
-            if part.isdigit() or part.lower() == "all":
-                season = part
+        mode, season = self._parse_personal_data_args(arg)
         res = await self.client.personal_data(token, mode or "", season)
         if not self._ok(res):
             yield event.plain_result(f"查询数据失败: {self._message_of(res)}")
@@ -3393,11 +3389,151 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("暂未查询到该账号的游戏数据。")
             return
         identity = await self._render_identity(event, token)
+        object_ids = []
         for mode_name, detail in details:
-            render_data = self._build_personal_data(event, mode_name, detail, season, identity)
-            text = self._summary_dict(f"{'烽火' if mode_name == 'sol' else '全面'}个人数据", detail)
-            async for r in self._render_or_text(event, "Template/personalData/personalData.html", render_data, text, {"viewport_width": 1200, "viewport_height": 1800}):
-                yield r
+            if mode_name != "sol":
+                continue
+            object_ids.extend(
+                str(item.get("objectID") or item.get("objectId") or "").strip()
+                for key in ("redCollectionDetail", "gunPlayList")
+                for item in (detail.get(key) or [])
+                if isinstance(item, dict)
+            )
+        object_info = await self._object_info_map(object_ids)
+        prepared = []
+        for mode_name, detail in details:
+            render_data = self._build_personal_data(
+                event,
+                mode_name,
+                detail,
+                season,
+                identity,
+                object_info,
+            )
+            prepared.append(
+                (
+                    mode_name,
+                    render_data,
+                    self._personal_data_text(mode_name, render_data),
+                    await self._render_personal_data_card(render_data),
+                )
+            )
+
+        if len(prepared) > 1 and self._personal_data_onebot_supported(event):
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = [
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(f"【个人数据】\n赛季：{'全部' if season == 'all' else season}")],
+                )
+            ]
+            for mode_name, _render_data, text, image in prepared:
+                mode_title = "烽火地带" if mode_name == "sol" else "全面战场"
+                content = [Comp.Plain(f"【{mode_title} - 个人统计】\n")]
+                if image:
+                    content.append(Comp.Image.fromFileSystem(image))
+                else:
+                    content.append(Comp.Plain(text))
+                nodes.append(
+                    Comp.Node(
+                        uin=self_id,
+                        name="三角洲行动",
+                        content=content,
+                    )
+                )
+            yield event.chain_result([Comp.Nodes(nodes)])
+            return
+
+        for _mode_name, _render_data, text, image in prepared:
+            if image:
+                yield event.image_result(image)
+            else:
+                yield event.plain_result(text)
+
+    @staticmethod
+    def _parse_personal_data_args(arg: str) -> Tuple[Optional[str], str]:
+        mode = None
+        season = "7"
+        sol_aliases = {"sol", "烽火", "烽火地带", "摸金"}
+        mp_aliases = {"mp", "全面", "全面战场", "战场"}
+        for part in str(arg or "").split():
+            low = part.lower()
+            if low in sol_aliases:
+                mode = "sol"
+            elif low in mp_aliases:
+                mode = "mp"
+            elif low in {"all", "全部"}:
+                season = "all"
+            elif part.isdigit():
+                season = part
+        return mode, season
+
+    async def _render_personal_data_card(self, data: Dict[str, Any]) -> Optional[str]:
+        if not self.config.get("enable_image_render", True):
+            return None
+        try:
+            return await self.renderer.render_html(
+                "Template/personalData/personalData.html",
+                data,
+                {"viewport_width": 1200, "viewport_height": 1800},
+            )
+        except Exception as exc:
+            logger.warning(f"[三角洲个人数据] 图片渲染失败：{type(exc).__name__}")
+            return None
+
+    @staticmethod
+    def _personal_data_onebot_supported(event: AstrMessageEvent) -> bool:
+        platform_getter = getattr(event, "get_platform_name", None)
+        chain_result = getattr(event, "chain_result", None)
+        supports_nodes = Comp is not None and all(
+            hasattr(Comp, name) for name in ("Node", "Nodes", "Plain", "Image")
+        )
+        try:
+            return (
+                callable(platform_getter)
+                and platform_getter() == "aiocqhttp"
+                and callable(chain_result)
+                and supports_nodes
+            )
+        except Exception:
+            return False
+
+    def _personal_data_text(self, mode: str, data: Dict[str, Any]) -> str:
+        mode_title = "烽火个人数据" if mode == "sol" else "全面个人数据"
+        detail = data.get("solDetail") if mode == "sol" else data.get("mpDetail")
+        detail = detail if isinstance(detail, dict) else {}
+        rank = data.get("solRank") if mode == "sol" else data.get("mpRank")
+        lines = [
+            f"【{mode_title}】",
+            f"玩家：{data.get('userName') or '-'}",
+            f"赛季：{data.get('season') or '-'}",
+            f"段位：{rank or '-'}",
+            f"总对局：{detail.get('totalFight') or 0}",
+        ]
+        if mode == "sol":
+            lines.extend(
+                [
+                    f"总撤离：{detail.get('totalEscape') or 0}",
+                    f"总击杀：{detail.get('totalKill') or 0}",
+                    f"总带出价值：{detail.get('totalGainedPriceFormatted') or '-'}",
+                    f"总游戏时长：{detail.get('totalGameTime') or '-'}",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"总胜利：{detail.get('totalWin') or 0}",
+                    f"胜率：{detail.get('winRatioFormatted') or '-'}",
+                    f"总得分：{detail.get('totalScoreFormatted') or '-'}",
+                    f"总游戏时长：{detail.get('totalGameTime') or '-'}",
+                ]
+            )
+        return "\n".join(lines)
 
     def _extract_mode_details(self, raw: Any, mode: Optional[str]) -> List[Tuple[str, Dict[str, Any]]]:
         if not isinstance(raw, dict):
@@ -3423,8 +3559,10 @@ class DeltaForcePlugin(Star):
         detail: Dict[str, Any],
         season: str,
         identity: Optional[Dict[str, str]] = None,
+        object_info: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         identity = identity or {}
+        object_info = object_info or {}
         base = {
             "nickname": identity.get("userName") or self._sender_name(event),
             "userName": identity.get("userName") or self._sender_name(event),
@@ -3435,38 +3573,57 @@ class DeltaForcePlugin(Star):
         }
         if mode == "sol":
             rank = self.data_mgr.get_rank_by_score(detail.get("levelScore") or 0, "sol")
-            maps = []
-            for item in detail.get("mapList") or []:
-                name = self.data_mgr.get_map_name(item.get("mapID") or item.get("mapId"))
-                maps.append({**item, "mapName": name, "mapImage": self.data_mgr.get_map_image_path(name, "sol")})
+            maps = self._personal_sol_map_groups(detail.get("mapList") or [])
+            red_collection = []
+            for item in detail.get("redCollectionDetail") or []:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("objectID") or item.get("objectId") or "").strip()
+                metadata = object_info.get(item_id) or {}
+                red_collection.append(
+                    {
+                        **item,
+                        "objectName": self._personal_object_name(item, metadata, "物品", item_id),
+                        "imageUrl": self._personal_object_image(item, metadata, item_id),
+                        "priceFormatted": self.data_mgr.fmt_price(item.get("price")),
+                    }
+                )
+            red_collection.sort(key=lambda item: -self._number(item.get("price")))
+
+            gun_play = []
+            for item in detail.get("gunPlayList") or []:
+                if not isinstance(item, dict):
+                    continue
+                item_id = str(item.get("objectID") or item.get("objectId") or "").strip()
+                metadata = object_info.get(item_id) or {}
+                fight_count = self._number(item.get("fightCount"))
+                escape_count = self._number(item.get("escapeCount"))
+                gun_play.append(
+                    {
+                        **item,
+                        "weaponName": self._personal_object_name(item, metadata, "武器", item_id),
+                        "imageUrl": self._personal_object_image(item, metadata, item_id),
+                        "totalPriceFormatted": self._personal_million_value(item.get("totalPrice")),
+                        "escapeRate": (
+                            f"{escape_count / fight_count * 100:.1f}%"
+                            if fight_count > 0
+                            else "-"
+                        ),
+                    }
+                )
+            gun_play.sort(key=lambda item: -self._number(item.get("totalPrice")))
             base["solDetail"] = {
                 **detail,
-                "totalGameTime": self.data_mgr.fmt_duration(detail.get("totalGameTime") or 0),
-                "totalGainedPriceFormatted": self.data_mgr.fmt_price(detail.get("totalGainedPrice")),
+                "totalGameTime": self._personal_game_time(detail.get("totalGameTime")),
+                "totalGainedPriceFormatted": self._personal_million_value(detail.get("totalGainedPrice")),
                 "redTotalMoneyFormatted": self.data_mgr.fmt_price(detail.get("redTotalMoney")),
-                "profitLossRatioFormatted": self.data_mgr.fmt_price(detail.get("profitLossRatio")),
+                "profitLossRatioFormatted": self._personal_profit_loss_ratio(detail.get("profitLossRatio")),
                 "lowKD": self._ratio(detail.get("lowKillDeathRatio"), 100),
                 "medKD": self._ratio(detail.get("medKillDeathRatio"), 100),
                 "highKD": self._ratio(detail.get("highKillDeathRatio"), 100),
-                "mapList": [{"baseMapName": "地图统计", "maps": maps[:10]}],
-                "redCollectionList": [
-                    {
-                        **x,
-                        "objectName": x.get("objectName") or f"物品({x.get('objectID')})",
-                        "imageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{x.get('objectID')}.png",
-                        "priceFormatted": self.data_mgr.fmt_price(x.get("price")),
-                    }
-                    for x in (detail.get("redCollectionDetail") or [])[:10]
-                ],
-                "gunPlayList": [
-                    {
-                        **x,
-                        "weaponName": x.get("objectName") or f"武器({x.get('objectID')})",
-                        "imageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{x.get('objectID')}.png",
-                        "totalPriceFormatted": self.data_mgr.fmt_price(x.get("totalPrice")),
-                    }
-                    for x in (detail.get("gunPlayList") or [])[:10]
-                ],
+                "mapList": maps,
+                "redCollectionList": red_collection[:10],
+                "gunPlayList": gun_play[:10],
             }
             base["solRank"] = rank
             base["solRankImage"] = self.data_mgr.get_rank_image_path(rank, "sol")
@@ -3475,11 +3632,14 @@ class DeltaForcePlugin(Star):
             rank = self.data_mgr.get_rank_by_score(detail.get("levelScore") or 0, "mp")
             maps = []
             for item in detail.get("mapList") or []:
+                if not isinstance(item, dict):
+                    continue
                 name = self.data_mgr.get_map_name(item.get("mapID") or item.get("mapId"))
                 maps.append({**item, "mapName": name, "mapImage": self.data_mgr.get_map_image_path(name, "mp")})
+            maps.sort(key=lambda item: -self._number(item.get("totalCount")))
             base["mpDetail"] = {
                 **detail,
-                "totalGameTime": self.data_mgr.fmt_duration(detail.get("totalGameTime") or 0, "minutes"),
+                "totalGameTime": self._personal_game_time(detail.get("totalGameTime"), minutes=True),
                 "winRatioFormatted": f"{detail.get('winRatio')}%" if detail.get("winRatio") not in (None, "") else "-",
                 "totalScoreFormatted": self.data_mgr.fmt_num(detail.get("totalScore") or 0),
                 "avgKillPerMinuteFormatted": self._ratio(detail.get("avgKillPerMinute"), 100),
@@ -3490,6 +3650,120 @@ class DeltaForcePlugin(Star):
             base["mpRankImage"] = self.data_mgr.get_rank_image_path(rank, "mp")
             base["solDetail"] = None
         return base
+
+    def _personal_sol_map_groups(self, rows: Any) -> List[Dict[str, Any]]:
+        prepared = []
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, dict):
+                continue
+            name = self.data_mgr.get_map_name(item.get("mapID") or item.get("mapId"))
+            base_name = re.sub(r"-?(常规|机密|绝密|水淹|适应)$", "", name).strip() or name
+            prepared.append(
+                {
+                    **item,
+                    "mapName": name,
+                    "baseMapName": base_name,
+                    "mapImage": self.data_mgr.get_map_image_path(name, "sol"),
+                }
+            )
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in prepared:
+            grouped.setdefault(item["baseMapName"], []).append(item)
+        order = ["零号大坝", "长弓溪谷", "巴克什", "航天基地", "潮汐监狱", "海岸要塞"]
+        ordered_names = [name for name in order if name in grouped]
+        ordered_names.extend(sorted(name for name in grouped if name not in order))
+        groups = []
+        pending = []
+        for name in ordered_names:
+            maps = sorted(
+                grouped[name],
+                key=lambda item: -self._number(item.get("totalCount")),
+            )
+            group = {"baseMapName": name, "maps": maps}
+            if len(maps) == 1:
+                pending.append(group)
+                continue
+            if pending:
+                groups.append(self._merge_personal_single_map_groups(pending))
+                pending = []
+            groups.append(group)
+        if pending:
+            groups.append(self._merge_personal_single_map_groups(pending))
+        return groups
+
+    @staticmethod
+    def _merge_personal_single_map_groups(groups: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if len(groups) == 1:
+            return groups[0]
+        return {
+            "baseMapName": "merged",
+            "maps": [item for group in groups for item in group.get("maps") or []],
+        }
+
+    def _personal_object_name(
+        self,
+        item: Dict[str, Any],
+        metadata: Dict[str, Any],
+        prefix: str,
+        item_id: str,
+    ) -> str:
+        raw = (
+            metadata.get("gameName")
+            or metadata.get("objectName")
+            or metadata.get("name")
+            or item.get("gameName")
+            or item.get("objectName")
+            or item.get("name")
+            or f"{prefix}({item_id or '-'})"
+        )
+        return self.data_mgr.decode_text(raw)
+
+    @staticmethod
+    def _personal_object_image(
+        item: Dict[str, Any],
+        metadata: Dict[str, Any],
+        item_id: str,
+    ) -> str:
+        image = str(
+            item.get("pic")
+            or item.get("imageUrl")
+            or metadata.get("pic")
+            or metadata.get("prePic")
+            or ""
+        ).strip()
+        if image:
+            return image
+        return (
+            f"https://playerhub.df.qq.com/playerhub/60004/object/{item_id}.png"
+            if item_id
+            else ""
+        )
+
+    @staticmethod
+    def _personal_game_time(value: Any, minutes: bool = False) -> str:
+        try:
+            total_minutes = int(float(value or 0)) if minutes else int(float(value or 0)) // 60
+        except (TypeError, ValueError, OverflowError):
+            return "0分钟"
+        total_minutes = max(0, total_minutes)
+        hours, remain = divmod(total_minutes, 60)
+        return f"{hours}小时{remain}分钟" if hours else f"{remain}分钟"
+
+    @staticmethod
+    def _personal_million_value(value: Any) -> str:
+        try:
+            number = float(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            return "-"
+        return f"{number / 1_000_000:.2f}M" if number else "-"
+
+    @staticmethod
+    def _personal_profit_loss_ratio(value: Any) -> str:
+        try:
+            number = float(value or 0)
+        except (TypeError, ValueError, OverflowError):
+            return "-"
+        return f"{number / 100_000:.1f}K" if number else "-"
 
     async def _record(self, event: AstrMessageEvent, arg: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)

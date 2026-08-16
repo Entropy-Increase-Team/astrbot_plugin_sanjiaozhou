@@ -45,12 +45,13 @@ body {
 .header-left { display: flex; align-items: center; gap: 30px; }
 .logo-box img { height: 70px; }
 
-.header-right { display: flex; align-items: flex-start; gap: 20px; }
-.user-info { text-align: right; display: flex; flex-direction: column; }
-.user-name-row { display: flex; align-items: center; gap: 15px; justify-content: flex-end; margin-bottom: 6px; }
+.header-right { display: flex; align-items: flex-start; gap: 20px; min-width: 0; }
+.user-info { text-align: right; display: flex; flex-direction: column; min-width: 0; max-width: 620px; }
+.user-name-row { display: flex; align-items: center; gap: 15px; justify-content: flex-end; margin-bottom: 6px; min-width: 0; }
 .season-info { font-size: 18px; color: #FFFFFF; font-weight: 700; }
-.user-name { font-size: 36px; font-weight: 700; color: #FFFFFF; }
+.user-name { font-size: 36px; font-weight: 700; color: #FFFFFF; line-height: 1.15; overflow-wrap: anywhere; word-break: break-word; }
 .report-date { font-size: 16px; color: #FFFFFF; font-weight: 700; }
+.avatar-wrapper { flex: 0 0 auto; }
 .avatar-wrapper img {
     width: 100px; height: 100px;
     border: 2px solid var(--primary-color);
