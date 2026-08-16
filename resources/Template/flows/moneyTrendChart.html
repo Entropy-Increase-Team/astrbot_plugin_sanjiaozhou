@@ -45,7 +45,7 @@
                                   font-weight="700" 
                                   font-family="Arial, sans-serif"
                                   dominant-baseline="middle">
-                                {{point.balance}}
+                                {{point.balanceShort || point.balance}}
                             </text>
                         </g>
                         {{/each}}
@@ -61,9 +61,9 @@
                 </div>
                 <div class="chart-summary">
                     <span class="chart-summary-text">起始余额：{{moneyTrendChart.startBalance}} → 结束余额：{{moneyTrendChart.endBalance}}</span>
-                    <span class="chart-summary-text" style="margin-left: 20px;">最高：{{moneyTrendChart.maxBalance}} | 最低：{{moneyTrendChart.minBalance}}</span>
+                    <span class="chart-summary-text">最高：{{moneyTrendChart.maxBalance}} | 最低：{{moneyTrendChart.minBalance}}</span>
                     {{if moneyTrendChart.totalChange}}
-                    <span class="chart-summary-text" style="margin-left: 20px;">总计变化：{{moneyTrendChart.totalChange}}</span>
+                    <span class="chart-summary-text chart-summary-change">总计变化：{{moneyTrendChart.totalChange}}</span>
                     {{/if}}
                 </div>
             </div>

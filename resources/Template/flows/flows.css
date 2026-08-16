@@ -2,7 +2,7 @@
 body {
     background: #0b0f13;
     color: #F2F2F2;
-    width: 2200px;
+    width: 1600px;
     height: auto;
     min-height: 400px;
     transform: none;
@@ -13,7 +13,7 @@ body {
 /* ========== 容器样式 ========== */
 .container {
     position: relative;
-    width: 2200px;
+    width: 1600px;
     min-height: 400px;
     margin: 0 auto;
     background: transparent;
@@ -110,7 +110,8 @@ body {
 .info-item {
     display: inline-flex;
     align-items: center;
-    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
 }
 
 .info-label {
@@ -122,6 +123,8 @@ body {
 .info-value {
     color: #F2F2F2;
     font-weight: 600;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 /* ========== 统计标签 ========== */
@@ -145,7 +148,7 @@ body {
 
 .stat-tag-name {
     color: #F2F2F2;
-    white-space: nowrap;
+    overflow-wrap: anywhere;
 }
 
 .stat-tag-count {
@@ -162,10 +165,10 @@ body {
     gap: 15px;
 }
 
-/* 五列网格布局：设备、道具和货币流水（行排序） */
+/* 四列网格布局：在 1600 像素宽度下兼顾信息密度与长文本可读性 */
 .flow-list-five-column {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 12px;
     align-items: start;
 }
@@ -174,20 +177,24 @@ body {
     display: flex;
     flex-direction: column;
     gap: 12px;
+    min-width: 0;
 }
 
 .flow-item {
     background: rgba(30, 35, 40, 0.8);
     border: 1px solid rgba(80, 85, 90, 0.5);
     border-radius: 0;
-    padding: 18px 20px;
+    padding: 16px;
     transition: all 0.2s ease;
+    min-width: 0;
 }
 
 .flow-header {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 10px;
+    flex-wrap: wrap;
+    min-width: 0;
     margin-bottom: 15px;
     padding-bottom: 12px;
     border-bottom: 1px solid rgba(80, 85, 90, 0.3);
@@ -203,6 +210,8 @@ body {
     color: #F2F2F2;
     font-size: 16px;
     font-weight: 600;
+    min-width: 0;
+    overflow-wrap: anywhere;
 }
 
 .flow-details {
@@ -226,11 +235,20 @@ body {
 .detail-value {
     color: #F2F2F2;
     flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .detail-change {
     font-weight: 700;
     margin-left: 10px;
+}
+
+.detail-value-number {
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: normal;
+    word-break: normal;
 }
 
 .detail-change.positive {

@@ -1833,8 +1833,12 @@ class DeltaForcePlugin(Star):
             async for r in self._money(event):
                 yield r
             return
-        if m := re.fullmatch(r"(流水|flows)(?:\s+(设备|道具|货币|all))?(?:\s+(all|\d+))?", body):
-            async for r in self._flows(event, m.group(2) or "", m.group(3) or "1"):
+        if m := re.fullmatch(r"(流水|flows)\s*(.*)", body):
+            flow_type, page, error = self._parse_flows_args(m.group(2))
+            if error:
+                yield event.plain_result(error)
+                return
+            async for r in self._flows(event, flow_type, page):
                 yield r
             return
         if m := re.fullmatch(r"(藏品|资产)(?:\s+(.*))?", body):
@@ -4779,6 +4783,41 @@ class DeltaForcePlugin(Star):
             lines.append(f"{name}: {amount}")
         yield event.plain_result("\n".join(lines))
 
+    @staticmethod
+    def _parse_flows_args(arg: str) -> Tuple[str, str, str]:
+        parts = str(arg or "").split()
+        if len(parts) > 2:
+            return "", "1", "格式：流水 [设备/道具/货币/all] [页码/all]"
+        if not parts:
+            return "", "1", ""
+
+        first = parts[0].lower()
+        type_aliases = {
+            "设备": "设备",
+            "device": "设备",
+            "道具": "道具",
+            "item": "道具",
+            "货币": "货币",
+            "money": "货币",
+        }
+        if first == "all":
+            if len(parts) == 2 and parts[1].lower() != "all" and not parts[1].isdigit():
+                return "", "1", "格式：流水 [设备/道具/货币/all] [页码/all]"
+            return "", "all", ""
+        if first.isdigit():
+            if len(parts) > 1:
+                return "", "1", "格式：流水 [设备/道具/货币/all] [页码/all]"
+            return "", first, ""
+        flow_type = type_aliases.get(first)
+        if not flow_type:
+            return "", "1", "未知的流水类型，支持：设备、道具、货币、all。"
+        if len(parts) == 1:
+            return flow_type, "1", ""
+        page = parts[1].lower()
+        if page == "all" or page.isdigit():
+            return flow_type, page, ""
+        return "", "1", "格式：流水 [设备/道具/货币/all] [页码/all]"
+
     async def _flows(self, event: AstrMessageEvent, flow_type: str, page: str) -> AsyncGenerator[Any, None]:
         token = await self._need_token(event)
         if not token:
@@ -4790,39 +4829,144 @@ class DeltaForcePlugin(Star):
             *(self._fetch_flows(token, type_id, page) for _name, type_id in targets),
             return_exceptions=True,
         )
+        prepared = []
         for (type_name, type_id), res in zip(targets, results):
             if isinstance(res, Exception):
-                yield event.plain_result(f"{type_name}流水查询失败: {res}")
+                logger.warning(f"[三角洲流水] {type_name}查询异常：{type(res).__name__}")
+                prepared.append(
+                    {
+                        "typeName": type_name,
+                        "typeValue": int(type_id),
+                        "text": f"【{type_name}流水】{self._flow_page_text(page)}\n查询异常，请稍后重试。",
+                        "image": None,
+                        "trendImage": None,
+                    }
+                )
                 continue
             if not self._ok(res):
-                yield event.plain_result(f"{type_name}流水查询失败: {self._message_of(res)}")
+                prepared.append(
+                    {
+                        "typeName": type_name,
+                        "typeValue": int(type_id),
+                        "text": f"【{type_name}流水】{self._flow_page_text(page)}\n查询失败：{self._message_of(res)}",
+                        "image": None,
+                        "trendImage": None,
+                    }
+                )
                 continue
             data = self._adapt_flows(res, int(type_id), type_name, page)
             record_count = sum(len(column) for key, value in data.items() if key.endswith("Columns") for column in value)
             if record_count == 0:
-                yield event.plain_result(f"【{type_name}流水】第 {data['page']} 页暂无记录。")
+                prepared.append(
+                    {
+                        "typeName": type_name,
+                        "typeValue": int(type_id),
+                        "text": f"【{type_name}流水】{self._flow_page_text(page)}\n暂无记录。",
+                        "image": None,
+                        "trendImage": None,
+                    }
+                )
                 continue
             text = self._flows_text(data)
             trend_data = data.get("moneyTrendChart") if type_id == "3" else None
-            if trend_data and self.config.get("enable_image_render", True):
-                try:
-                    trend_image = await self.renderer.render_html(
-                        "Template/flows/moneyTrendChart.html",
-                        {"moneyTrendChart": trend_data},
-                        {"viewport_width": 1000, "viewport_height": 500},
+            trend_image = await self._render_flow_trend(trend_data) if trend_data else None
+            image = await self._render_flow_card(data)
+            prepared.append(
+                {
+                    "typeName": type_name,
+                    "typeValue": int(type_id),
+                    "text": text,
+                    "image": image,
+                    "trendImage": trend_image,
+                }
+            )
+
+        if self._flows_onebot_forward_supported(event, prepared):
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = []
+            for item in prepared:
+                type_name = item["typeName"]
+                if item.get("trendImage"):
+                    nodes.append(
+                        Comp.Node(
+                            uin=self_id,
+                            name="三角洲行动",
+                            content=[
+                                Comp.Plain(f"【{type_name}流水】资产余额变化趋势\n"),
+                                Comp.Image.fromFileSystem(item["trendImage"]),
+                            ],
+                        )
                     )
-                    if trend_image:
-                        yield event.image_result(trend_image)
-                except Exception as exc:
-                    logger.warning(f"[三角洲流水] 金额趋势图渲染失败：{type(exc).__name__}")
-            async for result in self._render_or_text(
-                event,
+                if item.get("image"):
+                    content = [
+                        Comp.Plain(f"【{type_name}流水】{self._flow_page_text(page)}\n"),
+                        Comp.Image.fromFileSystem(item["image"]),
+                    ]
+                else:
+                    content = [Comp.Plain(item["text"])]
+                nodes.append(
+                    Comp.Node(
+                        uin=self_id,
+                        name="三角洲行动",
+                        content=content,
+                    )
+                )
+            yield event.chain_result([Comp.Nodes(nodes)])
+            return
+
+        for item in prepared:
+            if item.get("trendImage"):
+                yield event.image_result(item["trendImage"])
+            if item.get("image"):
+                yield event.image_result(item["image"])
+            else:
+                yield event.plain_result(item["text"])
+
+    async def _render_flow_card(self, data: Dict[str, Any]) -> Optional[str]:
+        if not self.config.get("enable_image_render", True):
+            return None
+        try:
+            return await self.renderer.render_html(
                 "Template/flows/flows.html",
                 data,
-                text,
-                {"viewport_width": 2200, "viewport_height": 1200},
-            ):
-                yield result
+                {"viewport_width": 1600, "viewport_height": 1200},
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[三角洲流水] {data.get('typeName') or '未知类型'}明细渲染失败：{type(exc).__name__}"
+            )
+            return None
+
+    async def _render_flow_trend(self, trend_data: Dict[str, Any]) -> Optional[str]:
+        if not self.config.get("enable_image_render", True):
+            return None
+        try:
+            return await self.renderer.render_html(
+                "Template/flows/moneyTrendChart.html",
+                {"moneyTrendChart": trend_data},
+                {"viewport_width": 1000, "viewport_height": 500},
+            )
+        except Exception as exc:
+            logger.warning(f"[三角洲流水] 金额趋势图渲染失败：{type(exc).__name__}")
+            return None
+
+    def _flows_onebot_forward_supported(
+        self,
+        event: AstrMessageEvent,
+        prepared: List[Dict[str, Any]],
+    ) -> bool:
+        needs_forward = len(prepared) > 1 or any(
+            item.get("typeValue") == 3 for item in prepared
+        )
+        return needs_forward and self._personal_data_onebot_supported(event)
+
+    @staticmethod
+    def _flow_page_text(page: str) -> str:
+        return "全部" if page == "all" else f"第 {page} 页"
 
     async def _fetch_flows(self, token: str, type_id: str, page: str) -> Dict[str, Any]:
         if page != "all":
@@ -4953,7 +5097,7 @@ class DeltaForcePlugin(Star):
         balance_range = maximum - minimum or 1
         chart_width = 800
         chart_height = 120
-        padding = {"top": 20, "right": 10, "bottom": 30, "left": 10}
+        padding = {"top": 20, "right": 45, "bottom": 30, "left": 45}
         plot_width = chart_width - padding["left"] - padding["right"]
         plot_height = chart_height - padding["top"] - padding["bottom"]
         points = []
@@ -4970,6 +5114,7 @@ class DeltaForcePlugin(Star):
                     "date": "-".join(date_parts[-2:]) if len(date_parts) >= 3 else item["date"],
                     "fullDate": item["date"],
                     "balance": self.data_mgr.fmt_num(item["endBalance"]),
+                    "balanceShort": self._flow_compact_number(item["endBalance"]),
                     "totalChange": self.data_mgr.fmt_num(item["totalChange"]),
                     "startBalance": self.data_mgr.fmt_num(item["startBalance"]),
                     "recordCount": item["recordCount"],
@@ -5009,8 +5154,22 @@ class DeltaForcePlugin(Star):
             return 0.0
 
     @staticmethod
+    def _flow_compact_number(value: Any) -> str:
+        number = DeltaForcePlugin._flow_number(value)
+        absolute = abs(number)
+        for threshold, suffix in (
+            (1_000_000_000_000, "T"),
+            (1_000_000_000, "B"),
+            (1_000_000, "M"),
+            (1_000, "K"),
+        ):
+            if absolute >= threshold:
+                return f"{number / threshold:.2f}{suffix}"
+        return f"{number:,.0f}"
+
+    @staticmethod
     def _flow_columns(records: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-        columns = [[] for _ in range(min(5, max(1, len(records))))]
+        columns = [[] for _ in range(min(4, max(1, len(records))))]
         for index, record in enumerate(records):
             columns[index % len(columns)].append(record)
         return columns if records else []
@@ -5026,7 +5185,8 @@ class DeltaForcePlugin(Star):
     def _flows_text(data: Dict[str, Any]) -> str:
         key = {1: "loginColumns", 2: "itemColumns", 3: "moneyColumns"}[data["typeValue"]]
         rows = [item for column in data.get(key, []) for item in column]
-        lines = [f"【{data['typeName']}流水】第 {data['page']} 页，共 {len(rows)} 条"]
+        page_text = "全部" if data.get("page") == "全部" else f"第 {data.get('page')} 页"
+        lines = [f"【{data['typeName']}流水】{page_text}，共 {len(rows)} 条"]
         for item in sorted(rows, key=lambda value: value.get("index", 0))[:20]:
             if data["typeValue"] == 1:
                 lines.append(f"{item['index']}. {item['indtEventTime']} {item['SystemHardware']} {item['vClientIP']}")

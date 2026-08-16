@@ -126,6 +126,9 @@
                         <div class="detail-row">
                             <span class="detail-label">物品：</span>
                             <span class="detail-value">{{record.Name}}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">变动：</span>
                             <span class="detail-change {{record.changeType}}">{{record.AddOrReduce}}</span>
                         </div>
                         <div class="detail-row">
@@ -159,8 +162,10 @@
                         <div class="detail-row">
                             <span class="detail-label">变动：</span>
                             <span class="detail-change {{record.changeType}}">{{record.AddOrReduce}}</span>
-                            <span class="detail-label" style="margin-left: 20px;">余额：</span>
-                            <span class="detail-value">{{record.leftMoney}}</span>
+                        </div>
+                        <div class="detail-row">
+                            <span class="detail-label">余额：</span>
+                            <span class="detail-value detail-value-number">{{record.leftMoney}}</span>
                         </div>
                         <div class="detail-row">
                             <span class="detail-label">原因：</span>

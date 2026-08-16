@@ -180,7 +180,10 @@ body {
 }
 
 .chart-summary {
-    text-align: center;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 20px;
+    text-align: left;
     padding-top: 8px;
     border-top: 1px solid rgba(15, 247, 150, 0.2);
 }
@@ -189,6 +192,13 @@ body {
     color: #0FF796;
     font-weight: 700;
     font-size: 14px;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.chart-summary-change {
+    grid-column: 1 / -1;
+    text-align: center;
 }
 
 /* ========== 空消息 ========== */
