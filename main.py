@@ -7750,21 +7750,134 @@ class DeltaForcePlugin(Star):
     async def _resolve_item_id(self, keyword: str) -> str:
         if keyword.isdigit():
             return keyword
-        res = await self.client.object_search(keyword, limit="1")
-        rows = self._first_list(self._data(res, {}), ("items", "list", "data", "objects"))
-        if rows:
-            return str(rows[0].get("objectID") or rows[0].get("objectId") or rows[0].get("id") or keyword)
-        value = await self.client.object_value_search(keyword)
-        rows = self._first_list(self._data(value, {}), ("items", "list", "data", "keywords"))
-        if rows:
-            return str(rows[0].get("id") or rows[0].get("objectID") or rows[0].get("objectId") or keyword)
-        return keyword
+        targets, _missing, _overflow = await self._resolve_item_queries(keyword, 1)
+        return targets[0]["id"] if targets else keyword
+
+    @staticmethod
+    def _split_item_queries(query: str) -> List[str]:
+        raw = str(query or "").strip()
+        if not raw:
+            return []
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                values = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                values = None
+            if isinstance(values, list):
+                return [str(value).strip() for value in values if str(value).strip()]
+        return [part.strip().strip("\"'") for part in re.split(r"[,，]", raw) if part.strip().strip("\"'")]
+
+    @staticmethod
+    def _item_target(item: Dict[str, Any], fallback_name: str = "") -> Optional[Dict[str, str]]:
+        item_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "").strip()
+        if not item_id.isdigit():
+            return None
+        item_name = str(item.get("gameName") or item.get("objectName") or fallback_name or f"物品ID: {item_id}").strip()
+        return {"id": item_id, "name": item_name or f"物品ID: {item_id}"}
+
+    async def _resolve_item_queries(
+        self,
+        query: str,
+        max_results: int,
+    ) -> Tuple[List[Dict[str, str]], List[str], bool]:
+        parts = self._split_item_queries(query)
+        overflow = len(parts) > max_results
+        parts = parts[:max_results]
+        multiple_queries = len(parts) > 1
+        targets: List[Dict[str, str]] = []
+        missing: List[str] = []
+        seen_ids = set()
+
+        for part in parts:
+            remaining = max_results - len(targets)
+            if remaining <= 0:
+                overflow = True
+                break
+            search_limit = 1 if multiple_queries or part.isdigit() else remaining
+            res = await self.client.object_search(part, limit=str(search_limit))
+            rows = [
+                item
+                for item in self._first_list(self._data(res, {}), ("items", "list", "data", "objects", "keywords"))
+                if isinstance(item, dict)
+            ]
+            if not rows and not part.isdigit():
+                value = await self.client.object_value_search(part)
+                rows = [
+                    item
+                    for item in self._first_list(self._data(value, {}), ("items", "list", "data", "keywords"))
+                    if isinstance(item, dict)
+                ]
+            if part.isdigit() and not rows:
+                rows = [{"objectID": part, "objectName": f"物品ID: {part}"}]
+            if multiple_queries:
+                rows = rows[:1]
+            else:
+                rows = rows[:remaining]
+
+            resolved = False
+            for item in rows:
+                target = self._item_target(item, part)
+                if not target:
+                    continue
+                resolved = True
+                if target["id"] in seen_ids:
+                    continue
+                seen_ids.add(target["id"])
+                targets.append(target)
+            if not resolved and not part.isdigit():
+                missing.append(part)
+
+        return targets, missing, overflow
+
+    def _forward_text_blocks_result(
+        self,
+        event: AstrMessageEvent,
+        title: str,
+        blocks: List[str],
+    ) -> Any:
+        cleaned = [str(block).strip() for block in blocks if str(block).strip()]
+        platform_getter = getattr(event, "get_platform_name", None)
+        chain_result = getattr(event, "chain_result", None)
+        try:
+            is_onebot = callable(platform_getter) and platform_getter() == "aiocqhttp"
+        except Exception:
+            is_onebot = False
+        supports_nodes = Comp is not None and all(hasattr(Comp, name) for name in ("Node", "Nodes", "Plain"))
+        if len(cleaned) > 1 and is_onebot and callable(chain_result) and supports_nodes:
+            self_id_getter = getattr(event, "get_self_id", None)
+            try:
+                self_id = str(self_id_getter() or "0") if callable(self_id_getter) else "0"
+            except Exception:
+                self_id = "0"
+            nodes = [
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(f"【{title}】")],
+                )
+            ]
+            nodes.extend(
+                Comp.Node(
+                    uin=self_id,
+                    name="三角洲行动",
+                    content=[Comp.Plain(block)],
+                )
+                for block in cleaned
+            )
+            return chain_result([Comp.Nodes(nodes)])
+        body = "\n\n".join(cleaned)
+        return event.plain_result(f"【{title}】" + (f"\n{body}" if body else ""))
 
     async def _price_now(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
-        item_id = await self._resolve_item_id(keyword)
-        res = await self.client.current_price(item_id)
+        targets, missing, overflow = await self._resolve_item_queries(keyword, 5)
+        if not targets:
+            yield event.plain_result(f"未找到相关物品：{keyword}")
+            return
+        requested_ids = [target["id"] for target in targets]
+        res = await self.client.current_price(",".join(requested_ids))
         if not self._ok(res):
-            res = await self.client.object_value_search(keyword)
+            if len(targets) == 1:
+                res = await self.client.object_value_search(targets[0]["id"])
         if not self._ok(res):
             yield event.plain_result(f"当前价格查询失败: {self._message_of(res)}")
             return
@@ -7772,45 +7885,81 @@ class DeltaForcePlugin(Star):
         rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
         if not rows and isinstance(data, dict) and data.get("avgPrice") is not None:
             rows = [data]
-        if not rows:
-            yield event.plain_result(f"未查询到“{keyword}”的当前价格。")
-            return
-        lines = [f"【当前价格：{keyword}】"]
-        for item in rows:
-            item_id = item.get("objectID") or item.get("id") or item_id
-            lines.append(f"物品 {item_id}: {self.data_mgr.fmt_num(item.get('avgPrice') or item.get('price') or 0)}")
-        yield event.plain_result("\n".join(lines))
+        row_map = {
+            str(item.get("objectID") or item.get("objectId") or item.get("id")): item
+            for item in rows
+        }
+        blocks = []
+        for target in targets:
+            item = row_map.get(target["id"])
+            if not item:
+                blocks.append(f"{target['name']}（{target['id']}）\n未查询到该物品的当前价格。")
+                continue
+            price = item.get("avgPrice")
+            if price is None:
+                price = item.get("price")
+            blocks.append(
+                f"{target['name']}（{target['id']}）\n"
+                f"当前均价：{self.data_mgr.fmt_num(price or 0)}"
+            )
+        if missing:
+            blocks.append("未找到：" + "、".join(missing))
+        if overflow:
+            blocks.append("单次最多查询 5 个物品，超出部分已忽略。")
+        yield self._forward_text_blocks_result(event, f"当前价格 · {len(targets)} 个物品", blocks)
 
     async def _price_history(self, event: AstrMessageEvent, keyword: str) -> AsyncGenerator[Any, None]:
-        item_id = await self._resolve_item_id(keyword)
-        res = await self.client.price_history_v2(item_id)
+        targets, missing, overflow = await self._resolve_item_queries(keyword, 3)
+        if not targets:
+            yield event.plain_result(f"未找到相关物品：{keyword}")
+            return
+        requested_ids = [target["id"] for target in targets]
+        res = await self.client.price_history_v2(",".join(requested_ids))
         if not self._ok(res):
-            res = await self.client.object_value_history(item_id)
+            if len(targets) == 1:
+                res = await self.client.object_value_history(targets[0]["id"])
         if not self._ok(res):
             yield event.plain_result(f"价格历史查询失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
-        item = data
-        if isinstance(data, dict) and isinstance(data.get("items"), list):
-            item = data["items"][0] if data["items"] else {}
-        if not isinstance(item, dict) or not item:
-            yield event.plain_result(f"未查询到“{keyword}”的价格历史。")
-            return
-        stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
-        lines = [f"【价格历史：{item.get('objectName') or keyword}】", f"物品 ID: {item.get('objectID') or item_id}"]
-        if stats:
-            lines.extend(
-                [
-                    f"最新: {self.data_mgr.fmt_num(stats.get('latestPrice') or 0)}",
-                    f"平均: {self.data_mgr.fmt_num(stats.get('avgPrice') or 0)}",
-                    f"最低/最高: {self.data_mgr.fmt_num(stats.get('minPrice') or 0)} / {self.data_mgr.fmt_num(stats.get('maxPrice') or 0)}",
-                    f"变化: {self._format_profit(stats.get('priceChange') or 0)}（{self._number(stats.get('priceChangePercent')):.2f}%）",
-                ]
-            )
-        else:
-            history = self._first_list(item, ("history", "list", "data"))
-            lines.extend(f"{point.get('hour') or point.get('timestamp')}: {self.data_mgr.fmt_num(point.get('price') or point.get('avgPrice') or 0)}" for point in history[:10] if isinstance(point, dict))
-        yield event.plain_result("\n".join(lines))
+        rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
+        if not rows and isinstance(data, dict) and (data.get("objectID") or data.get("history")):
+            rows = [data]
+        row_map = {
+            str(item.get("objectID") or item.get("objectId") or item.get("id")): item
+            for item in rows
+        }
+        blocks = []
+        for target in targets:
+            item = row_map.get(target["id"])
+            if not item:
+                blocks.append(f"{target['name']}（{target['id']}）\n未查询到该物品的价格历史。")
+                continue
+            stats = item.get("stats") if isinstance(item.get("stats"), dict) else {}
+            lines = [f"{item.get('objectName') or target['name']}（{target['id']}）"]
+            if stats:
+                lines.extend(
+                    [
+                        f"最新：{self.data_mgr.fmt_num(stats.get('latestPrice') or 0)}",
+                        f"平均：{self.data_mgr.fmt_num(stats.get('avgPrice') or 0)}",
+                        f"最低/最高：{self.data_mgr.fmt_num(stats.get('minPrice') or 0)} / {self.data_mgr.fmt_num(stats.get('maxPrice') or 0)}",
+                        f"变化：{self._format_profit(stats.get('priceChange') or 0)}（{self._number(stats.get('priceChangePercent')):.2f}%）",
+                    ]
+                )
+            history = [point for point in self._first_list(item, ("history", "list", "data")) if isinstance(point, dict)]
+            if history:
+                lines.append("最近价格：")
+                lines.extend(
+                    f"{point.get('hour') or point.get('timestamp') or '-'}："
+                    f"{self.data_mgr.fmt_num(point.get('price') or point.get('avgPrice') or 0)}"
+                    for point in history[:6]
+                )
+            blocks.append("\n".join(lines))
+        if missing:
+            blocks.append("未找到：" + "、".join(missing))
+        if overflow:
+            blocks.append("单次最多查询 3 个物品，超出部分已忽略。")
+        yield self._forward_text_blocks_result(event, f"价格历史 · {len(targets)} 个物品", blocks)
 
     @staticmethod
     def _parse_ocr_search_args(arg: str, default_days: int, max_days: int) -> tuple[str, int, str]:
@@ -8091,7 +8240,45 @@ class DeltaForcePlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     async def _material_price(self, event: AstrMessageEvent, item_id: str) -> AsyncGenerator[Any, None]:
-        res = await self.client.material_price(item_id)
+        query = str(item_id or "").strip()
+        if query:
+            targets, missing, overflow = await self._resolve_item_queries(query, 5)
+            if not targets:
+                yield event.plain_result(f"未找到相关物品：{query}")
+                return
+            blocks = []
+            for target in targets:
+                res = await self.client.material_price(target["id"], "1", "5")
+                if not self._ok(res):
+                    blocks.append(f"{target['name']}（{target['id']}）\n查询失败：{self._message_of(res)}")
+                    continue
+                data = self._data(res, {}) or {}
+                rows = [
+                    item
+                    for item in self._first_list(data, ("materials", "items", "list", "data"))
+                    if isinstance(item, dict)
+                ]
+                if not rows:
+                    blocks.append(f"{target['name']}（{target['id']}）\n未查询到符合条件的制造材料。")
+                    continue
+                for item in rows:
+                    name = item.get("objectName") or target["name"]
+                    object_id = item.get("objectID") or target["id"]
+                    price = "暂无" if item.get("price") is None else self.data_mgr.fmt_num(item.get("price"))
+                    lines = [f"{name}（{object_id}） {price}"]
+                    if item.get("timestamp"):
+                        lines.append(f"更新时间：{item.get('timestamp')}")
+                    if item.get("priceSource"):
+                        lines.append(f"数据源：{str(item.get('priceSource')).upper()}")
+                    blocks.append("\n".join(lines))
+            if missing:
+                blocks.append("未找到：" + "、".join(missing))
+            if overflow:
+                blocks.append("单次最多查询 5 个物品，超出部分已忽略。")
+            yield self._forward_text_blocks_result(event, f"材料价格 · {len(targets)} 个物品", blocks)
+            return
+
+        res = await self.client.material_price("", "1", "50")
         if not self._ok(res):
             yield event.plain_result(f"材料价格查询失败: {self._message_of(res)}")
             return
@@ -8274,26 +8461,74 @@ class DeltaForcePlugin(Star):
                     days = match.group(1)
                 else:
                     query_parts.append(part)
-            query = str(params.get("objectID") or params.get("objectId") or " ".join(query_parts)).strip()
+            query = str(
+                params.get("objectID")
+                or params.get("objectId")
+                or params.get("objectName")
+                or params.get("place")
+                or " ".join(query_parts)
+            ).strip()
             if not query:
                 prefix = "OCR利润历史" if is_ocr else "利润历史"
-                yield event.plain_result(f"用法：{prefix} <物品名称/ID> [1-30天]")
+                yield event.plain_result(f"用法：{prefix} <物品名称/ID，最多10个> [1-30天]")
                 return
             if days and (not days.isdigit() or not 1 <= int(days) <= 30):
                 yield event.plain_result("查询天数需在 1-30 之间。")
                 return
-            object_id = await self._resolve_item_id(query)
-            if not object_id.isdigit():
+            place_query = str(params.get("place") or query).strip().lower()
+            history_places = set(place_aliases) | {"storage", "control", "shoot", "training"}
+            if place_query in history_places:
+                yield event.plain_result(
+                    "最新版利润历史接口只支持物品 ID，不支持按制造场所查询。"
+                    "请改用“特勤处利润 <场所>”或“利润排行 <场所>”。"
+                )
+                return
+            targets, missing, overflow = await self._resolve_item_queries(query, 10)
+            if not targets:
                 yield event.plain_result(f"未找到物品：{query}")
                 return
-            params = {"objectID": object_id}
-            if days:
-                params["days"] = days
-            res = (
-                await self.client.ocr_profit_history(params)
-                if is_ocr
-                else await self.client.profit_history(params)
-            )
+            blocks = []
+            for target in targets:
+                history_params = {"objectID": target["id"]}
+                if days:
+                    history_params["days"] = days
+                res = (
+                    await self.client.ocr_profit_history(history_params)
+                    if is_ocr
+                    else await self.client.profit_history(history_params)
+                )
+                if not self._ok(res):
+                    blocks.append(f"{target['name']}（{target['id']}）\n查询失败：{self._message_of(res)}")
+                    continue
+                data = self._data(res, {}) or {}
+                info = data.get("objectInfo") if isinstance(data, dict) and isinstance(data.get("objectInfo"), dict) else {}
+                history = [
+                    item
+                    for item in self._first_list(data, ("history", "items", "list", "data"))
+                    if isinstance(item, dict)
+                ]
+                if not history:
+                    blocks.append(f"{info.get('objectName') or target['name']}（{target['id']}）\n暂无该物品的利润历史数据。")
+                    continue
+                lines = [
+                    f"{info.get('objectName') or target['name']}利润历史 · {source_label}",
+                    f"物品 ID：{info.get('objectID') or target['id']}｜{data.get('days', days or 7)} 天",
+                    f"{info.get('placeName') or info.get('placeType') or '未知场所'} "
+                    f"Lv.{info.get('level') or '-'}，周期 {info.get('period') or '-'} 小时",
+                ]
+                for item in history[:20]:
+                    lines.append(
+                        f"{item.get('timestamp') or '-'} 售价 {self.data_mgr.fmt_num(item.get('salePrice') or 0)}，"
+                        f"总利润 {self._format_profit(item.get('totalProfit') or 0)}，"
+                        f"时均 {self._format_profit(item.get('hourProfit') or 0)}"
+                    )
+                blocks.append("\n".join(lines))
+            if missing:
+                blocks.append("未找到：" + "、".join(missing))
+            if overflow:
+                blocks.append("单次最多查询 10 个物品，超出部分已忽略。")
+            yield self._forward_text_blocks_result(event, f"利润历史 · {source_label} · {len(targets)} 个物品", blocks)
+            return
         elif "排行" in command or "利润榜" in command or "最高" in command:
             params = self._profit_query_params(parts, params, place_aliases, default_limit="10")
             if is_ocr:
@@ -8318,26 +8553,6 @@ class DeltaForcePlugin(Star):
             yield event.plain_result(f"{command}查询失败: {self._message_of(res)}")
             return
         data = self._data(res, {}) or {}
-        if "历史" in command:
-            info = data.get("objectInfo") if isinstance(data, dict) and isinstance(data.get("objectInfo"), dict) else {}
-            history = self._first_list(data, ("history", "items", "list", "data"))
-            if not history:
-                yield event.plain_result("暂无该物品的利润历史数据。")
-                return
-            lines = [
-                f"【{info.get('objectName') or '物品'}利润历史 · {source_label}】"
-                f"{data.get('days', params.get('days', 7))} 天"
-            ]
-            lines.append(f"{info.get('placeName') or info.get('placeType') or '未知场所'} Lv.{info.get('level') or '-'}，周期 {info.get('period') or '-'} 小时")
-            for item in history[:20]:
-                if not isinstance(item, dict):
-                    continue
-                lines.append(
-                    f"{item.get('timestamp') or '-'} 售价 {self.data_mgr.fmt_num(item.get('salePrice') or 0)}，"
-                    f"总利润 {self._format_profit(item.get('totalProfit') or 0)}，时均 {self._format_profit(item.get('hourProfit') or 0)}"
-                )
-            yield event.plain_result("\n".join(lines))
-            return
         if "排行" in command or "利润榜" in command or "最高" in command:
             rows = [item for item in self._first_list(data, ("items", "list", "data")) if isinstance(item, dict)]
             if not rows:

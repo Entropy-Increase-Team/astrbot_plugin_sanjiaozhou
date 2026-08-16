@@ -732,7 +732,16 @@ class DeltaForceClient:
 
     async def price_history_v2(self, keyword: str):
         key = str(keyword or "").strip()
-        params = {"objectId": key} if key.isdigit() else {"objectName": key}
+        id_parts = [
+            part.strip().strip("\"'")
+            for part in re.split(r"[\s,，]+", key.strip("[]"))
+            if part.strip().strip("\"'")
+        ]
+        params = (
+            {"objectId": ",".join(id_parts)}
+            if id_parts and all(part.isdigit() for part in id_parts)
+            else {"objectName": key}
+        )
         return await self.get("/api/v1/df/object/price/ams/history/v2", params=params, require_key=False)
 
     async def current_price(self, item_id: str):
