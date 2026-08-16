@@ -728,6 +728,14 @@ class DeltaForcePlugin(Star):
         return code, state
 
     @staticmethod
+    def _valid_http_url(value: Any) -> bool:
+        try:
+            parsed = urlparse(str(value or "").strip())
+        except ValueError:
+            return False
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    @staticmethod
     def _valid_oauth_code(value: str) -> bool:
         code = str(value or "").strip()
         return bool(code and len(code) <= 2048 and not any(char.isspace() for char in code))
@@ -3382,9 +3390,10 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("登录接口未返回临时会话标识，无法继续轮询。")
             return
         timeout = min(configured_timeout, remaining_seconds)
-        interval = int(self.config.get("login_poll_interval", 5) or 5)
+        interval = max(1, int(self.config.get("login_poll_interval", 5) or 5))
         end_at = asyncio.get_running_loop().time() + timeout
         notified_scanned = False
+        consecutive_errors = 0
         while asyncio.get_running_loop().time() < end_at:
             await asyncio.sleep(interval)
             status_res = await self.client.login_status(platform, token)
@@ -3395,8 +3404,15 @@ class DeltaForcePlugin(Star):
             if "code" not in status_data and root_code in {-2, -3, -4, "-2", "-3", "-4"}:
                 status_data = status_res
             if not self._ok(status_res) and not status_data.get("code") in {-2, -3, -4, "-2", "-3", "-4"}:
-                yield event.plain_result(f"登录状态查询失败: {self._message_of(status_res)}")
-                return
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    safe_message = self._redact_secret(
+                        self._message_of(status_res), token
+                    )
+                    yield event.plain_result(f"登录状态连续查询失败: {safe_message}")
+                    return
+                continue
+            consecutive_errors = 0
             state = str(status_data.get("status") or status_data.get("state") or "").strip().lower()
             status_code_raw = status_data.get("code")
             try:
@@ -3422,10 +3438,13 @@ class DeltaForcePlugin(Star):
             if status_code == -3:
                 yield event.plain_result("登录被安全风控拦截，请在手机上确认或改用 OAuth 授权登录。")
                 return
-            status_message = status_data.get("msg") or status_data.get("message") or "未知状态"
+            status_message = self._redact_secret(
+                status_data.get("msg") or status_data.get("message") or "未知状态",
+                token,
+            )
             yield event.plain_result(f"登录状态异常: {status_message}")
             return
-        yield event.plain_result("登录轮询超时。如已获取 frameworkToken，可发送 绑定 <token> 手动绑定。")
+        yield event.plain_result("登录轮询超时，请重新发起扫码或改用 OAuth 授权登录。")
 
     async def _cookie_login(self, event: AstrMessageEvent, cookie: str) -> AsyncGenerator[Any, None]:
         if not cookie:
@@ -3481,7 +3500,7 @@ class DeltaForcePlugin(Star):
             )
             if not expire:
                 expire = now_ms + 10 * 60 * 1000
-            if not url or not framework_token or not state:
+            if not self._valid_http_url(url) or not framework_token or not state:
                 yield event.plain_result("OAuth 接口响应缺少授权链接或会话标识，请稍后重试。")
                 return
             if expire <= now_ms:
@@ -3520,11 +3539,7 @@ class DeltaForcePlugin(Star):
 
         raw_extra = str(extra or "").strip()
         code, callback_state = self._oauth_callback_parts(raw_extra)
-        try:
-            parsed = urlparse(raw_extra)
-            is_callback_url = parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-        except ValueError:
-            is_callback_url = False
+        is_callback_url = self._valid_http_url(raw_extra)
         if is_callback_url:
             if not code:
                 yield event.plain_result(
@@ -3564,12 +3579,14 @@ class DeltaForcePlugin(Star):
             "state": state,
         }
         if is_callback_url:
-            payload["callbackUrl"] = raw_extra
+            callback_field = "callbackUrl" if pf == "wechat" else "url"
+            payload[callback_field] = raw_extra
         else:
             payload["authCode"] = code
         res = await self.client.oauth_submit(
             pf,
             payload,
+            framework_token=framework_token,
         )
         if not self._ok(res):
             safe_message = self._redact_secret(
@@ -12221,6 +12238,11 @@ class DeltaForcePlugin(Star):
 
     async def _activities(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
         res = await self.client.activities()
+        if res.get("code") == 501:
+            yield event.plain_result(
+                "活动日历当前不可用：最新版后端已移除对应接口，插件不会继续请求旧地址。"
+            )
+            return
         if not self._ok(res):
             yield event.plain_result(f"活动日历查询失败: {self._message_of(res)}")
             return

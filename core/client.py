@@ -312,8 +312,17 @@ class DeltaForceClient:
             params={"platformID": platform_id, "botID": bot_id},
         )
 
-    async def oauth_submit(self, platform: str, payload: Dict[str, Any]):
-        return await self.post(f"/api/v1/login/{platform}/oauth", json_data=payload)
+    async def oauth_submit(
+        self,
+        platform: str,
+        payload: Dict[str, Any],
+        framework_token: str = "",
+    ):
+        return await self.post(
+            f"/api/v1/login/{platform}/oauth",
+            json_data=payload,
+            framework_token=framework_token,
+        )
 
     async def oauth_status(self, platform: str, framework_token: str):
         return await self.get(f"/api/v1/login/{platform}/oauth/status", framework_token=framework_token)
@@ -618,7 +627,11 @@ class DeltaForceClient:
         return await self.get("/api/v1/df/tools/dailykeyword")
 
     async def activities(self):
-        return await self.get("/api/v1/df/activities")
+        return {
+            "code": 501,
+            "message": "最新版后端未提供活动日历接口。",
+            "data": None,
+        }
 
     async def competition_leaderboard(self, params: Optional[Dict[str, Any]] = None):
         return await self.get(
