@@ -7,7 +7,7 @@ import inspect
 import json
 import os
 import re
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
@@ -7777,7 +7777,105 @@ class DeltaForcePlugin(Star):
             return "property-qx-bg2.webp"
         return "property-gx-li3.webp"
 
+    @staticmethod
+    def _red_decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
+        text = str(value or "").strip().replace(",", "")
+        if not text:
+            return default
+        try:
+            number = Decimal(text)
+        except (InvalidOperation, TypeError, ValueError):
+            return default
+        return number if number.is_finite() else default
+
+    @classmethod
+    def _red_count(cls, value: Any, default: int = 1) -> int:
+        number = cls._red_decimal(value, Decimal(default))
+        if number <= 0 or number != number.to_integral_value():
+            return default
+        try:
+            return int(number)
+        except (OverflowError, ValueError):
+            return default
+
+    @classmethod
+    def _format_red_value(cls, value: Any) -> str:
+        number = cls._red_decimal(value)
+        sign = "-" if number < 0 else ""
+        number = abs(number)
+        for divisor, suffix in (
+            (Decimal("1000000000"), "B"),
+            (Decimal("1000000"), "M"),
+            (Decimal("1000"), "K"),
+        ):
+            if number >= divisor:
+                scaled = (number / divisor).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+                return sign + format(scaled, "f").rstrip("0").rstrip(".") + suffix
+        fixed = format(number, "f")
+        integer, dot, fraction = fixed.partition(".")
+        fraction = fraction.rstrip("0")
+        return sign + f"{int(integer or '0'):,}" + (f".{fraction}" if dot and fraction else "")
+
+    @staticmethod
+    def _red_record_rows(payload: Any) -> Tuple[List[Dict[str, Any]], bool, int]:
+        current = payload
+        for _ in range(6):
+            if isinstance(current, list):
+                return [item for item in current if isinstance(item, dict)], True, len(current)
+            if not isinstance(current, dict):
+                return [], False, 0
+            next_value = None
+            found = False
+            for key in ("records", "itemData", "list", "items", "data"):
+                if key in current:
+                    next_value = current.get(key)
+                    found = True
+                    break
+            if not found:
+                return [], False, 0
+            current = next_value
+        return [], False, 0
+
+    @staticmethod
+    def _red_time_parts(value: Any) -> Tuple[Optional[float], str]:
+        if isinstance(value, dt.datetime):
+            parsed = value
+        else:
+            text = str(value or "").strip()
+            if not text:
+                return None, "-"
+            if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text):
+                try:
+                    timestamp = float(text)
+                    if timestamp <= 0:
+                        return None, text
+                    if timestamp >= 100_000_000_000:
+                        timestamp /= 1000
+                    parsed = dt.datetime.fromtimestamp(timestamp)
+                except (OverflowError, OSError, TypeError, ValueError):
+                    return None, text
+            else:
+                try:
+                    parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+                except ValueError:
+                    parsed = None
+                    for pattern in ("%Y/%m/%d %H:%M:%S", "%Y-%m-%d", "%Y/%m/%d"):
+                        try:
+                            parsed = dt.datetime.strptime(text, pattern)
+                            break
+                        except ValueError:
+                            continue
+                    if parsed is None:
+                        return None, text
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        try:
+            return parsed.timestamp(), parsed.strftime("%Y-%m-%d %H:%M:%S")
+        except (OverflowError, OSError, ValueError):
+            return None, str(value or "-")
+
     async def _red_records(self, event: AstrMessageEvent, command: str, arg: str) -> AsyncGenerator[Any, None]:
+        arg = str(arg or "").strip()
         token = await self._need_token(event)
         if not token:
             yield event.plain_result("您尚未绑定账号。")
@@ -7787,7 +7885,10 @@ class DeltaForcePlugin(Star):
                 yield r
             return
         if command in {"大红收藏", "大红藏品", "大红海报", "藏品海报"}:
-            async for r in self._red_collection(event, token, arg if arg.isdigit() else "all"):
+            if arg and not arg.isdigit():
+                yield event.plain_result("赛季参数必须是纯数字，例如：大红收藏 5。")
+                return
+            async for r in self._red_collection(event, token, arg or "all"):
                 yield r
             return
         async for r in self._red_list(event, token):
@@ -7796,45 +7897,58 @@ class DeltaForcePlugin(Star):
     async def _red_list(self, event: AstrMessageEvent, token: str) -> AsyncGenerator[Any, None]:
         profile_res, red_res = await asyncio.gather(self.client.personal_info(token), self.client.red_list(token), return_exceptions=True)
         if isinstance(red_res, Exception):
-            yield event.plain_result(f"出红记录查询失败: {red_res}")
+            logger.warning(f"[三角洲出红记录] 请求异常：{type(red_res).__name__}")
+            yield event.plain_result("出红记录查询失败: 请求异常，请稍后重试。")
             return
         if not self._ok(red_res):
             yield event.plain_result(f"出红记录查询失败: {self._message_of(red_res)}")
             return
         raw = self._data(red_res, {}) or {}
-        records_wrap = raw.get("records") if isinstance(raw, dict) else raw
-        records = self._first_list(records_wrap or raw, ("list", "records", "items", "data"))
+        records, valid_payload, source_count = self._red_record_rows(raw)
+        if not valid_payload or (source_count > 0 and not records):
+            yield event.plain_result("出红记录查询失败: API 返回数据格式不正确。")
+            return
         if not records:
             yield event.plain_result("您还没有任何藏品解锁记录。")
             return
 
         stats: Dict[str, Dict[str, Any]] = {}
         for record in records:
-            item_id = str(record.get("itemId") or record.get("objectID") or record.get("objectId") or record.get("id") or "")
+            item_id = str(record.get("itemId") or record.get("objectID") or record.get("objectId") or record.get("id") or "").strip()
             if not item_id:
                 continue
-            count = self._num(record.get("num") or record.get("count") or 1)
+            count = self._red_count(record.get("num") if record.get("num") not in (None, "") else record.get("count"), 1)
             item = stats.setdefault(item_id, {"id": item_id, "count": 0, "records": []})
-            item["count"] += int(count or 1)
+            item["count"] += count
             item["records"].append(record)
         if not stats:
             yield event.plain_result("出红记录返回数据缺少物品 ID。")
             return
 
-        info_map = await self._object_info_map(list(stats.keys())[:30])
+        info_map = await self._object_info_map(list(stats.keys()))
         rendered_records = []
-        total_value = 0.0
+        total_value = Decimal("0")
         for item_id, item in stats.items():
             info = info_map.get(item_id, {})
             name = info.get("objectName") or info.get("name") or f"未知物品({item_id})"
-            price = self._num(info.get("avgPrice") or info.get("price") or info.get("marketPrice") or info.get("latestPrice") or 0)
+            price = self._red_decimal(
+                info.get("avgPrice")
+                if info.get("avgPrice") not in (None, "")
+                else info.get("price")
+                if info.get("price") not in (None, "")
+                else info.get("marketPrice")
+                if info.get("marketPrice") not in (None, "")
+                else info.get("latestPrice")
+            )
+            if price < 0:
+                price = Decimal("0")
             value = price * item["count"]
             total_value += value
             rendered_records.append(
                 {
                     "name": name,
                     "count": item["count"],
-                    "value": self.data_mgr.fmt_price(value),
+                    "value": self._format_red_value(value),
                     "imageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{item_id}.png",
                     "_sort": value,
                 }
@@ -7847,18 +7961,17 @@ class DeltaForcePlugin(Star):
             "statistics": {
                 "redGodCount": str(len(stats)),
                 "redTotalCount": str(sum(x["count"] for x in stats.values())),
-                "redTotalValue": self.data_mgr.fmt_price(total_value),
+                "redTotalValue": self._format_red_value(total_value),
                 "unlockedCount": str(uncollected_count) if uncollected_count else "",
             },
             "records": rendered_records[:6],
             "totalRecords": len(rendered_records),
         }
         text = "\n".join(
-            ["【出红记录统计】", f"收藏种类: {len(stats)}", f"总出红次数: {sum(x['count'] for x in stats.values())}", f"总价值: {self.data_mgr.fmt_price(total_value)}"]
+            ["【出红记录统计】", f"收藏种类: {len(stats)}", f"总出红次数: {sum(x['count'] for x in stats.values())}", f"总价值: {self._format_red_value(total_value)}"]
             + [f"{idx}. {item['name']} x{item['count']} {item['value']}" for idx, item in enumerate(rendered_records[:6], 1)]
         )
-        height = max(620, 580 + len(render_data["records"]) * 95)
-        async for r in self._render_or_text(event, "Template/redRecordList/redRecordList.html", render_data, text, {"viewport_width": 650, "viewport_height": height}):
+        async for r in self._render_or_text(event, "Template/redRecordList/redRecordList.html", render_data, text, {"viewport_width": 900, "viewport_height": 1500}):
             yield r
 
     async def _red_one(self, event: AstrMessageEvent, token: str, keyword: str) -> AsyncGenerator[Any, None]:
@@ -7872,45 +7985,65 @@ class DeltaForcePlugin(Star):
             return
         profile_res, red_res = await asyncio.gather(self.client.personal_info(token), self.client.red_one(token, object_id), return_exceptions=True)
         if isinstance(red_res, Exception):
-            yield event.plain_result(f"单藏品记录查询失败: {red_res}")
+            logger.warning(f"[三角洲单藏品记录] 请求异常：{type(red_res).__name__}")
+            yield event.plain_result("单藏品记录查询失败: 请求异常，请稍后重试。")
             return
         if not self._ok(red_res):
             yield event.plain_result(f"单藏品记录查询失败: {self._message_of(red_res)}")
             return
         raw = self._data(red_res, {}) or {}
         item_data = raw.get("itemData") if isinstance(raw, dict) else raw
-        records = self._first_list(item_data or raw, ("list", "records", "items", "data"))
+        records, valid_payload, source_count = self._red_record_rows(item_data if item_data is not None else raw)
+        if not valid_payload or (source_count > 0 and not records):
+            yield event.plain_result("单藏品记录查询失败: API 返回数据格式不正确。")
+            return
         if not records:
             yield event.plain_result(f"物品“{item.get('objectName') or item.get('name') or keyword}”暂无解锁记录。")
             return
-        sorted_records = sorted(records, key=lambda x: str(x.get("time") or x.get("dtEventTime") or ""))
-        first = sorted_records[0]
+        prepared_records = []
+        for index, record in enumerate(records):
+            raw_time = record.get("time") if record.get("time") not in (None, "") else record.get("dtEventTime")
+            timestamp, display_time = self._red_time_parts(raw_time)
+            prepared_records.append((record, timestamp, display_time, index))
+        valid_times = sorted(
+            (value for value in prepared_records if value[1] is not None),
+            key=lambda value: (value[1], value[3]),
+        )
+        invalid_times = sorted(
+            (value for value in prepared_records if value[1] is None),
+            key=lambda value: value[3],
+        )
+        chronological = valid_times + invalid_times
+        first, _, first_time, _ = chronological[0]
         first_map = self.data_mgr.get_map_name(first.get("mapid") or first.get("mapID") or first.get("mapId"))
-        latest = list(reversed(sorted_records[-20:]))
+        latest = sorted(valid_times, key=lambda value: (-value[1], value[3])) + invalid_times
+        latest = latest[:20]
         profile = self._profile_template(event, profile_res if not isinstance(profile_res, Exception) else {})
+        raw_total = item_data.get("total") if isinstance(item_data, dict) else None
+        record_count = self._red_count(raw_total, len(records)) if raw_total not in (None, "") else len(records)
         render_data = {
             **profile,
             "itemName": item.get("objectName") or item.get("name") or keyword,
             "itemType": item.get("objectType") or (f"GRADE {item.get('grade')}" if item.get("grade") else ""),
             "itemImageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{object_id}.png",
-            "firstUnlockTime": first.get("time") or first.get("dtEventTime") or "-",
+            "firstUnlockTime": first_time,
             "firstUnlockMap": first_map,
             "firstUnlockMapBg": self.data_mgr.get_map_image_path(first_map, "sol"),
             "records": [
                 {
-                    "time": x.get("time") or x.get("dtEventTime") or "-",
-                    "map": self.data_mgr.get_map_name(x.get("mapid") or x.get("mapID") or x.get("mapId")),
-                    "count": x.get("num") or x.get("count") or 1,
+                    "time": display_time,
+                    "map": self.data_mgr.get_map_name(record.get("mapid") or record.get("mapID") or record.get("mapId")),
+                    "count": self._red_count(record.get("num") if record.get("num") not in (None, "") else record.get("count"), 1),
                 }
-                for x in latest
+                for record, _, display_time, _ in latest
             ],
-            "recordCount": (item_data or {}).get("total") if isinstance(item_data, dict) else len(records),
+            "recordCount": record_count,
         }
         text = "\n".join(
             [f"【{render_data['itemName']} 出红记录】", f"首次解锁: {render_data['firstUnlockTime']} {render_data['firstUnlockMap']}"]
             + [f"{idx}. {x['time']} {x['map']} x{x['count']}" for idx, x in enumerate(render_data["records"][:10], 1)]
         )
-        async for r in self._render_or_text(event, "Template/redRecord/redRecord.html", render_data, text, {"viewport_width": 650, "viewport_height": 5000}):
+        async for r in self._render_or_text(event, "Template/redRecord/redRecord.html", render_data, text, {"viewport_width": 900, "viewport_height": 2800}):
             yield r
 
     async def _red_collection(self, event: AstrMessageEvent, token: str, season_id: str) -> AsyncGenerator[Any, None]:
@@ -7921,39 +8054,83 @@ class DeltaForcePlugin(Star):
             return_exceptions=True,
         )
         if isinstance(data_res, Exception):
-            yield event.plain_result(f"大红收藏查询失败: {data_res}")
+            logger.warning(f"[三角洲大红收藏] 个人数据请求异常：{type(data_res).__name__}")
+            yield event.plain_result("大红收藏查询失败: 请求异常，请稍后重试。")
             return
         if not self._ok(data_res):
             yield event.plain_result(f"大红收藏查询失败: {self._message_of(data_res)}")
             return
+        if isinstance(title_res, Exception):
+            logger.warning(f"[三角洲大红收藏] 称号请求异常：{type(title_res).__name__}")
+            yield event.plain_result("大红称号查询失败: 请求异常，请稍后重试。")
+            return
+        if not self._ok(title_res):
+            yield event.plain_result(f"大红称号查询失败: {self._message_of(title_res)}")
+            return
         raw = self._data(data_res, {}) or {}
+        if not isinstance(raw, dict):
+            yield event.plain_result("大红收藏查询失败: API 返回数据格式不正确。")
+            return
         sol_detail = self._find_nested_dict(raw, "solDetail")
         if not sol_detail:
             yield event.plain_result("没有找到烽火地带游戏数据，请确认账号已绑定角色并有烽火地带对局数据。")
             return
-        red_items = sol_detail.get("redCollectionDetail") or []
-        if not red_items:
+        raw_red_items = sol_detail.get("redCollectionDetail")
+        if not isinstance(raw_red_items, list):
+            yield event.plain_result("大红收藏查询失败: API 返回数据格式不正确。")
+            return
+        if not raw_red_items:
             yield event.plain_result("您还没有任何大红收藏品。")
             return
-        object_ids = [str(x.get("objectID") or x.get("objectId") or x.get("itemId") or "") for x in red_items if isinstance(x, dict)]
-        info_map = await self._object_info_map([x for x in object_ids if x][:30])
-        sorted_items = sorted([x for x in red_items if isinstance(x, dict)], key=lambda x: self._num(x.get("price")), reverse=True)
+        red_items = []
+        for item in raw_red_items:
+            if not isinstance(item, dict):
+                continue
+            object_id = str(item.get("objectID") or item.get("objectId") or item.get("itemId") or "").strip()
+            if object_id:
+                red_items.append((item, object_id))
+        if not red_items:
+            yield event.plain_result("大红收藏查询失败: 返回数据缺少有效物品 ID。")
+            return
+        sorted_items = sorted(
+            red_items,
+            key=lambda value: max(Decimal("0"), self._red_decimal(value[0].get("price"))),
+            reverse=True,
+        )
+        info_map = await self._object_info_map([object_id for _, object_id in sorted_items[:6]])
         top_collections = []
-        for idx, item in enumerate(sorted_items[:6], 1):
-            object_id = str(item.get("objectID") or item.get("objectId") or item.get("itemId") or "")
+        for idx, (item, object_id) in enumerate(sorted_items[:6], 1):
             info = info_map.get(object_id, {})
             top_collections.append(
                 {
                     "rank": idx,
                     "name": info.get("objectName") or info.get("name") or f"物品{object_id}",
-                    "count": item.get("count") or item.get("num") or 1,
-                    "value": self.data_mgr.fmt_price(item.get("price") or 0),
+                    "count": self._red_count(item.get("count") if item.get("count") not in (None, "") else item.get("num"), 1),
+                    "value": self._format_red_value(max(Decimal("0"), self._red_decimal(item.get("price")))),
                     "imageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{object_id}.png",
                 }
             )
-        uncollected = await self._uncollected_red_items(set(object_ids), 3)
-        title_data = self._data(title_res, {}) if isinstance(title_res, dict) and self._ok(title_res) else {}
+        object_ids = [object_id for _, object_id in red_items]
+        all_uncollected = await self._uncollected_red_items(set(object_ids), 1000)
+        uncollected = all_uncollected[:3]
+        title_data = self._data(title_res, {})
+        if not isinstance(title_data, dict):
+            yield event.plain_result("大红称号查询失败: API 返回数据格式不正确。")
+            return
         profile = self._profile_template(event, profile_res if not isinstance(profile_res, Exception) else {})
+        raw_total_count = sol_detail.get("redTotalCount")
+        total_count = (
+            self._red_count(raw_total_count, sum(self._red_count(item.get("count") if item.get("count") not in (None, "") else item.get("num"), 1) for item, _ in red_items))
+            if raw_total_count not in (None, "")
+            else sum(self._red_count(item.get("count") if item.get("count") not in (None, "") else item.get("num"), 1) for item, _ in red_items)
+        )
+        if sol_detail.get("redTotalMoney") not in (None, ""):
+            total_money = max(Decimal("0"), self._red_decimal(sol_detail.get("redTotalMoney")))
+        else:
+            total_money = sum(
+                (max(Decimal("0"), self._red_decimal(item.get("price"))) for item, _ in red_items),
+                Decimal("0"),
+            )
         render_data = {
             **profile,
             "title": title_data.get("title") or "血色会计",
@@ -7962,15 +8139,15 @@ class DeltaForcePlugin(Star):
             "seasonDisplay": "所有赛季" if season_id in {"", "all"} else f"S{season_id}赛季",
             "statistics": {
                 "redGodCount": str(len(set(object_ids))),
-                "redTotalCount": str(int(self._num(sol_detail.get("redTotalCount") or len(red_items)))),
-                "redTotalValue": self.data_mgr.fmt_price(sol_detail.get("redTotalMoney") or sum(self._num(x.get("price")) for x in red_items if isinstance(x, dict))),
-                "unlockedCount": str(len(uncollected)) if uncollected else "",
+                "redTotalCount": str(total_count),
+                "redTotalValue": self._format_red_value(total_money),
+                "unlockedCount": str(len(all_uncollected)) if all_uncollected else "",
             },
             "topCollections": top_collections,
             "unlockedCollections": uncollected,
         }
         text = "\n".join(["【大红收藏馆】", f"称号: {render_data['title']}", f"总价值: {render_data['statistics']['redTotalValue']}"] + [f"{x['rank']}. {x['name']} x{x['count']} {x['value']}" for x in top_collections])
-        async for r in self._render_or_text(event, "Template/redCollection/redCollection.html", render_data, text, {"viewport_width": 1220, "viewport_height": 2340}):
+        async for r in self._render_or_text(event, "Template/redCollection/redCollection.html", render_data, text, {"viewport_width": 900, "viewport_height": 1900}):
             yield r
 
     async def _health_info(self, event: AstrMessageEvent) -> AsyncGenerator[Any, None]:
@@ -13474,20 +13651,32 @@ class DeltaForcePlugin(Star):
         unique_ids = list(dict.fromkeys(str(x).strip() for x in object_ids if str(x).strip()))
         if not unique_ids:
             return result
-        try:
-            res = await self.client.object_search(",".join(unique_ids), limit=str(len(unique_ids)))
-            rows = self._first_list(
-                self._data(res, {}),
-                ("keywords", "items", "list", "data", "objects"),
-            ) if self._ok(res) else []
-            for item in rows:
-                if not isinstance(item, dict):
-                    continue
-                object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "").strip()
-                if object_id:
-                    result[object_id] = item
-        except Exception:
-            pass
+        for offset in range(0, len(unique_ids), 50):
+            batch = unique_ids[offset : offset + 50]
+            try:
+                res = await self.client.object_search(",".join(batch), limit=str(len(batch)))
+                rows = self._first_list(
+                    self._data(res, {}),
+                    ("keywords", "items", "list", "data", "objects"),
+                ) if self._ok(res) else []
+                for item in rows:
+                    if not isinstance(item, dict):
+                        continue
+                    object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "").strip()
+                    if object_id:
+                        result[object_id] = item
+            except Exception as exc:
+                logger.warning(f"[三角洲物品元数据] 批量查询异常：{type(exc).__name__}")
+        for object_id in unique_ids:
+            if object_id in result:
+                continue
+            local = self.data_mgr.search_local_items(object_id, 1)
+            if local:
+                result[object_id] = {
+                    "objectID": object_id,
+                    "objectName": local[0].get("name") or f"物品{object_id}",
+                    "avgPrice": local[0].get("price") or 0,
+                }
         return result
 
     async def _uncollected_red_count(self, collected: set) -> int:
@@ -13496,12 +13685,14 @@ class DeltaForcePlugin(Star):
 
     async def _uncollected_red_items(self, collected: set, limit: int) -> List[Dict[str, Any]]:
         try:
-            res = await self.client.object_list("props", "collection")
+            res = await self.client.object_list("props", "collection", limit="2000")
             if not self._ok(res):
                 return []
             rows = self._first_list(self._data(res, {}), ("keywords", "items", "list", "data", "objects"))
             missing = []
             for item in rows:
+                if not isinstance(item, dict):
+                    continue
                 object_id = str(item.get("objectID") or item.get("objectId") or item.get("id") or "")
                 if str(item.get("grade") or "") != "6" or object_id in collected:
                     continue
@@ -13509,7 +13700,7 @@ class DeltaForcePlugin(Star):
                     {
                         "name": item.get("objectName") or item.get("name") or f"物品{object_id}",
                         "objectID": object_id,
-                        "price": self.data_mgr.fmt_price(item.get("avgPrice") or item.get("price") or 0),
+                        "price": self._format_red_value(item.get("avgPrice") if item.get("avgPrice") not in (None, "") else item.get("price")),
                         "imageUrl": f"https://playerhub.df.qq.com/playerhub/60004/object/{object_id}.png",
                     }
                 )

@@ -1,292 +1,374 @@
+:root {
+    --accent: #20f39a;
+    --line: rgba(255, 255, 255, 0.12);
+    --muted: #a9b4b2;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
 body {
+    width: 900px;
     margin: 0;
-    padding: 0;
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif;
-    background: white;
-    width: 1220px;
-    min-width: 1220px;
-    height: 2320px;
     overflow: hidden;
-    transform: scale(1);
-    transform-origin: 0 0;
-    box-sizing: border-box;
+    background: #050809;
+    color: #f5f8f7;
+    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif;
 }
 
-.container { 
-    width: 1220px;
-    min-width: 1220px;
-    height: 2320px;
-    position: relative; 
-    background: white;
-    padding: 0;
-    margin: 0;
-    overflow: visible;
-    box-sizing: border-box;
+.red-collection-container {
+    position: relative;
+    width: 900px;
+    min-height: 1320px;
+    padding: 42px 46px 30px;
+    overflow: hidden;
+    background: linear-gradient(145deg, #080d0f 0%, #0c1416 52%, #07100d 100%);
 }
 
-/* ========== 页脚 ========== */
-.template-footer {
+.red-collection-container::before {
+    content: '';
     position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 1000;
-    padding: 20px;
-    text-align: center;
-    pointer-events: none;
+    inset: 0;
+    z-index: 0;
+    background-image: linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px);
+    background-size: 32px 32px;
 }
 
-.copyright-text {
-    color: #FFFFFF;
-    font-size: 40px;
-    font-weight: 300;
-    letter-spacing: 0.5px;
-    opacity: 0.5;
-    pointer-events: auto;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+.page-background {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.12;
 }
 
-/* 主标题样式 - 血色会计 */
-.title-primary { 
-    color: #0FF796; 
-    font-size: 96px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    overflow: visible;
-    line-height: 1.2;
-    white-space: nowrap;
-}
-
-/* 副标题样式 - "能把肾上腺素换算成子弹汇率的鬼才" */
-.subtitle { 
-    color: white; 
-    font-size: 32px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    overflow: visible;
-    line-height: 1.3;
-    white-space: nowrap;
-}
-
-/* 描述文本样式 - 总价值突破800万... */
-.description { 
-    color: #EAEBEB; 
-    font-size: 32px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    overflow: visible;
-    line-height: 1.3;
-    white-space: nowrap;
-}
-
-/* 用户信息容器 */
-.user-profile-container {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+.page-header,
+.title-section,
+.profile-strip,
+.stats-grid,
+.collection-section,
+.missing-section,
+.page-footer {
+    position: relative;
     z-index: 1;
 }
 
-/* 用户信息侧边线 */
-.profile-sidebar {
-    width: 3px;
-    height: 86px;
-    background: linear-gradient(180deg, #0FF796 0%, #00D9FF 100%);
-    border-radius: 2px;
-    flex-shrink: 0;
-    box-shadow: 0 0 8px rgba(15, 247, 150, 0.4);
-}
-
-/* 头像容器 */
-.avatar-wrapper {
-    position: relative;
-    flex-shrink: 0;
-}
-
-/* 用户头像 */
-.user-avatar {
-    width: 86px;
-    height: 86px;
-    border-radius: 8px;
-    border: 2px solid #0FF796;
-    box-shadow: 0 0 8px rgba(15, 247, 150, 0.25);
-    object-fit: cover;
-    display: block;
-}
-
-.user-avatar-placeholder {
-    width: 86px;
-    height: 86px;
-    border-radius: 8px;
-    border: 2px solid #0FF796;
-    background: rgba(15, 247, 150, 0.1);
-    box-shadow: 0 0 8px rgba(15, 247, 150, 0.25);
-}
-
-/* 用户信息区域 */
-.user-meta {
+.page-header {
+    min-height: 68px;
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    flex: 1;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+}
+
+.game-logo {
+    width: 220px;
+    height: auto;
+}
+
+.season-label {
+    padding: 9px 14px;
+    border: 1px solid rgba(32, 243, 154, 0.45);
+    color: var(--accent);
+    font-size: 16px;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+}
+
+.title-section {
+    padding: 44px 0 30px;
+}
+
+.eyebrow,
+.section-heading span {
+    color: var(--accent);
+    font-family: 'D-DIN', sans-serif;
+    font-size: 15px;
+    font-weight: 800;
+}
+
+.title-section h1 {
+    max-width: 780px;
+    margin-top: 8px;
+    color: var(--accent);
+    font-size: 58px;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+}
+
+.subtitle {
+    max-width: 760px;
+    margin-top: 16px;
+    font-size: 22px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.unlock-desc {
+    max-width: 760px;
+    margin-top: 12px;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+}
+
+.profile-strip {
+    min-height: 94px;
+    display: grid;
+    grid-template-columns: 70px minmax(0, 1fr) 44px;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 18px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.avatar-frame {
+    position: relative;
+    width: 70px;
+    height: 70px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 2px solid var(--accent);
+    background: #111a19;
+    color: var(--accent);
+    font-weight: 900;
+}
+
+.avatar-frame img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.profile-copy {
     min-width: 0;
 }
 
-.user-name {
-    color: white;
-    font-size: 32px;
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif;
-    font-weight: 500;
-    line-height: 1.2;
-    white-space: nowrap;
+.profile-copy strong {
+    display: block;
+    font-size: 25px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
 }
 
-.user-rank {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: white;
-    font-size: 32px;
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif;
-    font-weight: 500;
-    line-height: 1;
-}
-
-.rank-text {
-    flex-shrink: 0;
+.profile-copy span {
+    display: block;
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 16px;
 }
 
 .rank-icon {
-    width: 24px;
-    height: 24px;
+    width: 44px;
+    height: 44px;
     object-fit: contain;
-    flex-shrink: 0;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin-top: 28px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+}
+
+.stat-block {
+    min-width: 0;
+    min-height: 112px;
+    padding: 20px 16px;
+    border-right: 1px solid var(--line);
+    background: rgba(255, 255, 255, 0.025);
+}
+
+.stat-block:last-child {
+    border-right: 0;
+}
+
+.stat-block.emphasis {
+    background: rgba(32, 243, 154, 0.14);
+}
+
+.stat-block span {
     display: block;
+    color: var(--muted);
+    font-size: 15px;
 }
 
-/* 用户信息文本 - 保留兼容性 */
-.user-info { 
-    color: white; 
-    font-size: 32px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 500; 
-    white-space: nowrap;
+.stat-block strong {
+    display: block;
+    margin-top: 12px;
+    color: var(--accent);
+    font: 800 20px/1 'D-DIN', 'ProjectD', sans-serif;
+    overflow-wrap: anywhere;
 }
 
-/* 赛季标题 - 所有赛季 */
-.season-title { 
-    color: white; 
-    font-size: 48px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    white-space: nowrap;
+.collection-section,
+.missing-section {
+    margin-top: 40px;
 }
 
-/* 统计数值 - 19、37 */
-.stat-value { 
-    color: #0FF796; 
-    font-size: 88px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    text-align: center;
-    white-space: nowrap;
-    overflow: visible;
-    line-height: 1;
+.section-heading {
     display: flex;
-    align-items: center;
-    justify-content: center;
+    align-items: end;
+    justify-content: space-between;
+    gap: 20px;
+    margin-bottom: 18px;
 }
 
-/* 大数值 - 46.1M */
-.large-value { 
-    color: #0FF796; 
-    font-size: 88px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    text-align: center;
-    white-space: nowrap;
-    overflow: visible;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    letter-spacing: -0.5px;
+.section-heading h2 {
+    margin-top: 5px;
+    font-size: 30px;
 }
 
-/* 统计标签 - 收藏大红种数、收藏大红个数 */
-.stat-label { 
-    color: #CFD0D0; 
-    font-size: 36px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    overflow: visible;
-    text-align: center;
-    line-height: 1.2;
-    white-space: nowrap;
+.heading-note {
+    max-width: 260px;
+    color: var(--muted);
+    font-size: 15px;
+    text-align: right;
+    overflow-wrap: anywhere;
 }
 
-/* 数据文本 - 226,045、2,116,357 */
-.data-text { 
-    color: #858788; 
-    font-size: 30px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 700; 
-    line-height: 1.2;
+.collection-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
 }
 
-/* 物品名称 - 不换行，超出显示省略号 */
-.data-text.collection-name {
-    white-space: nowrap;
+.collection-card {
+    position: relative;
+    min-width: 0;
+    min-height: 310px;
+    padding: 16px;
     overflow: hidden;
-    text-overflow: ellipsis;
+    border: 1px solid var(--line);
+    background: rgba(7, 12, 14, 0.78);
 }
 
-/* 数值文本 - 不换行 */
-.data-text.value-text {
-    white-space: nowrap;
-    overflow: visible;
-}
-
-/* 高亮文本 - 39个 */
-.highlight-text { 
-    color: #0FF796; 
-    font-size: 45px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 500; 
-    white-space: nowrap;
-}
-
-/* 普通文本 - 你还有、未解锁的大红藏品 */
-.normal-text { 
-    color: white; 
-    font-size: 45px; 
-    font-family: 'ProjectD', 'Microsoft YaHei', sans-serif; 
-    font-weight: 500; 
-    white-space: nowrap;
-}
-
-/* 装饰线条 */
-.decor-line { 
-    background: #0FF796; 
-    position: absolute; 
-}
-
-/* 图片样式 */
-img {
-    display: block;
-}
-
-/* 收藏品图片自适应样式 */
-.collection-item-image {
-    max-width: 160px;
-    max-height: 160px;
-    width: auto;
-    height: auto;
-    object-fit: contain;
-    display: block;
-    margin: 0 auto;
+.rank-number {
     position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
+    top: 12px;
+    right: 14px;
+    z-index: 2;
+    color: var(--accent);
+    font: 900 21px 'D-DIN', sans-serif;
+}
+
+.item-image {
+    position: relative;
+    height: 170px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.34);
+    color: rgba(32, 243, 154, 0.4);
+    font: 700 11px 'D-DIN', sans-serif;
+}
+
+.item-image img {
+    position: absolute;
+    inset: 8px;
+    width: calc(100% - 16px);
+    height: calc(100% - 16px);
+    object-fit: contain;
+}
+
+.collection-card h3 {
+    min-height: 54px;
+    margin-top: 13px;
+    font-size: 19px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.item-data {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 5px;
+    margin-top: 11px;
+    color: var(--muted);
+    font: 17px 'D-DIN', sans-serif;
+}
+
+.item-data strong {
+    color: var(--accent);
+    font-size: 19px;
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.missing-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.missing-card {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: 82px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    min-height: 110px;
+    padding: 13px;
+    border: 1px solid var(--line);
+    background: rgba(7, 12, 14, 0.72);
+}
+
+.missing-image {
+    position: relative;
+    width: 82px;
+    height: 82px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.35);
+    color: rgba(32, 243, 154, 0.35);
+    font: 700 10px 'D-DIN', sans-serif;
+}
+
+.missing-image img {
+    position: absolute;
+    inset: 5px;
+    width: calc(100% - 10px);
+    height: calc(100% - 10px);
+    object-fit: contain;
+    filter: saturate(0.45);
+}
+
+.missing-card h3 {
+    font-size: 16px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.missing-card div > span {
+    display: block;
+    margin-top: 7px;
+    color: var(--muted);
+    font-size: 13px;
+    overflow-wrap: anywhere;
+}
+
+.page-footer {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: #778380;
+    font-size: 13px;
 }

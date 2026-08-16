@@ -306,6 +306,8 @@ class DeltaRenderer:
             return "#container, .container, body"
         selectors = [
             ".container",
+            ".red-collection-container",
+            ".red-record-list-container",
             ".red-record-container",
             ".collection-container",
             ".music-list-container",
