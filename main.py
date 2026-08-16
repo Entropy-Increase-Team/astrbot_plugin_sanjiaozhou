@@ -1648,9 +1648,39 @@ class DeltaForcePlugin(Star):
             yield event.plain_result("已关闭本群推送。" if changed else "本群尚未开启该推送。")
             return
 
+        replaced_binding = False
+        for item in self.subscriptions.scheduled_pushes(kind, enabled_only=False):
+            if (
+                str(item.get("user_id")) == user_id
+                and str(item.get("umo")) == umo
+                and str(item.get("binding_id") or "") != binding_id
+                and item.get("enabled")
+            ):
+                self.subscriptions.update_scheduled_push(
+                    item["key"],
+                    {"enabled": False, "disabled_reason": "binding_replaced"},
+                )
+                replaced_binding = True
         self.subscriptions.set_scheduled_push(kind, user_id, binding_id, umo, True)
         names = {"daily": "日报", "weekly": "周报", "place": "特勤处生产完成", "keyword": "每日密码"}
-        yield event.plain_result(f"已为本群开启{names[kind]}推送。")
+        action = "已切换到当前主账号并开启" if replaced_binding else "已为本群开启"
+        yield event.plain_result(
+            f"{action}{names[kind]}推送。{self._scheduled_push_time_hint(kind)}"
+        )
+
+    def _scheduled_push_time_hint(self, kind: str) -> str:
+        if kind == "daily":
+            hour = min(max(self._config_int("daily_push_hour", 10), 0), 23)
+            return f"每日 {hour:02d}:00 后检查并推送。"
+        if kind == "weekly":
+            hour = min(max(self._config_int("weekly_push_hour", 10), 0), 23)
+            weekday = min(max(self._config_int("weekly_push_weekday", 0), 0), 6)
+            names = "一二三四五六日"
+            return f"每周{names[weekday]} {hour:02d}:00 后检查并推送。"
+        if kind == "keyword":
+            hour = min(max(self._config_int("keyword_push_hour", 8), 0), 23)
+            return f"每日 {hour:02d}:00 后检查并推送。"
+        return "插件会按生产完成时间检查并推送。"
 
     async def _scheduled_push_loop(self) -> None:
         interval = max(30, int(self.config.get("push_check_interval", 60) or 60))
@@ -1664,24 +1694,63 @@ class DeltaForcePlugin(Star):
             await asyncio.sleep(interval)
 
     async def _run_scheduled_pushes(self, now: dt.datetime) -> None:
+        now_ts = int(now.timestamp())
         for item in self.subscriptions.scheduled_pushes():
             try:
                 kind = str(item.get("kind") or "")
                 if kind == "place":
                     await self._run_place_push(item, now)
                     continue
+                if int(self._number(item.get("next_retry_at"))) > now_ts:
+                    continue
                 run_key = self._scheduled_run_key(kind, now)
                 if not run_key or item.get("last_run_key") == run_key:
                     continue
                 success = await self._run_fixed_push(item, kind)
                 if success:
-                    self.subscriptions.update_scheduled_push(item["key"], {"last_run_key": run_key})
+                    self.subscriptions.update_scheduled_push(
+                        item["key"],
+                        {
+                            "last_run_key": run_key,
+                            "failure_count": 0,
+                            "next_retry_at": 0,
+                            "last_error": "",
+                        },
+                    )
+                else:
+                    self._record_scheduled_push_failure(item, now_ts, "执行未成功")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 logger.warning(
                     f"[三角洲定时推送] 任务 {item.get('key') or '未知'} 执行失败：{type(exc).__name__}"
                 )
+                self._record_scheduled_push_failure(item, now_ts, type(exc).__name__)
+
+    def _record_scheduled_push_failure(
+        self,
+        item: Dict[str, Any],
+        now_ts: int,
+        error_type: str,
+    ) -> None:
+        key = str(item.get("key") or "")
+        if not key:
+            return
+        failure_count = max(0, int(self._number(item.get("failure_count")))) + 1
+        delay = min(3600, 60 * (2 ** min(failure_count - 1, 6)))
+        try:
+            self.subscriptions.update_scheduled_push(
+                key,
+                {
+                    "failure_count": failure_count,
+                    "next_retry_at": now_ts + delay,
+                    "last_error": str(error_type or "unknown")[:64],
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[三角洲定时推送] 记录任务 {key} 失败状态时出错：{type(exc).__name__}"
+            )
 
     def _scheduled_run_key(self, kind: str, now: dt.datetime) -> str:
         hour = {
@@ -1707,7 +1776,79 @@ class DeltaForcePlugin(Star):
     async def _binding_for_push(self, item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         rows = await self.bindings.get_user_bindings(item.get("user_id"))
         binding_id = str(item.get("binding_id") or "")
-        return next((row for row in rows if str(row.get("binding_id") or "") == binding_id), None)
+        return next(
+            (
+                row
+                for row in rows
+                if str(row.get("binding_id") or "") == binding_id
+                and BindingManager._bool_value(row.get("is_valid", True), True)
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _daily_push_text(data: Dict[str, Any]) -> str:
+        lines = [
+            "【三角洲日报】",
+            f"玩家：{data.get('userName') or '未知玩家'}",
+            f"日期：{data.get('currentDate') or '-'}",
+        ]
+        sol = data.get("solDetail") if isinstance(data.get("solDetail"), dict) else {}
+        if sol and not sol.get("isEmpty"):
+            lines.append(
+                f"烽火地带：收益 {sol.get('recentGain') or 0}，数据日期 {sol.get('recentGainDate') or '-'}"
+            )
+            names = [
+                str(item.get("objectName") or "未知物品")
+                for item in sol.get("topItems") or []
+                if isinstance(item, dict)
+            ][:3]
+            if names:
+                lines.append(f"高价值物品：{'、'.join(names)}")
+        else:
+            lines.append("烽火地带：暂无日报数据")
+
+        mp = data.get("mpDetail") if isinstance(data.get("mpDetail"), dict) else {}
+        if mp and not mp.get("isEmpty"):
+            lines.append(
+                "全面战场："
+                f"{mp.get('totalFightNum') or 0} 场，"
+                f"胜利 {mp.get('totalWinNum') or 0}，"
+                f"击杀 {mp.get('totalKillNum') or 0}，"
+                f"得分 {mp.get('totalScore') or 0}"
+            )
+        else:
+            lines.append("全面战场：暂无日报数据")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _weekly_push_text(data: Dict[str, Any]) -> str:
+        lines = [
+            "【三角洲周报】",
+            f"玩家：{data.get('userName') or '未知玩家'}",
+            f"周期：{data.get('dateDisplay') or data.get('date') or '-'}",
+        ]
+        sol = data.get("solData") if isinstance(data.get("solData"), dict) else {}
+        if sol and not sol.get("isEmpty"):
+            lines.append(
+                "烽火地带："
+                f"{sol.get('total_sol_num') or 0} 场，"
+                f"带出 {sol.get('Gained_Price') or 0}，"
+                f"段位 {sol.get('rankName') or '未知'}"
+            )
+        else:
+            lines.append("烽火地带：暂无周报数据")
+        mp = data.get("mpData") if isinstance(data.get("mpData"), dict) else {}
+        if mp and not mp.get("isEmpty"):
+            lines.append(
+                "全面战场："
+                f"{mp.get('total_num') or 0} 场，"
+                f"胜率 {mp.get('winRate') or '0%'}，"
+                f"总分 {mp.get('total_score') or 0}"
+            )
+        else:
+            lines.append("全面战场：暂无周报数据")
+        return "\n".join(lines)
 
     async def _run_fixed_push(self, item: Dict[str, Any], kind: str) -> bool:
         if kind == "keyword":
@@ -1738,7 +1879,11 @@ class DeltaForcePlugin(Star):
         token = str((binding or {}).get("framework_token") or "")
         if not token:
             logger.warning(f"[三角洲定时推送] 用户 {item.get('user_id')} 的绑定已失效")
-            return False
+            self.subscriptions.update_scheduled_push(
+                item["key"],
+                {"enabled": False, "disabled_reason": "binding_missing"},
+            )
+            return True
         event = _ScheduledEvent(str(item.get("user_id") or ""))
         identity = await self._render_identity(event, token)
         if kind == "daily":
@@ -1750,10 +1895,21 @@ class DeltaForcePlugin(Star):
             if not sol and not mp:
                 return True
             data = self._build_daily(event, sol, mp, None, dt.datetime.now().strftime("%Y-%m-%d"), False, identity)
-            image = await self.renderer.render_html(
-                "Template/dailyReport/dailyReport.html", data, {"viewport_width": 1000, "viewport_height": 900}
-            ) if self.config.get("enable_image_render", True) else None
-            return await self._send_scheduled_message(item["umo"], self._summary_dict("三角洲日报", raw), image)
+            image = None
+            if self.config.get("enable_image_render", True):
+                try:
+                    image = await self.renderer.render_html(
+                        "Template/dailyReport/dailyReport.html",
+                        data,
+                        {"viewport_width": 1000, "viewport_height": 900},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[三角洲日报推送] 图片渲染失败，改用文本：{type(exc).__name__}"
+                    )
+            return await self._send_scheduled_message(
+                item["umo"], self._daily_push_text(data), image
+            )
         if kind == "weekly":
             response = await self.client.weekly_record(token, "", "", True)
             if not self._ok(response):
@@ -1763,18 +1919,32 @@ class DeltaForcePlugin(Star):
             if not sol and not mp:
                 return True
             data = self._build_weekly(event, sol, mp, report_dm, None, self._last_sunday(), identity)
+            image = None
             if self.config.get("enable_image_render", True):
-                await self._enrich_weekly_friend_profiles(data)
-            image = await self.renderer.render_html(
-                "Template/weeklyReport/weeklyReport.html", data, {"viewport_width": 1100, "viewport_height": 1800}
-            ) if self.config.get("enable_image_render", True) else None
-            return await self._send_scheduled_message(item["umo"], self._summary_dict("三角洲周报", raw), image)
+                try:
+                    await self._enrich_weekly_friend_profiles(data)
+                    image = await self.renderer.render_html(
+                        "Template/weeklyReport/weeklyReport.html",
+                        data,
+                        {"viewport_width": 1100, "viewport_height": 1800},
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"[三角洲周报推送] 图片渲染失败，改用文本：{type(exc).__name__}"
+                    )
+            return await self._send_scheduled_message(
+                item["umo"], self._weekly_push_text(data), image
+            )
         return True
 
     async def _run_place_push(self, item: Dict[str, Any], now: dt.datetime) -> None:
         binding = await self._binding_for_push(item)
         token = str((binding or {}).get("framework_token") or "")
         if not token:
+            self.subscriptions.update_scheduled_push(
+                item["key"],
+                {"enabled": False, "disabled_reason": "binding_missing"},
+            )
             return
         response = await self.client.place_status(token)
         if not self._ok(response):
@@ -1824,11 +1994,12 @@ class DeltaForcePlugin(Star):
         if MessageChain is None or Plain is None:
             return False
         chain = MessageChain()
+        if text:
+            chain.chain.append(Plain(text.rstrip() + ("\n" if image_path else "")))
         if image_path and Comp is not None:
-            chain.chain.append(Plain("三角洲定时推送\n"))
             chain.chain.append(Comp.Image.fromFileSystem(image_path))
-        else:
-            chain.chain.append(Plain(text))
+        if not chain.chain:
+            return False
         try:
             return bool(await self.context.send_message(umo, chain))
         except Exception as exc:

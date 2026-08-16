@@ -28,7 +28,8 @@ class SubscriptionStore:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
             if isinstance(raw, dict) and isinstance(raw.get("subscriptions"), dict):
                 self._data = raw
-                self._data.setdefault("scheduled_pushes", {})
+                if not isinstance(self._data.get("scheduled_pushes"), dict):
+                    self._data["scheduled_pushes"] = {}
         except Exception as exc:
             logger.warning(f"[三角洲订阅] 读取本地订阅失败：{type(exc).__name__}")
 
@@ -94,6 +95,13 @@ class SubscriptionStore:
     def _schedule_key(kind: str, user_id: Any, binding_id: Any, umo: str) -> str:
         return "::".join((str(kind), str(user_id or ""), str(binding_id or ""), str(umo or "")))
 
+    def _scheduled_push_map(self) -> Dict[str, Any]:
+        pushes = self._data.get("scheduled_pushes")
+        if not isinstance(pushes, dict):
+            pushes = {}
+            self._data["scheduled_pushes"] = pushes
+        return pushes
+
     def set_scheduled_push(
         self,
         kind: str,
@@ -103,7 +111,7 @@ class SubscriptionStore:
         enabled: bool,
     ) -> Dict[str, Any]:
         key = self._schedule_key(kind, user_id, binding_id, umo)
-        pushes = self._data.setdefault("scheduled_pushes", {})
+        pushes = self._scheduled_push_map()
         old = pushes.get(key)
         item = dict(old) if isinstance(old, dict) else {}
         item.update(
@@ -122,7 +130,7 @@ class SubscriptionStore:
         return dict(item)
 
     def scheduled_pushes(self, kind: str = "", enabled_only: bool = True) -> List[Dict[str, Any]]:
-        pushes = self._data.setdefault("scheduled_pushes", {})
+        pushes = self._scheduled_push_map()
         result = []
         for item in pushes.values():
             if not isinstance(item, dict):
@@ -135,7 +143,7 @@ class SubscriptionStore:
         return result
 
     def update_scheduled_push(self, key: str, values: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        pushes = self._data.setdefault("scheduled_pushes", {})
+        pushes = self._scheduled_push_map()
         item = pushes.get(key)
         if not isinstance(item, dict):
             return None
