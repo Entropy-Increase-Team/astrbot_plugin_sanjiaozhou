@@ -450,7 +450,7 @@ DELTA_COMMAND_SPECS = [
 @register(
     "sanjiaozhou",
     "bvzrays & Entropy-Increase-Team",
-    "三角洲行动 AstrBot 插件",
+    "三角洲行动数据查询 AstrBot 插件，支持 QQ/微信登录与多账号管理、个人数据、战绩、日报周报、活动与物品价格查询、计算器、图片渲染及订阅推送。",
     PLUGIN_VERSION,
     "https://github.com/Entropy-Increase-Team/astrbot_plugin_sanjiaozhou",
 )

@@ -1,7 +1,7 @@
 # 主帮助配置
 helpCfg:
   # 基本配置
-  title: "三角洲行动 帮助"
+  title: "三角洲行动数据查询 帮助"
   subTitle: "DeltaForce-Plugin HELP"
   
   # 样式主题配置
@@ -27,7 +27,7 @@ helpList:
     - order: 2
       group: "此为基础菜单，其他功能请使用 娱乐帮助 查看娱乐菜单"
     - order: 3
-      group: "API Key 申请与使用咨询群：932459332"
+      group: "登录 delta-test.shallow.ink 后申请 API Key；咨询群：932459332"
     - order: 100
       group: "系统管理（仅主人）"
       masterOnly: true # 仅主人可见
@@ -374,7 +374,7 @@ helpList:
           desc: "为自己被拒的方案申请复审"
         - icon: 78
           title: "网站上传修改"
-          desc: "https://df.shallow.ink/solutions"
+          desc: "https://delta-test.shallow.ink/solutions"
     - order: 3
       group: "实用工具"
       list:
