@@ -1,6 +1,6 @@
 # 三角洲行动数据查询
 
-<img decoding="async" align="right" src="logo.png" width="160" alt="三角洲行动数据查询 Logo">
+<img decoding="async" align="right" src="resources/imgs/readme/hz.webp" width="35%" alt="三角洲行动数据查询">
 
 - 当前版本：`1.2.0`，详细变更见 [更新日志](CHANGELOG.md)。
 - 三角洲行动数据查询 AstrBot 插件，支持 QQ/微信登录与多账号管理、个人数据、战绩、日报周报、活动与物品价格查询、计算器、图片渲染及订阅推送。

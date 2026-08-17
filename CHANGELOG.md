@@ -7,7 +7,8 @@
 - 插件显示名由“三角洲行动”更新为“三角洲行动数据查询”，并将插件描述明确为支持 QQ/微信登录与多账号管理、个人数据、战绩、日报周报、活动与物品价格查询、计算器、图片渲染及订阅推送。
 - metadata、AstrBot 注册信息、README 与 GitHub 仓库描述使用相同的功能描述，避免各处展示不一致。
 - API 前端更新为 `https://delta-test.shallow.ink/`，提醒用户登录后可在 `https://delta-test.shallow.ink/developer/api-keys` 申请 API Key。
-- 新增根目录 `logo.png`，由用户提供的图标素材转换并压缩为标准 PNG。
+- 新增根目录 `logo.png`，由用户提供的图标素材转换并压缩为标准 PNG，仅供 AstrBot 市场自动读取。
+- README 保留原有 `resources/imgs/readme/hz.webp` 头图，不使用市场 Logo 替换文档封面。
 
 ## [1.1.1] - 2026-08-17
 
